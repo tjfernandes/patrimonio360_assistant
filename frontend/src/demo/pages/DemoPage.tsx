@@ -68,10 +68,6 @@ function DemoPage() {
     setClosePopupSignal((current) => current + 1)
   }
 
-  const handleExitTour = () => {
-    setActiveTourSlug(null)
-  }
-
   return (
     <main className="min-h-screen px-4 pb-8 pt-4 sm:px-6 sm:pb-10 sm:pt-6 lg:px-10">
       <div className="mx-auto max-w-[1760px] space-y-5 sm:space-y-6">
