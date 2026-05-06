@@ -1,0 +1,44 @@
+# Dependencies
+backend/multiview_worker/node_modules/
+backend/benchmarks/
+backend/tests/
+backend/benchmark_runs/
+frontend/node_modules/
+
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Build and cache output
+dist/
+build/
+.cache/
+.parcel-cache/
+.vite/
+coverage/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Large/generated tour assets
+assets/
+tours/
