@@ -11,7 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npm ci --prefix frontend && npm run build --prefix frontend
+      - run: npm ci --prefix frontend
+      - run: npm run build:embed --prefix frontend
+        env:
+          COPY_TOURS: "false"
+          VITE_TOURS_BASE_URL: ${{ vars.VITE_TOURS_BASE_URL }}
+          VITE_CHAT_BACKEND_BASE_URL: ${{ vars.VITE_CHAT_BACKEND_BASE_URL }}
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}

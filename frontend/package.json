@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:embed": "node scripts/build-embed.mjs",
+    "copy:tours": "node scripts/copy-static-tours.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

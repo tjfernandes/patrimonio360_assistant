@@ -29,5 +29,12 @@ export function getMuseumTourUrl(slug: string): string {
 }
 
 export function getMuseumEmbedPath(slug: string): string {
-  return `/embed/${toSafeSlugSegment(slug)}/`
+  const configuredBaseUrl = import.meta.env.VITE_EMBED_BASE_URL?.trim()
+  const embedPath = `/embed/${toSafeSlugSegment(slug)}/`
+
+  if (!configuredBaseUrl) {
+    return embedPath
+  }
+
+  return `${normalizeBaseUrl(configuredBaseUrl)}${embedPath}`
 }
