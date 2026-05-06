@@ -8,6 +8,7 @@ import {
 } from 'react-leaflet'
 import { divIcon } from 'leaflet'
 import type { Popup as LeafletPopup } from 'leaflet'
+import { isMuseumTourAvailable } from '../../services/museumService'
 import type { Museum } from '../../types/museum'
 
 interface MuseumMapProps {
@@ -106,6 +107,7 @@ function MuseumMap({
 
       {museums.map((museum) => {
         const isSelected = museum.slug === selectedMuseumSlug
+        const hasTour = isMuseumTourAvailable(museum)
 
         return (
           <Marker
@@ -119,19 +121,28 @@ function MuseumMap({
                 popupRefs.current[museum.museum_id] = instance
               }}
             >
-              <div className="min-w-52">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8a7670]">
-                  {museum.address}
+              <div className="min-w-64 max-w-80 p-1">
+                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#8a7670]">
+                  {museum.slug}
                 </p>
-                <p className="mt-1 text-sm font-semibold text-[#231815]">{museum.name}</p>
+                <p className="mt-1 text-base font-semibold leading-tight text-[#231815]">
+                  {museum.name}
+                </p>
                 <p className="mt-2 text-xs leading-relaxed text-[#6d5c58]">{museum.description}</p>
+                <p className="mt-2 text-[11px] leading-relaxed text-[#6d5c58]">{museum.address}</p>
                 <div className="mt-3 flex justify-end">
                   <button
                     type="button"
                     onClick={() => onVisitMuseum(museum.slug)}
-                    className="rounded-lg bg-[#6d0b1b] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#4f0814]"
+                    disabled={!hasTour}
+                    className={[
+                      'rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors',
+                      hasTour
+                        ? 'bg-[#6d0b1b] text-white hover:bg-[#4f0814]'
+                        : 'cursor-not-allowed bg-[#d6c8c4] text-[#6f5f5c]',
+                    ].join(' ')}
                   >
-                    Visitar
+                    {hasTour ? 'Visitar' : 'Visita não disponível'}
                   </button>
                 </div>
               </div>

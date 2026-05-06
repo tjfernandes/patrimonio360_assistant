@@ -5,6 +5,7 @@ export interface Museum {
   description: string
   address: string
   inaguration_year: number
+  tourAvailable?: boolean
   coordinates: {
     lat: number
     lon: number

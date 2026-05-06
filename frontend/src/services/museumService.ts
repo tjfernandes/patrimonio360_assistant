@@ -19,6 +19,22 @@ function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '')
 }
 
+function getConfiguredAvailableTourSlugs() {
+  const configured = import.meta.env.VITE_AVAILABLE_TOUR_SLUGS?.trim()
+  if (!configured) {
+    return null
+  }
+
+  const slugs = configured
+    .split(',')
+    .map((item: string) => item.trim().toLowerCase())
+    .filter(Boolean)
+
+  return new Set(slugs)
+}
+
+const configuredAvailableTourSlugs = getConfiguredAvailableTourSlugs()
+
 export function getMuseumTourUrl(slug: string): string {
   const configuredBaseUrl = import.meta.env.VITE_TOURS_BASE_URL
   const toursBaseUrl = configuredBaseUrl
@@ -37,4 +53,12 @@ export function getMuseumEmbedPath(slug: string): string {
   }
 
   return `${normalizeBaseUrl(configuredBaseUrl)}${embedPath}`
+}
+
+export function isMuseumTourAvailable(museum: Museum): boolean {
+  if (configuredAvailableTourSlugs) {
+    return configuredAvailableTourSlugs.has(museum.slug.toLowerCase())
+  }
+
+  return museum.tourAvailable === true
 }

@@ -8,8 +8,8 @@ interface TranslationTree {
 const TRANSLATIONS: Record<ChatLanguage, TranslationTree> = {
   pt: {
     chatWidget: {
-      defaultImageQuery: 'Ajuda-me a identificar esta imagem no contexto do museu atual.',
-      defaultModelQuery: 'Ajuda-me a identificar este modelo 3D no contexto do museu atual.',
+      defaultImageQuery: '',
+      defaultModelQuery: '',
       unsupportedFormat: 'Formato nao suportado. Usa imagem ou ficheiro .glb/.gltf/.obj.',
       imageLabel: 'Imagem',
       modelLabel: 'Modelo 3D',
