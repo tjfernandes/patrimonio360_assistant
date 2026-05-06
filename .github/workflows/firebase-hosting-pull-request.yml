@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: npm ci --prefix frontend
-      - run: npm run build:embed --prefix frontend
+      - run: npm run build --prefix frontend
         env:
-          COPY_TOURS: "false"
+          VITE_ENABLE_DEMO: "true"
           VITE_TOURS_BASE_URL: ${{ vars.VITE_TOURS_BASE_URL }}
           VITE_CHAT_BACKEND_BASE_URL: ${{ vars.VITE_CHAT_BACKEND_BASE_URL }}
       - uses: FirebaseExtended/action-hosting-deploy@v0
