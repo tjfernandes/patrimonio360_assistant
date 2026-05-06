@@ -12,6 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: npm ci --prefix frontend
+      - name: Validate frontend env vars
+        run: |
+          test -n "${VITE_TOURS_BASE_URL}" || (echo "Missing Actions variable: VITE_TOURS_BASE_URL" && exit 1)
+          test -n "${VITE_CHAT_BACKEND_BASE_URL}" || (echo "Missing Actions variable: VITE_CHAT_BACKEND_BASE_URL" && exit 1)
+        env:
+          VITE_TOURS_BASE_URL: ${{ vars.VITE_TOURS_BASE_URL }}
+          VITE_CHAT_BACKEND_BASE_URL: ${{ vars.VITE_CHAT_BACKEND_BASE_URL }}
       - run: npm run build --prefix frontend
         env:
           VITE_ENABLE_DEMO: "true"
