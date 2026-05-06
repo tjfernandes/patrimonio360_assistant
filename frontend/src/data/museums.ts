@@ -22,26 +22,6 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 38.7244, lon: -9.11389 },
   },
   {
-    museum_id: 'mg',
-    slug: 'mg',
-    name: 'Museu da Guarda',
-    description:
-      'O Museu da Guarda está instalado no antigo Paço Episcopal, um edifício histórico que alberga coleções de arqueologia, arte sacra e etnografia, refletindo a história e cultura da região da Guarda ao longo dos séculos.',
-    address: 'Rua do Paço, 6300-035 Guarda, Portugal',
-    inaguration_year: 1940,
-    coordinates: { lat: 41.084069, lon: -7.133723 },
-  },
-  {
-    museum_id: 'pnq',
-    slug: 'pnq',
-    name: 'Palácio Nacional de Queluz',
-    description:
-      "O Palácio Nacional de Queluz, considerado o 'Versalhes português', é um magnífico exemplo da arquitetura rococó e neoclássica do século XVIII, com interiores luxuosos e jardins formais elaborados que refletiam o poder da monarquia portuguesa.",
-    address: 'Largo do Palácio de Queluz, 2745-191 Queluz, Portugal',
-    inaguration_year: 1750,
-    coordinates: { lat: 38.750446, lon: -9.258224 },
-  },
-  {
     museum_id: 'mne',
     slug: 'mne',
     name: 'Museu Nacional de Etnologia',
@@ -62,36 +42,6 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 39.60636, lon: -9.07613 },
   },
   {
-    museum_id: 'ma',
-    slug: 'ma',
-    name: 'Museu de Aveiro',
-    description:
-      'Instalado no antigo Convento de Jesus, o Museu de Aveiro apresenta coleções de arte sacra, pintura, talha dourada e azulejaria, destacando-se pelo túmulo de Santa Joana Princesa e pela arquitetura manuelina e barroca do edifício.',
-    address: 'Av. Santa Joana Princesa, 3810-329 Aveiro, Portugal',
-    inaguration_year: 1911,
-    coordinates: { lat: 40.639425, lon: -8.651106 },
-  },
-  {
-    museum_id: 'pns',
-    slug: 'pns',
-    name: 'Palácio Nacional de Sintra',
-    description:
-      'O Palácio Nacional de Sintra, também conhecido como Palácio da Vila, destaca-se pelos seus icónicos cones de chaminé e mistura estilos gótico, manuelino e mudéjar, servindo como residência real desde o século XV.',
-    address: 'Largo Rainha Dona Amélia, 2710-616 Sintra, Portugal',
-    inaguration_year: 1400,
-    coordinates: { lat: 38.797778, lon: -9.390833 },
-  },
-  {
-    museum_id: 'pnp',
-    slug: 'pnp',
-    name: 'Palácio Nacional da Pena',
-    description:
-      'O Palácio Nacional da Pena, situado no alto da Serra de Sintra, é um exemplar do romantismo arquitetónico português, combinando estilos manuelino, mourisco e gótico, rodeado por um vasto parque florestal e jardins exóticos.',
-    address: 'Estrada da Pena, 2710-609 Sintra, Portugal',
-    inaguration_year: 1838,
-    coordinates: { lat: 38.787778, lon: -9.390556 },
-  },
-  {
     museum_id: 'mnc',
     slug: 'mnc',
     name: 'Museu Nacional de Conímbriga',
@@ -100,16 +50,6 @@ export const museumsMock: Museum[] = [
     address: 'Conímbriga, Condeixa-a-Velha, 3150-220 Condeixa-a-Nova, Portugal',
     inaguration_year: 1962,
     coordinates: { lat: 40.098407, lon: -8.490475 },
-  },
-  {
-    museum_id: 'ml',
-    slug: 'ml',
-    name: 'Museu de Lamego',
-    description:
-      "O Museu de Lamego reúne coleções de pintura, escultura, azulejaria e ourivesaria sacra, com destaque para os painéis de Vasco Fernandes, o 'Grão Vasco', provenientes do antigo retábulo da Sé de Lamego.",
-    address: 'Rua do Almacave, 5100-108 Lamego, Portugal',
-    inaguration_year: 1917,
-    coordinates: { lat: 41.097364, lon: -7.806171 },
   },
   {
     museum_id: 'mngv',
@@ -182,16 +122,6 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 39.399577, lon: -9.130424 },
   },
   {
-    museum_id: 'pdd',
-    slug: 'pdd',
-    name: 'Paço dos Duques',
-    description:
-      'O Paço dos Duques de Bragança, em Guimarães, é um palácio medieval do século XV, reconstruído no século XX, que apresenta coleções de armas, tapeçarias flamengas, mobiliário e arte sacra de diferentes épocas.',
-    address: 'Rua Conde D. Henrique, 4800-412 Guimarães, Portugal',
-    inaguration_year: 1420,
-    coordinates: { lat: 41.447096, lon: -8.291977 },
-  },
-  {
     museum_id: 'mdds',
     slug: 'mdds',
     name: 'Museu D. Diogo de Sousa',
@@ -252,16 +182,6 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 38.708836, lon: -9.141183 },
   },
   {
-    museum_id: 'mftpj',
-    slug: 'mftpj',
-    name: 'Museu Francisco Tavares Proença Júnior',
-    description:
-      'Localizado no antigo Paço Episcopal de Castelo Branco, este museu destaca-se pelas coleções de arqueologia regional, arte sacra, tapeçarias de Castelo Branco, azulejaria, ourivesaria e etnografia, sendo referência cultural da Beira Baixa.',
-    address: 'Rua dos Cavaleiros, 6000-176 Castelo Branco, Portugal',
-    inaguration_year: 1910,
-    coordinates: { lat: 39.828113, lon: -7.49368 },
-  },
-  {
     museum_id: 'cmag',
     slug: 'cmag',
     name: 'Casa-Museu Dr. Anastácio Gonçalves',
@@ -292,16 +212,6 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 38.696685, lon: -9.198172 },
   },
   {
-    museum_id: 'mtm',
-    slug: 'mtm',
-    name: 'Museu da Terra de Miranda',
-    description:
-      'Dedicado à cultura mirandesa, o museu inclui coleções de arqueologia, etnografia e arte sacra da região de Miranda do Douro, preservando tradições, trajes, instrumentos musicais e a língua mirandesa como património imaterial.',
-    address: 'Rua Abade Baçal, 5200-266 Miranda do Douro, Portugal',
-    inaguration_year: 1982,
-    coordinates: { lat: 41.494315, lon: -6.274312 },
-  },
-  {
     museum_id: 'mjm',
     slug: 'mjm',
     name: 'Museu José Malhoa',
@@ -330,16 +240,6 @@ export const museumsMock: Museum[] = [
     address: 'Terreiro D. João V, 2640-492 Mafra, Portugal',
     inaguration_year: 2025,
     coordinates: { lat: 38.937397, lon: -9.326797 },
-  },
-  {
-    museum_id: 'mep',
-    slug: 'mep',
-    name: 'Museu de Etnologia do Porto',
-    description:
-      'Apresenta coleções etnográficas relacionadas com o trabalho agrícola, indústria artesanal, festividades e quotidiano rural do Norte de Portugal, documentando modos de vida tradicionais e suas transformações sociais.',
-    address: 'Rua de Costa Cabral, 945, 4200-225 Porto, Portugal',
-    inaguration_year: 1945,
-    coordinates: { lat: 41.1425, lon: -8.617778 },
   },
   {
     museum_id: 'mas',
