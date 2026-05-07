@@ -75,4 +75,4 @@ Depois usa o iframe com o caminho do embed:
 
 Se as tours ficarem noutro host, define `VITE_TOURS_BASE_URL` para esse URL absoluto e o `build:embed` nao copia `../tours` para o Firebase.
 
-Nas GitHub Actions deste repo, `COPY_TOURS=false` esta ativo porque `../tours` esta no `.gitignore`. Define as repository variables `VITE_TOURS_BASE_URL` e `VITE_CHAT_BACKEND_BASE_URL` antes de usares o deploy automatico.
+Nas GitHub Actions deste repo, `COPY_TOURS=false` esta ativo porque `../tours` esta no `.gitignore`. Define as repository variables `VITE_TOURS_BASE_URL`, `VITE_CHAT_BACKEND_BASE_URL`, `VITE_ENABLE_DEMO` e `VITE_AVAILABLE_TOUR_SLUGS` antes de usares o deploy automatico.

@@ -17,14 +17,19 @@ jobs:
         run: |
           test -n "${VITE_TOURS_BASE_URL}" || (echo "Missing Actions variable: VITE_TOURS_BASE_URL" && exit 1)
           test -n "${VITE_CHAT_BACKEND_BASE_URL}" || (echo "Missing Actions variable: VITE_CHAT_BACKEND_BASE_URL" && exit 1)
+          test -n "${VITE_ENABLE_DEMO}" || (echo "Missing Actions variable: VITE_ENABLE_DEMO" && exit 1)
+          test -n "${VITE_AVAILABLE_TOUR_SLUGS}" || (echo "Missing Actions variable: VITE_AVAILABLE_TOUR_SLUGS" && exit 1)
         env:
           VITE_TOURS_BASE_URL: ${{ vars.VITE_TOURS_BASE_URL }}
           VITE_CHAT_BACKEND_BASE_URL: ${{ vars.VITE_CHAT_BACKEND_BASE_URL }}
+          VITE_ENABLE_DEMO: ${{ vars.VITE_ENABLE_DEMO }}
+          VITE_AVAILABLE_TOUR_SLUGS: ${{ vars.VITE_AVAILABLE_TOUR_SLUGS }}
       - run: npm run build --prefix frontend
         env:
-          VITE_ENABLE_DEMO: "true"
           VITE_TOURS_BASE_URL: ${{ vars.VITE_TOURS_BASE_URL }}
           VITE_CHAT_BACKEND_BASE_URL: ${{ vars.VITE_CHAT_BACKEND_BASE_URL }}
+          VITE_ENABLE_DEMO: ${{ vars.VITE_ENABLE_DEMO }}
+          VITE_AVAILABLE_TOUR_SLUGS: ${{ vars.VITE_AVAILABLE_TOUR_SLUGS }}
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
