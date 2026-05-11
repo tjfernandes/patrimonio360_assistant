@@ -3,6 +3,8 @@ import type { DragEvent as ReactDragEvent, ReactNode, SyntheticEvent } from 'rea
 import { resolveEmbedLanguage, t } from '../i18n'
 import { regenerateAssistantMessage, sendChatMessage, warmChatSession } from '../services/chatApi'
 import type {
+  ChatArtifactImage,
+  ChatArtifactResult,
   ChatImageMatch,
   ChatLanguage,
   ChatModelFormat,
@@ -59,7 +61,19 @@ function buildImageAssetUrl(baseUrl: string | null, originalImageName: string) {
   if (!baseUrl || !originalImageName) {
     return null
   }
-  return `${baseUrl}/api/v1/chat/images/${encodeURIComponent(originalImageName)}`
+  const normalized = String(originalImageName).trim().replace(/\\/g, '/')
+  if (!normalized) {
+    return null
+  }
+  const encodedPath = normalized
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+  if (!encodedPath) {
+    return null
+  }
+  return `${baseUrl}/api/v1/chat/images/${encodedPath}`
 }
 
 function buildStarterMessage(): ChatMessage {
@@ -141,6 +155,7 @@ function TourChatWidget({
   const [isAssistantLoading, setIsAssistantLoading] = useState(false)
   const [statusMessages, setStatusMessages] = useState<string[]>([])
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
+  const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([
     buildStarterMessage(),
   ])
@@ -217,6 +232,7 @@ function TourChatWidget({
     clearSelectedUpload()
     setIsAssistantLoading(false)
     setStatusMessages([])
+    setSelectedArtifactResult(null)
     setMessages([buildStarterMessage()])
   }
 
@@ -257,6 +273,23 @@ function TourChatWidget({
       window.removeEventListener('keydown', onKeyDown)
     }
   }, [lightboxImage])
+
+  useEffect(() => {
+    if (!selectedArtifactResult) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSelectedArtifactResult(null)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [selectedArtifactResult])
 
   const handleSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -334,6 +367,7 @@ function TourChatWidget({
           role: 'assistant',
           text: chatResponse.reply,
           imageMatches: chatResponse.imageMatches,
+          artifactResults: chatResponse.artifactResults,
           navigationTargets: chatResponse.navigationTargets,
         },
       ])
@@ -345,6 +379,7 @@ function TourChatWidget({
           role: 'assistant',
           text: `${tt('errorPrefix')}: ${chatResponse.error}`,
           imageMatches: chatResponse.imageMatches,
+          artifactResults: chatResponse.artifactResults,
         },
       ])
     } else {
@@ -417,6 +452,7 @@ function TourChatWidget({
                 ...message,
                 text: chatResponse.reply,
                 imageMatches: chatResponse.imageMatches,
+                artifactResults: chatResponse.artifactResults,
                 navigationTargets: chatResponse.navigationTargets,
               }
             : message,
@@ -485,6 +521,7 @@ function TourChatWidget({
       if (byInventory) {
         return byInventory
       }
+      return null
     }
 
     const titleKey = normalizeLookupKey(match.title)
@@ -496,6 +533,24 @@ function TourChatWidget({
     }
 
     return null
+  }
+
+  const resolveNavigationTargetForArtifact = (
+    artifact: ChatArtifactResult | null,
+    navigationTargets: ChatNavigationTarget[] | undefined,
+  ): ChatNavigationTarget | null => {
+    if (!artifact || !navigationTargets || navigationTargets.length === 0) {
+      return null
+    }
+    const inventoryKey = normalizeLookupKey(artifact.inventoryNumber)
+    if (!inventoryKey) {
+      return null
+    }
+    return (
+      navigationTargets.find(
+        (target) => normalizeLookupKey(target.inventoryId) === inventoryKey,
+      ) || null
+    )
   }
 
   const isNavigationTargetLinkedToImageMatch = (
@@ -518,6 +573,73 @@ function TourChatWidget({
       const matchTitle = normalizeLookupKey(match.title)
       return Boolean(targetTitle && matchTitle && targetTitle === matchTitle)
     })
+  }
+
+  const resolveArtifactImageUrl = (image: ChatArtifactImage) => {
+    const localRef =
+      image.localPath || image.originalImageName
+    if (localRef) {
+      const localAssetUrl = buildImageAssetUrl(normalizedBackendBaseUrl, localRef)
+      if (localAssetUrl) {
+        return localAssetUrl
+      }
+    }
+    const sourceUrl = String(image.sourceUrl || '').trim()
+    return sourceUrl || null
+  }
+
+  const resolveArtifactResultForImageMatch = (
+    match: ChatImageMatch,
+    artifactResults: ChatArtifactResult[] | undefined,
+  ): ChatArtifactResult | null => {
+    const inventoryKey = normalizeLookupKey(match.inventory)
+    const embeddedArtifact = match.artifact || null
+
+    if (inventoryKey && artifactResults && artifactResults.length > 0) {
+      const byInventory = artifactResults.find(
+        (artifact) => normalizeLookupKey(artifact.inventoryNumber) === inventoryKey,
+      )
+      if (byInventory) {
+        return byInventory
+      }
+    }
+
+    if (
+      embeddedArtifact &&
+      (!inventoryKey || normalizeLookupKey(embeddedArtifact.inventoryNumber) === inventoryKey)
+    ) {
+      return embeddedArtifact
+    }
+
+    if (!artifactResults || artifactResults.length === 0) {
+      return null
+    }
+
+    const matchImageRef = normalizeLookupKey(match.originalImageName)
+    if (matchImageRef) {
+      const byImagePath = artifactResults.find((artifact) =>
+        artifact.images.some((image) => {
+          const localKey = normalizeLookupKey(image.localPath || image.originalImageName)
+          return Boolean(localKey && localKey === matchImageRef)
+        }),
+      )
+      if (byImagePath) {
+        return byImagePath
+      }
+    }
+
+    const artifactId = String(match.artifactId || '').trim()
+    if (artifactId) {
+      const byId = artifactResults.find((artifact) => artifact.artifactId === artifactId)
+      if (
+        byId &&
+        (!inventoryKey || normalizeLookupKey(byId.inventoryNumber) === inventoryKey)
+      ) {
+        return byId
+      }
+    }
+
+    return null
   }
 
   const handleDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -571,6 +693,7 @@ function TourChatWidget({
 
   const renderImageMatches = (
     imageMatches: ChatImageMatch[] | undefined,
+    artifactResults: ChatArtifactResult[] | undefined,
     navigationTargets: ChatNavigationTarget[] | undefined,
   ) => {
     if (!imageMatches || imageMatches.length === 0) {
@@ -581,7 +704,57 @@ function TourChatWidget({
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
         {imageMatches.map((match, index) => {
           const imageUrl = buildImageAssetUrl(normalizedBackendBaseUrl, match.originalImageName)
-          const linkedTarget = resolveNavigationTargetForImageMatch(match, navigationTargets)
+          const linkedArtifact = resolveArtifactResultForImageMatch(match, artifactResults)
+          const matchInventoryKey = normalizeLookupKey(match.inventory)
+          const embeddedNavigationTarget =
+            match.navigationTarget &&
+            (!matchInventoryKey ||
+              normalizeLookupKey(match.navigationTarget.inventoryId) === matchInventoryKey)
+              ? match.navigationTarget
+              : null
+          const linkedTarget =
+            embeddedNavigationTarget ||
+            resolveNavigationTargetForArtifact(linkedArtifact, navigationTargets) ||
+            resolveNavigationTargetForImageMatch(match, navigationTargets)
+          console.info('[p360-chat] result-card mapping', {
+            index,
+            match: {
+              originalImageName: match.originalImageName,
+              artifactId: match.artifactId,
+              inventory: match.inventory,
+              title: match.title,
+              hasEmbeddedArtifact: Boolean(match.artifact),
+              hasEmbeddedNavigationTarget: Boolean(match.navigationTarget),
+            },
+            resolvedArtifact: linkedArtifact
+              ? {
+                  artifactId: linkedArtifact.artifactId,
+                  inventoryNumber: linkedArtifact.inventoryNumber,
+                  title: linkedArtifact.title,
+                  imageCount: linkedArtifact.images.length,
+                }
+              : null,
+            resolvedNavigationTarget: linkedTarget
+              ? {
+                  inventoryId: linkedTarget.inventoryId,
+                  overlayId: linkedTarget.overlayId,
+                  panoramaKey: linkedTarget.panoramaKey,
+                  title: linkedTarget.title,
+                }
+              : null,
+            availableArtifactResults: artifactResults?.map((artifact) => ({
+              artifactId: artifact.artifactId,
+              inventoryNumber: artifact.inventoryNumber,
+              title: artifact.title,
+              imageCount: artifact.images.length,
+            })),
+            availableNavigationTargets: navigationTargets?.map((target) => ({
+              inventoryId: target.inventoryId,
+              overlayId: target.overlayId,
+              panoramaKey: target.panoramaKey,
+              title: target.title,
+            })),
+          })
           return (
             <article
               key={`${match.originalImageName}-${index}`}
@@ -590,7 +763,21 @@ function TourChatWidget({
               {imageUrl ? (
                 <button
                   type="button"
-                  onClick={() =>
+                  onClick={() => {
+                    console.info('[p360-chat] result-card image click', {
+                      index,
+                      action: linkedArtifact ? 'open_artifact_modal' : 'open_image_lightbox',
+                      matchArtifactId: match.artifactId,
+                      matchInventory: match.inventory,
+                      matchImage: match.originalImageName,
+                      resolvedArtifactId: linkedArtifact?.artifactId,
+                      resolvedArtifactInventory: linkedArtifact?.inventoryNumber,
+                      resolvedNavigationInventory: linkedTarget?.inventoryId,
+                    })
+                    if (linkedArtifact) {
+                      setSelectedArtifactResult(linkedArtifact)
+                      return
+                    }
                     setLightboxImage({
                       src: imageUrl,
                       alt:
@@ -598,7 +785,7 @@ function TourChatWidget({
                         match.inventory ||
                         `${tt('imageLabel')} ${index + 1}`,
                     })
-                  }
+                  }}
                   className="block w-full cursor-zoom-in"
                 >
                   <img
@@ -614,7 +801,7 @@ function TourChatWidget({
                   {match.inventory || match.title || tt('visualResult')}
                 </p>
                 {match.title ? <p className="truncate text-xs text-[#341d22]">{match.title}</p> : null}
-                <p className="truncate text-[11px] text-[#6e5a5f]">{match.originalImageName}</p>
+                {/* <p className="truncate text-[11px] text-[#6e5a5f]">{match.originalImageName}</p> */}
                 {linkedTarget ? (
                   <button
                     type="button"
@@ -786,7 +973,11 @@ function TourChatWidget({
                 </div>
                 <div className="space-y-2">
                   <MessageMarkdown messageId={message.id} text={message.text} />
-                  {renderImageMatches(message.imageMatches, message.navigationTargets)}
+                  {renderImageMatches(
+                    message.imageMatches,
+                    message.artifactResults,
+                    message.navigationTargets,
+                  )}
                   {renderNavigationTargets(message.navigationTargets, message.imageMatches)}
                 </div>
                 <div className="-ml-2 mt-1 flex items-center gap-1.5">
@@ -1063,6 +1254,137 @@ function TourChatWidget({
             <p className="mt-3 text-sm font-semibold text-[#2e171c]">{tt('dropToAttach')}</p>
             <p className="mt-1 text-xs text-[#6a585c]">{tt('dropHint')}</p>
           </div>
+        </div>
+      ) : null}
+
+      {selectedArtifactResult ? (
+        <div
+          className="absolute inset-0 z-[1190] flex items-center justify-center bg-[rgba(18,8,12,0.72)] p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={tt('artifactDetailsAria')}
+          onClick={() => setSelectedArtifactResult(null)}
+        >
+          <article
+            className="flex max-h-[96%] w-full max-w-[900px] flex-col overflow-hidden rounded-2xl border border-[#d8c4be] bg-[rgba(252,246,244,0.98)] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-[#e3ceca] px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
+                  {tt('artifactDetails')}
+                </p>
+                <h3 className="truncate text-base font-semibold text-[#2f1c20]">
+                  {selectedArtifactResult.title || selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
+                </h3>
+                <p className="truncate text-xs text-[#6b5b5f]">
+                  {selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedArtifactResult(null)}
+                className="rounded-lg border border-[#ccb1ab] bg-white/90 px-2.5 py-1 text-xs font-semibold text-[#5a2730] transition-colors hover:bg-white"
+              >
+                {tt('close')}
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 lg:grid-cols-[1.3fr_1fr]">
+              <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
+                {([
+                  //['artifactId', selectedArtifactResult.artifactId],
+                  ['inventory', selectedArtifactResult.inventoryNumber],
+                  ['museum', selectedArtifactResult.museum],
+                  ['category', selectedArtifactResult.category],
+                  ['superCategory', selectedArtifactResult.superCategory],
+                  ['creator', selectedArtifactResult.creator],
+                  ['dateOrPeriod', selectedArtifactResult.dateOrPeriod],
+                  ['supportOrMaterial', selectedArtifactResult.supportOrMaterial],
+                  ['technique', selectedArtifactResult.technique],
+                  ['originHistory', selectedArtifactResult.originHistory],
+                  ['productionCenter', selectedArtifactResult.productionCenter],
+                  ['incorporation', selectedArtifactResult.incorporation],
+                  ['detailType', selectedArtifactResult.detailType],
+                ] as Array<[string, string | undefined]>)
+                  .filter(([, value]) => Boolean(value))
+                  .map(([labelKey, value]) => (
+                    <div key={labelKey} className="grid grid-cols-[130px_1fr] gap-2 text-xs">
+                      <span className="font-semibold text-[#5a2730]">{tt(`artifactField.${labelKey}`)}:</span>
+                      <span className="text-[#2f1c20]">{value}</span>
+                    </div>
+                  ))}
+
+                {selectedArtifactResult.detailUrl ? (
+                  <a
+                    href={selectedArtifactResult.detailUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center rounded-md border border-[#cfb3ad] bg-white px-2 py-1 text-xs font-semibold text-[#6d0b1b] transition-colors hover:bg-[rgba(250,244,242,0.95)]"
+                  >
+                    {tt('openDetailUrl')}
+                  </a>
+                ) : null}
+
+                {selectedArtifactResult.description ? (
+                  <div className="mt-2 rounded-lg border border-[#ebdcda] bg-[rgba(255,255,255,0.85)] p-2.5">
+                    <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6d0b1b]">
+                      {tt('artifactDescription')}
+                    </p>
+                    <p className="text-xs leading-relaxed text-[#2f1c20]">{selectedArtifactResult.description}</p>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
+                  {tt('artifactImages')} ({selectedArtifactResult.images.length})
+                </p>
+                {selectedArtifactResult.images.length === 0 ? (
+                  <p className="text-xs text-[#6b5b5f]">{tt('artifactNoImages')}</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {selectedArtifactResult.images.map((image, index) => {
+                      const imageUrl = resolveArtifactImageUrl(image)
+                      const label =
+                        image.altText ||
+                        image.caption ||
+                        image.originalImageName ||
+                        `${tt('imageLabel')} ${index + 1}`
+                      return (
+                        <article
+                          key={`${image.imageId || image.localPath || image.sourceUrl || index}`}
+                          className="overflow-hidden rounded-lg border border-[#ddc8c4] bg-white"
+                        >
+                          {imageUrl ? (
+                            <button
+                              type="button"
+                              onClick={() => setLightboxImage({ src: imageUrl, alt: label })}
+                              className="block w-full cursor-zoom-in"
+                            >
+                              <img
+                                src={imageUrl}
+                                alt={label}
+                                className="h-24 w-full object-cover"
+                                loading="lazy"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex h-24 items-center justify-center bg-[#f3e9e6] text-[11px] text-[#7b686c]">
+                              {tt('imageUnavailable')}
+                            </div>
+                          )}
+                          {/* <p className="truncate px-2 py-1 text-[10px] text-[#6b5b5f]">
+                            {image.localPath || image.originalImageName || image.imageId || image.sourceUrl}
+                          </p> */}
+                        </article>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </article>
         </div>
       ) : null}
 

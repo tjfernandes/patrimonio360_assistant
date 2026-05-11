@@ -91,7 +91,7 @@ function EmbedPage({ pathname }: EmbedPageProps) {
       <div className="h-full w-full">
         <TourAssistantEmbed
           museumSlug={museum.slug}
-          museumId={museum.slug}
+          museumId={museum.museum_id || museum.slug}
           museumName={museum.name}
           tourUrl={getMuseumTourUrl(museum.slug)}
           backendBaseUrl={getChatBackendBaseUrl()}

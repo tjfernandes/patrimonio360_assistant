@@ -1,4 +1,5 @@
 import type {
+  ChatArtifactResult,
   ChatImageMatch,
   ChatLanguage,
   ChatNavigationTarget,
@@ -33,6 +34,7 @@ export interface SendChatMessageResult {
   replyJson?: Record<string, unknown> | unknown[] | null
   conversationId?: string
   imageMatches?: ChatImageMatch[]
+  artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
   error?: string
 }
@@ -44,17 +46,55 @@ interface RawChatPayload {
   reply_json?: Record<string, unknown> | unknown[] | null
   image_matches?: Array<{
     original_image_name?: string
+    artifact_id?: string
     score?: number
     title?: string
     inventory?: string
+    artifact?: RawArtifactResult
+    navigation_target?: RawNavigationTarget
   }>
-  navigation_targets?: Array<{
-    overlay_id?: string
-    panorama_key?: string
-    inventory_id?: string
-    location?: string
-    title?: string
-  }>
+  artifact_results?: RawArtifactResult[]
+  navigation_targets?: RawNavigationTarget[]
+}
+
+interface RawArtifactResult {
+  artifact_id?: string
+  inventory_number?: string
+  title?: string
+  museum_id?: string
+  museum?: string
+  category?: string
+  super_category?: string
+  creator?: string
+  date_or_period?: string
+  support_or_material?: string
+  technique?: string
+  origin_history?: string
+  incorporation?: string
+  production_center?: string
+  description?: string
+  search_text?: string
+  detail_type?: string
+  detail_url?: string
+  image_count?: number
+  images?: RawArtifactImage[]
+}
+
+interface RawArtifactImage {
+  original_image_name?: string
+  image_id?: string
+  local_path?: string
+  source_url?: string
+  caption?: string
+  alt_text?: string
+}
+
+interface RawNavigationTarget {
+  overlay_id?: string
+  panorama_key?: string
+  inventory_id?: string
+  location?: string
+  title?: string
 }
 
 function normalizeBackendBaseUrl(baseUrl?: string) {
@@ -69,6 +109,82 @@ function getChatApiBaseUrl(baseUrl: string) {
   return `${baseUrl}/api/v1/chat`
 }
 
+function normalizeNavigationTargetEntry(target: RawNavigationTarget | undefined): ChatNavigationTarget | null {
+  if (!target) {
+    return null
+  }
+  const overlayId = String(target.overlay_id || '').trim()
+  const panoramaKey = String(target.panorama_key || '').trim()
+  const inventoryId = String(target.inventory_id || '').trim()
+  if (!overlayId || !panoramaKey || !inventoryId) {
+    return null
+  }
+  return {
+    overlayId,
+    panoramaKey,
+    inventoryId,
+    location: typeof target.location === 'string' ? target.location : undefined,
+    title: typeof target.title === 'string' ? target.title : undefined,
+  }
+}
+
+function normalizeArtifactResultEntry(entry: RawArtifactResult | undefined): ChatArtifactResult | null {
+  if (!entry) {
+    return null
+  }
+  const artifactId = String(entry.artifact_id || '').trim()
+  if (!artifactId) {
+    return null
+  }
+
+  const images = Array.isArray(entry.images)
+    ? entry.images
+        .map((image) => {
+          const originalImageName = String(image.original_image_name || '').trim() || undefined
+          const imageId = String(image.image_id || '').trim() || undefined
+          const localPath = String(image.local_path || '').trim() || undefined
+          const sourceUrl = String(image.source_url || '').trim() || undefined
+          const caption = String(image.caption || '').trim() || undefined
+          const altText = String(image.alt_text || '').trim() || undefined
+          if (!originalImageName && !imageId && !localPath && !sourceUrl) {
+            return null
+          }
+          return {
+            originalImageName,
+            imageId,
+            localPath,
+            sourceUrl,
+            caption,
+            altText,
+          }
+        })
+        .filter((image): image is NonNullable<typeof image> => image !== null)
+    : []
+
+  return {
+    artifactId,
+    inventoryNumber: String(entry.inventory_number || '').trim() || undefined,
+    title: String(entry.title || '').trim() || undefined,
+    museumId: String(entry.museum_id || '').trim() || undefined,
+    museum: String(entry.museum || '').trim() || undefined,
+    category: String(entry.category || '').trim() || undefined,
+    superCategory: String(entry.super_category || '').trim() || undefined,
+    creator: String(entry.creator || '').trim() || undefined,
+    dateOrPeriod: String(entry.date_or_period || '').trim() || undefined,
+    supportOrMaterial: String(entry.support_or_material || '').trim() || undefined,
+    technique: String(entry.technique || '').trim() || undefined,
+    originHistory: String(entry.origin_history || '').trim() || undefined,
+    incorporation: String(entry.incorporation || '').trim() || undefined,
+    productionCenter: String(entry.production_center || '').trim() || undefined,
+    description: String(entry.description || '').trim() || undefined,
+    searchText: String(entry.search_text || '').trim() || undefined,
+    detailType: String(entry.detail_type || '').trim() || undefined,
+    detailUrl: String(entry.detail_url || '').trim() || undefined,
+    imageCount: typeof entry.image_count === 'number' ? entry.image_count : undefined,
+    images,
+  }
+}
+
 function normalizeImageMatches(payload: RawChatPayload): ChatImageMatch[] {
   const imageMatches: ChatImageMatch[] = []
   for (const match of payload.image_matches ?? []) {
@@ -79,9 +195,12 @@ function normalizeImageMatches(payload: RawChatPayload): ChatImageMatch[] {
 
     imageMatches.push({
       originalImageName,
+      artifactId: typeof match.artifact_id === 'string' ? match.artifact_id : undefined,
       score: typeof match.score === 'number' ? match.score : undefined,
       title: typeof match.title === 'string' ? match.title : undefined,
       inventory: typeof match.inventory === 'string' ? match.inventory : undefined,
+      artifact: normalizeArtifactResultEntry(match.artifact) ?? undefined,
+      navigationTarget: normalizeNavigationTargetEntry(match.navigation_target) ?? undefined,
     })
   }
   return imageMatches
@@ -90,21 +209,25 @@ function normalizeImageMatches(payload: RawChatPayload): ChatImageMatch[] {
 function normalizeNavigationTargets(payload: RawChatPayload): ChatNavigationTarget[] {
   const navigationTargets: ChatNavigationTarget[] = []
   for (const target of payload.navigation_targets ?? []) {
-    const overlayId = String(target.overlay_id || '').trim()
-    const panoramaKey = String(target.panorama_key || '').trim()
-    const inventoryId = String(target.inventory_id || '').trim()
-    if (!overlayId || !panoramaKey || !inventoryId) {
+    const normalized = normalizeNavigationTargetEntry(target)
+    if (!normalized) {
       continue
     }
-    navigationTargets.push({
-      overlayId,
-      panoramaKey,
-      inventoryId,
-      location: typeof target.location === 'string' ? target.location : undefined,
-      title: typeof target.title === 'string' ? target.title : undefined,
-    })
+    navigationTargets.push(normalized)
   }
   return navigationTargets
+}
+
+function normalizeArtifactResults(payload: RawChatPayload): ChatArtifactResult[] {
+  const artifactResults: ChatArtifactResult[] = []
+  for (const entry of payload.artifact_results ?? []) {
+    const normalized = normalizeArtifactResultEntry(entry)
+    if (!normalized) {
+      continue
+    }
+    artifactResults.push(normalized)
+  }
+  return artifactResults
 }
 
 function buildResultFromPayload(
@@ -112,6 +235,7 @@ function buildResultFromPayload(
   language: ChatLanguage,
 ): SendChatMessageResult {
   const imageMatches = normalizeImageMatches(payload)
+  const artifactResults = normalizeArtifactResults(payload)
   const navigationTargets = normalizeNavigationTargets(payload)
   if (!payload.reply) {
     return {
@@ -120,6 +244,7 @@ function buildResultFromPayload(
       replyJson: payload.reply_json ?? null,
       conversationId: payload.conversation_id,
       imageMatches,
+      artifactResults,
       navigationTargets,
       error: t(language, 'chatApi.emptyReply'),
     }
@@ -131,6 +256,7 @@ function buildResultFromPayload(
     replyJson: payload.reply_json ?? null,
     conversationId: payload.conversation_id,
     imageMatches,
+    artifactResults,
     navigationTargets,
   }
 }
@@ -289,7 +415,9 @@ export async function sendChatMessage(
     if (request.uploadFile && request.uploadKind === 'image') {
       const form = new FormData()
       form.set('museum_slug', request.museumSlug)
-      form.set('museum_id', request.museumId || request.museumSlug)
+      if (request.museumId) {
+        form.set('museum_id', request.museumId)
+      }
       if (request.museumName) {
         form.set('museum_name', request.museumName)
       }
@@ -312,7 +440,9 @@ export async function sendChatMessage(
     } else if (request.uploadFile && request.uploadKind === 'model') {
       const form = new FormData()
       form.set('museum_slug', request.museumSlug)
-      form.set('museum_id', request.museumId || request.museumSlug)
+      if (request.museumId) {
+        form.set('museum_id', request.museumId)
+      }
       if (request.museumName) {
         form.set('museum_name', request.museumName)
       }
@@ -343,7 +473,7 @@ export async function sendChatMessage(
           },
           body: JSON.stringify({
             museum_slug: request.museumSlug,
-            museum_id: request.museumId || request.museumSlug,
+            museum_id: request.museumId,
             museum_name: request.museumName,
             language,
             message: request.text,
@@ -407,7 +537,7 @@ export async function regenerateAssistantMessage(
         },
         body: JSON.stringify({
           museum_slug: request.museumSlug,
-          museum_id: request.museumId || request.museumSlug,
+          museum_id: request.museumId,
           museum_name: request.museumName,
           language,
           conversation_id: request.conversationId,
