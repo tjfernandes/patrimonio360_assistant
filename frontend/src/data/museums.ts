@@ -2,7 +2,7 @@ import type { Museum } from '../types/museum'
 
 export const museumsMock: Museum[] = [
   {
-    museum_id: '8',
+    museum_id: 'mnt',
     slug: 'mnt',
     name: 'Museu Nacional do Traje',
     description:
