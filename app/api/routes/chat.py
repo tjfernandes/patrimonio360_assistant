@@ -17,6 +17,8 @@ from app.schemas.chat import (
     ChatMessageResponse,
     ChatModelMessageRequest,
     ChatRegenerateRequest,
+    ChatResultsPageRequest,
+    ChatResultsPageResponse,
     ResponseFormatObject,
 )
 from app.services.chat_service import ChatService, get_chat_service
@@ -131,6 +133,14 @@ async def post_chat_message(
     return await service.handle_message(payload)
 
 
+@router.post("/messages/results", response_model=ChatResultsPageResponse)
+async def post_chat_results_page(
+    payload: ChatResultsPageRequest,
+    service: ChatService = Depends(get_chat_service),
+) -> ChatResultsPageResponse:
+    return await service.get_results_page(payload)
+
+
 @router.post("/messages/stream")
 async def post_chat_message_stream(
     payload: ChatMessageRequest,
@@ -171,6 +181,8 @@ async def post_chat_image_message(
     response_format: str = Form(default="text"),
     system_prompt: str | None = Form(default=None),
     model_override: str | None = Form(default=None),
+    results_page: int = Form(default=1),
+    results_page_size: int | None = Form(default=None),
     metadata: str | None = Form(default=None),
     image: UploadFile = File(...),
     service: ChatService = Depends(get_chat_service),
@@ -191,6 +203,8 @@ async def post_chat_image_message(
         response_format=ResponseFormatObject(type=response_format),
         system_prompt=system_prompt,
         model_override=model_override,
+        results_page=results_page,
+        results_page_size=results_page_size,
         metadata=metadata_payload,
     )
     return await service.handle_image_message(
@@ -212,6 +226,8 @@ async def post_chat_image_message_stream(
     response_format: str = Form(default="text"),
     system_prompt: str | None = Form(default=None),
     model_override: str | None = Form(default=None),
+    results_page: int = Form(default=1),
+    results_page_size: int | None = Form(default=None),
     metadata: str | None = Form(default=None),
     image: UploadFile = File(...),
     service: ChatService = Depends(get_chat_service),
@@ -232,6 +248,8 @@ async def post_chat_image_message_stream(
         response_format=ResponseFormatObject(type=response_format),
         system_prompt=system_prompt,
         model_override=model_override,
+        results_page=results_page,
+        results_page_size=results_page_size,
         metadata=metadata_payload,
     )
 
@@ -257,6 +275,8 @@ async def post_chat_model_message(
     response_format: str = Form(default="text"),
     system_prompt: str | None = Form(default=None),
     model_override: str | None = Form(default=None),
+    results_page: int = Form(default=1),
+    results_page_size: int | None = Form(default=None),
     metadata: str | None = Form(default=None),
     model_file: UploadFile = File(...),
     service: ChatService = Depends(get_chat_service),
@@ -278,6 +298,8 @@ async def post_chat_model_message(
         response_format=ResponseFormatObject(type=response_format),
         system_prompt=system_prompt,
         model_override=model_override,
+        results_page=results_page,
+        results_page_size=results_page_size,
         metadata=metadata_payload,
     )
     return await service.handle_model_message(
@@ -299,6 +321,8 @@ async def post_chat_model_message_stream(
     response_format: str = Form(default="text"),
     system_prompt: str | None = Form(default=None),
     model_override: str | None = Form(default=None),
+    results_page: int = Form(default=1),
+    results_page_size: int | None = Form(default=None),
     metadata: str | None = Form(default=None),
     model_file: UploadFile = File(...),
     service: ChatService = Depends(get_chat_service),
@@ -320,6 +344,8 @@ async def post_chat_model_message_stream(
         response_format=ResponseFormatObject(type=response_format),
         system_prompt=system_prompt,
         model_override=model_override,
+        results_page=results_page,
+        results_page_size=results_page_size,
         metadata=metadata_payload,
     )
     return _build_streaming_response(

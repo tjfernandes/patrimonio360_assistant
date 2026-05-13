@@ -1,4 +1,5 @@
 import io
+import json
 import unittest
 from unittest.mock import patch
 
@@ -6,6 +7,7 @@ from app.services.embeddings import (
     BGEM3TextEmbedder,
     EmbeddingProvider,
     EmbeddingProviderError,
+    OpenRouterBGETextEmbedder,
     QwenMultimodalImageEmbedder,
     QwenTextEmbedder,
 )
@@ -65,6 +67,21 @@ class _FakeBGEM3Model:
                 [0.0, 2.0, 0.0],
             ][: len(values)]
         }
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload, *, status: int = 200):
+        self._payload = payload
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return json.dumps(self._payload).encode("utf-8")
 
 
 class EmbeddingAlignmentTests(unittest.TestCase):
@@ -162,6 +179,10 @@ class EmbeddingAlignmentTests(unittest.TestCase):
                 "TEXT_EMBEDDING_BATCH_SIZE": 2,
                 "MULTIMODAL_IMAGE_EMBEDDING_BATCH_SIZE": 2,
                 "ARTIFACT_TEXT_EMBEDDING_DIMENSION": 3,
+                "USE_OPENROUTER_BGE_M3": False,
+                "OPENROUTER_API_KEY": None,
+                "openrouter_base_url_resolved": "https://openrouter.ai/api/v1",
+                "openrouter_bge_model_resolved": "baai/bge-m3",
             },
         )()
 
@@ -172,6 +193,101 @@ class EmbeddingAlignmentTests(unittest.TestCase):
                     embedder = provider._get_text_embedder()
 
         self.assertIsInstance(embedder, BGEM3TextEmbedder)
+
+    def test_openrouter_bgem3_embedder_posts_batch_and_preserves_order(self) -> None:
+        calls = []
+
+        def _fake_urlopen(request, timeout):
+            calls.append((request, timeout))
+            payload = json.loads(request.data.decode("utf-8"))
+            headers = {key.lower(): value for key, value in request.header_items()}
+
+            self.assertEqual(payload["model"], "baai/bge-m3")
+            self.assertEqual(payload["input"], ["a", "b"])
+            self.assertEqual(headers["authorization"], "Bearer test-key")
+            self.assertEqual(headers["content-type"], "application/json")
+
+            return _FakeHTTPResponse(
+                {
+                    "data": [
+                        {"index": 1, "embedding": [0.0, 3.0, 4.0]},
+                        {"index": 0, "embedding": [3.0, 4.0, 0.0]},
+                    ]
+                }
+            )
+
+        with patch("app.services.embeddings.urlopen", side_effect=_fake_urlopen):
+            embedder = OpenRouterBGETextEmbedder(
+                "baai/bge-m3",
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                batch_size=2,
+                expected_dimension=3,
+            )
+            vectors = embedder.embed_documents(["a", "b"])
+
+        self.assertEqual(len(calls), 1)
+        request, timeout = calls[0]
+        self.assertEqual(request.full_url, "https://openrouter.ai/api/v1/embeddings")
+        self.assertEqual(timeout, 60.0)
+        self.assertEqual(len(vectors), 2)
+        self.assertAlmostEqual(vectors[0][0], 0.6, places=5)
+        self.assertAlmostEqual(vectors[0][1], 0.8, places=5)
+        self.assertAlmostEqual(vectors[1][1], 0.6, places=5)
+        self.assertAlmostEqual(vectors[1][2], 0.8, places=5)
+
+    def test_provider_openrouter_flag_without_api_key_raises(self) -> None:
+        settings = type(
+            "SettingsStub",
+            (),
+            {
+                "text_embedding_model_resolved": "BAAI/bge-m3",
+                "multimodal_embedding_model_resolved": "Qwen/Qwen3-VL-Embedding-2B",
+                "DEBUG_EMBEDDINGS": False,
+                "EMBEDDING_MAX_LENGTH": 2048,
+                "EMBEDDING_PREFER_BF16": True,
+                "TEXT_EMBEDDING_BATCH_SIZE": 2,
+                "MULTIMODAL_IMAGE_EMBEDDING_BATCH_SIZE": 2,
+                "ARTIFACT_TEXT_EMBEDDING_DIMENSION": 3,
+                "USE_OPENROUTER_BGE_M3": True,
+                "OPENROUTER_API_KEY": "",
+                "openrouter_base_url_resolved": "https://openrouter.ai/api/v1",
+                "openrouter_bge_model_resolved": "baai/bge-m3",
+            },
+        )()
+
+        with patch("app.services.embeddings._log_runtime_versions_once", return_value=None):
+            provider = EmbeddingProvider(settings)
+            with self.assertRaises(EmbeddingProviderError) as ctx:
+                provider._get_text_embedder()
+
+        self.assertIn("OPENROUTER_API_KEY", str(ctx.exception))
+
+    def test_provider_selects_openrouter_bgem3_when_flag_enabled(self) -> None:
+        settings = type(
+            "SettingsStub",
+            (),
+            {
+                "text_embedding_model_resolved": "BAAI/bge-m3",
+                "multimodal_embedding_model_resolved": "Qwen/Qwen3-VL-Embedding-2B",
+                "DEBUG_EMBEDDINGS": False,
+                "EMBEDDING_MAX_LENGTH": 2048,
+                "EMBEDDING_PREFER_BF16": True,
+                "TEXT_EMBEDDING_BATCH_SIZE": 2,
+                "MULTIMODAL_IMAGE_EMBEDDING_BATCH_SIZE": 2,
+                "ARTIFACT_TEXT_EMBEDDING_DIMENSION": 3,
+                "USE_OPENROUTER_BGE_M3": True,
+                "OPENROUTER_API_KEY": "test-key",
+                "openrouter_base_url_resolved": "https://openrouter.ai/api/v1",
+                "openrouter_bge_model_resolved": "baai/bge-m3",
+            },
+        )()
+
+        with patch("app.services.embeddings._log_runtime_versions_once", return_value=None):
+            provider = EmbeddingProvider(settings)
+            embedder = provider._get_text_embedder()
+
+        self.assertIsInstance(embedder, OpenRouterBGETextEmbedder)
 
 
 if __name__ == "__main__":

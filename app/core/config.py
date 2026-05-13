@@ -51,6 +51,10 @@ class Settings(BaseSettings):
 
     QWEN_TEXT_EMBEDDING_MODEL_ID: str = "BAAI/bge-m3"
     QWEN_MULTIMODAL_EMBEDDING_MODEL_ID: str = "Qwen/Qwen3-VL-Embedding-2B"
+    USE_OPENROUTER_BGE_M3: bool = False
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_BGE_MODEL: str = "baai/bge-m3"
     # Backward compatibility with previous backend env naming.
     TEXT_EMBEDDING_MODEL: str | None = None
     MULTIMODAL_EMBEDDING_MODEL: str | None = None
@@ -175,6 +179,17 @@ class Settings(BaseSettings):
         if self.MULTIMODAL_EMBEDDING_MODEL and self.MULTIMODAL_EMBEDDING_MODEL.strip():
             return self.MULTIMODAL_EMBEDDING_MODEL.strip()
         return self.QWEN_MULTIMODAL_EMBEDDING_MODEL_ID.strip()
+
+    @property
+    def openrouter_base_url_resolved(self) -> str:
+        return self.OPENROUTER_BASE_URL.strip().rstrip("/")
+
+    @property
+    def openrouter_bge_model_resolved(self) -> str:
+        raw = self.OPENROUTER_BGE_MODEL.strip()
+        if raw:
+            return raw
+        return "baai/bge-m3"
 
     @property
     def image_asset_root_resolved(self) -> Path | None:

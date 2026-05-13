@@ -50,7 +50,9 @@ def build_retrieval_query_rewrite_prompt(
         "Gera duas versões para retrieval:\n"
         "1) lexical_query: limpa, focada, adequada para multi_match em OpenSearch.\n"
         "2) embedding_query: equivalente semântica para embedding de texto.\n"
-        "As duas devem ser curtas (idealmente <= 10 tokens), SEMPRE em português.\n"
+        "As duas devem ser curtas (idealmente <= 10 tokens) e na MESMA lingua de user_query.\n"
+        "Nunca traduzas (ex.: português para inglês, ou inglês para português).\n"
+        "Não inventes termos novos; simplifica apenas removendo ruído e cortesia.\n"
         "Se não houver melhoria clara, mantém o sentido literal da query.\n\n"
         "Responde com JSON estrito no formato:\n"
         '{"lexical_query":"...","embedding_query":"..."}\n\n'

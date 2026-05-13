@@ -52,6 +52,17 @@ class ChatMessageRequest(BaseModel):
         default=None,
         description="Optional model override.",
     )
+    results_page: int = Field(
+        default=1,
+        ge=1,
+        description="Requested results page number for retrieval cards.",
+    )
+    results_page_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Requested page size for retrieval cards.",
+    )
     metadata: dict[str, Any] | None = Field(default=None, description="Optional payload metadata")
 
 
@@ -139,6 +150,17 @@ class ChatImageMessageRequest(BaseModel):
         default=None,
         description="Optional model override.",
     )
+    results_page: int = Field(
+        default=1,
+        ge=1,
+        description="Requested results page number for retrieval cards.",
+    )
+    results_page_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Requested page size for retrieval cards.",
+    )
     metadata: dict[str, Any] | None = Field(default=None, description="Optional payload metadata")
 
 
@@ -184,7 +206,37 @@ class ChatModelMessageRequest(BaseModel):
         default=None,
         description="Optional model override.",
     )
+    results_page: int = Field(
+        default=1,
+        ge=1,
+        description="Requested results page number for retrieval cards.",
+    )
+    results_page_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Requested page size for retrieval cards.",
+    )
     metadata: dict[str, Any] | None = Field(default=None, description="Optional payload metadata")
+
+
+class ChatResultsPageRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    museum_slug: str = Field(..., min_length=1, description="Museum slug.")
+    museum_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Museum id used for strict retrieval filters.",
+    )
+    conversation_id: str = Field(..., min_length=1, description="Existing conversation id.")
+    results_page: int = Field(default=1, ge=1, description="Requested page number.")
+    results_page_size: int | None = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Requested page size.",
+    )
 
 
 class ImageMatchResult(BaseModel):
@@ -252,6 +304,22 @@ class ChatMessageResponse(BaseModel):
     image_matches: list[ImageMatchResult] = Field(default_factory=list)
     artifact_results: list[ArtifactResult] = Field(default_factory=list)
     navigation_targets: list[TourNavigationTarget] = Field(default_factory=list)
+    results_page: int = 1
+    results_page_size: int = 0
+    results_total: int = 0
+    results_has_more: bool = False
+
+
+class ChatResultsPageResponse(BaseModel):
+    status: Literal["ok"] = "ok"
+    conversation_id: str
+    image_matches: list[ImageMatchResult] = Field(default_factory=list)
+    artifact_results: list[ArtifactResult] = Field(default_factory=list)
+    navigation_targets: list[TourNavigationTarget] = Field(default_factory=list)
+    results_page: int = 1
+    results_page_size: int = 0
+    results_total: int = 0
+    results_has_more: bool = False
 
 
 class ChatHealthResponse(BaseModel):

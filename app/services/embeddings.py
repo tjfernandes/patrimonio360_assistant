@@ -6,13 +6,16 @@ from functools import lru_cache
 import importlib
 from importlib import metadata as importlib_metadata
 import io
+import json
 import logging
 import math
 import os
 from pathlib import Path
 import sys
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 from app.core.config import Settings, get_settings
 
@@ -256,6 +259,132 @@ def _local_path_from_image_source(image_source: str | None) -> Path | None:
     return candidate
 
 
+class OpenRouterEmbeddingsClient:
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        base_url: str,
+        model_id: str,
+        timeout_seconds: float = 60.0,
+    ) -> None:
+        self.api_key = (api_key or "").strip()
+        if not self.api_key:
+            raise EmbeddingProviderError(
+                "USE_OPENROUTER_BGE_M3=true requires OPENROUTER_API_KEY to be set."
+            )
+
+        self.base_url = base_url.strip().rstrip("/")
+        if not self.base_url:
+            raise EmbeddingProviderError(
+                "OPENROUTER_BASE_URL cannot be empty when USE_OPENROUTER_BGE_M3=true."
+            )
+
+        self.model_id = model_id.strip()
+        if not self.model_id:
+            raise EmbeddingProviderError(
+                "OPENROUTER_BGE_MODEL cannot be empty when USE_OPENROUTER_BGE_M3=true."
+            )
+
+        self.timeout_seconds = max(1.0, float(timeout_seconds))
+
+    def _request_embeddings(self, inputs: Sequence[str]) -> list[list[float]]:
+        body = json.dumps(
+            {
+                "model": self.model_id,
+                "input": list(inputs),
+            }
+        ).encode("utf-8")
+        request = Request(
+            f"{self.base_url}/embeddings",
+            data=body,
+            method="POST",
+        )
+        request.add_header("Authorization", f"Bearer {self.api_key}")
+        request.add_header("Content-Type", "application/json")
+
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                status_code = int(getattr(response, "status", 200))
+                raw = response.read().decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace")
+            raise EmbeddingProviderError(
+                f"OpenRouter embeddings request failed with HTTP {exc.code}: {details}"
+            ) from exc
+        except URLError as exc:
+            raise EmbeddingProviderError(
+                f"OpenRouter embeddings request failed: {exc.reason}"
+            ) from exc
+        except Exception as exc:
+            raise EmbeddingProviderError(
+                f"OpenRouter embeddings request failed unexpectedly: {exc}"
+            ) from exc
+
+        if status_code >= 400:
+            raise EmbeddingProviderError(
+                f"OpenRouter embeddings request failed with HTTP {status_code}: {raw}"
+            )
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise EmbeddingProviderError(
+                f"OpenRouter embeddings returned invalid JSON: {raw[:240]}"
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise EmbeddingProviderError(
+                "OpenRouter embeddings returned an invalid payload: expected object with data list."
+            )
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise EmbeddingProviderError(
+                "OpenRouter embeddings response missing 'data' list."
+            )
+
+        vectors_by_index: dict[int, list[float]] = {}
+        expected = len(inputs)
+        for item in data:
+            if not isinstance(item, dict):
+                raise EmbeddingProviderError(
+                    "OpenRouter embeddings response contains an invalid item."
+                )
+            index = item.get("index")
+            vector = item.get("embedding")
+            if not isinstance(index, int) or index < 0 or index >= expected:
+                raise EmbeddingProviderError(
+                    f"OpenRouter embeddings returned invalid index: {index!r}."
+                )
+            if index in vectors_by_index:
+                raise EmbeddingProviderError(
+                    f"OpenRouter embeddings returned duplicate index: {index}."
+                )
+            if not isinstance(vector, list):
+                raise EmbeddingProviderError(
+                    f"OpenRouter embeddings item at index {index} is missing a valid 'embedding' list."
+                )
+            try:
+                vectors_by_index[index] = [float(value) for value in vector]
+            except (TypeError, ValueError) as exc:
+                raise EmbeddingProviderError(
+                    f"OpenRouter embeddings item at index {index} contains non-numeric values."
+                ) from exc
+
+        if len(vectors_by_index) != expected:
+            raise EmbeddingProviderError(
+                f"OpenRouter embeddings returned {len(vectors_by_index)} vectors for {expected} inputs."
+            )
+
+        return [vectors_by_index[idx] for idx in range(expected)]
+
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        cleaned = [(text or "").strip() for text in texts]
+        if not cleaned:
+            return []
+        return self._request_embeddings(cleaned)
+
+
 class QwenTextEmbedder:
     def __init__(
         self,
@@ -444,6 +573,90 @@ class BGEM3TextEmbedder:
             if self.debug_embeddings:
                 logger.info(
                     "BGEM3 text embedding preview first5=%s",
+                    [float(value) for value in first_vector[:5]],
+                )
+        return vectors
+
+    def embed_document(self, text: str) -> list[float]:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            raise EmbeddingProviderError("Cannot generate embedding for empty text.")
+        return self.embed_documents([cleaned])[0]
+
+
+class OpenRouterBGETextEmbedder:
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        api_key: str | None,
+        base_url: str,
+        batch_size: int,
+        expected_dimension: int,
+        debug_embeddings: bool = False,
+    ) -> None:
+        self.model_id = model_id.strip()
+        self.batch_size = max(1, batch_size)
+        self.expected_dimension = max(1, expected_dimension)
+        self.debug_embeddings = debug_embeddings
+        self.client = OpenRouterEmbeddingsClient(
+            api_key=api_key,
+            base_url=base_url,
+            model_id=self.model_id,
+        )
+        self.embedding_dimension = self.expected_dimension
+        logger.info(
+            "OpenRouter BGEM3 text embedder configured: model_id=%s base_url=%s expected_dim=%s batch_size=%s",
+            self.model_id,
+            self.client.base_url,
+            self.embedding_dimension,
+            self.batch_size,
+        )
+
+    def _normalize_payload(self, payload: Any) -> list[list[float]]:
+        if not isinstance(payload, list):
+            raise EmbeddingProviderError("OpenRouter embeddings returned an invalid vectors payload.")
+        normalized: list[list[float]] = []
+        for vector in payload:
+            if not isinstance(vector, list):
+                raise EmbeddingProviderError("OpenRouter embeddings returned an invalid vector entry.")
+            casted = [float(value) for value in vector]
+            if len(casted) != self.embedding_dimension:
+                raise EmbeddingProviderError(
+                    f"Unexpected OpenRouter embedding dimension: got {len(casted)}, expected {self.embedding_dimension}."
+                )
+            normalized.append(_l2_normalize_vector(casted))
+        return normalized
+
+    def embed_documents(
+        self,
+        texts: Sequence[str],
+        *,
+        progress_desc: str | None = None,
+    ) -> list[list[float]]:
+        del progress_desc
+        cleaned = [(text or "").strip() for text in texts]
+        if not cleaned:
+            return []
+
+        vectors: list[list[float]] = []
+        for start in range(0, len(cleaned), self.batch_size):
+            batch = cleaned[start : start + self.batch_size]
+            raw_vectors = self.client.embed_texts(batch)
+            vectors.extend(self._normalize_payload(raw_vectors))
+
+        if vectors:
+            first_vector = vectors[0]
+            logger.info(
+                "OpenRouter BGEM3 text embedding encode done: model_id=%s batch_size=%s output_dim=%s norm_first=%.6f",
+                self.model_id,
+                len(cleaned),
+                len(first_vector),
+                _vector_norm(first_vector),
+            )
+            if self.debug_embeddings:
+                logger.info(
+                    "OpenRouter BGEM3 text embedding preview first5=%s",
                     [float(value) for value in first_vector[:5]],
                 )
         return vectors
@@ -655,7 +868,7 @@ class EmbeddingProvider:
         self.text_model_id = settings.text_embedding_model_resolved
         self.multimodal_model_id = settings.multimodal_embedding_model_resolved
 
-        self._text_embedder: QwenTextEmbedder | BGEM3TextEmbedder | None = None
+        self._text_embedder: QwenTextEmbedder | BGEM3TextEmbedder | OpenRouterBGETextEmbedder | None = None
         self._multimodal_embedder: QwenMultimodalImageEmbedder | None = None
 
         _log_runtime_versions_once()
@@ -667,18 +880,28 @@ class EmbeddingProvider:
             bool(self.settings.DEBUG_EMBEDDINGS),
         )
 
-    def _get_text_embedder(self) -> QwenTextEmbedder | BGEM3TextEmbedder:
+    def _get_text_embedder(self) -> QwenTextEmbedder | BGEM3TextEmbedder | OpenRouterBGETextEmbedder:
         if self._text_embedder is None:
             logger.info("Text embedder lazy-load triggered.")
             normalized_model_id = self.text_model_id.strip().lower()
             if normalized_model_id == "baai/bge-m3":
-                self._text_embedder = BGEM3TextEmbedder(
-                    self.text_model_id,
-                    max_length=self.settings.EMBEDDING_MAX_LENGTH,
-                    batch_size=self.settings.TEXT_EMBEDDING_BATCH_SIZE,
-                    expected_dimension=self.settings.ARTIFACT_TEXT_EMBEDDING_DIMENSION,
-                    debug_embeddings=self.settings.DEBUG_EMBEDDINGS,
-                )
+                if self.settings.USE_OPENROUTER_BGE_M3:
+                    self._text_embedder = OpenRouterBGETextEmbedder(
+                        self.settings.openrouter_bge_model_resolved,
+                        api_key=self.settings.OPENROUTER_API_KEY,
+                        base_url=self.settings.openrouter_base_url_resolved,
+                        batch_size=self.settings.TEXT_EMBEDDING_BATCH_SIZE,
+                        expected_dimension=self.settings.ARTIFACT_TEXT_EMBEDDING_DIMENSION,
+                        debug_embeddings=self.settings.DEBUG_EMBEDDINGS,
+                    )
+                else:
+                    self._text_embedder = BGEM3TextEmbedder(
+                        self.text_model_id,
+                        max_length=self.settings.EMBEDDING_MAX_LENGTH,
+                        batch_size=self.settings.TEXT_EMBEDDING_BATCH_SIZE,
+                        expected_dimension=self.settings.ARTIFACT_TEXT_EMBEDDING_DIMENSION,
+                        debug_embeddings=self.settings.DEBUG_EMBEDDINGS,
+                    )
             else:
                 self._text_embedder = QwenTextEmbedder(
                     self.text_model_id,

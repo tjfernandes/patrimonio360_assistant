@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from functools import lru_cache
 import json
 import logging
@@ -40,6 +41,12 @@ EVENT_LABELS: dict[str, str] = {
     "opensearch.structured.body": "Body completo enviado ao OpenSearch para query estruturada.",
     "opensearch.structured.response": "Resposta de query estruturada recebida do OpenSearch.",
 }
+
+
+@dataclass(slots=True)
+class OpenSearchRetrievalPage:
+    results: list[dict[str, Any]]
+    total: int
 
 
 class OpenSearchGateway:
@@ -277,6 +284,51 @@ class OpenSearchGateway:
             return None
         return {"term": {"in_tour": {"value": True, "boost": boost}}}
 
+    def _is_in_tour(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes"}
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return False
+
+    def _artifact_candidate_size(self, top_k: int) -> int:
+        base = max(top_k, 1)
+        boost = float(getattr(self.settings, "CHAT_IN_TOUR_BOOST", 0) or 0)
+        if boost <= 0:
+            return base
+        return min(150, max(base * 4, base + 20))
+
+    def _total_hits_value(self, response: dict[str, Any]) -> int:
+        total_obj = response.get("hits", {}).get("total", 0)
+        if isinstance(total_obj, dict):
+            raw_value = total_obj.get("value", 0)
+        else:
+            raw_value = total_obj
+        try:
+            return max(int(raw_value), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _prioritize_in_tour_results(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        if not results:
+            return []
+        preferred: list[dict[str, Any]] = []
+        others: list[dict[str, Any]] = []
+        for item in results:
+            if self._is_in_tour(item.get("in_tour")):
+                preferred.append(item)
+            else:
+                others.append(item)
+        ranked = preferred + others
+        return ranked[: max(top_k, 1)]
+
     def _resolve_inventory_number(self, source: dict[str, Any]) -> str:
         return str(source.get("inventory_number") or source.get("inventory") or "").strip()
 
@@ -312,6 +364,7 @@ class OpenSearchGateway:
         payload: dict[str, Any] = {
             "score": score,
             "artifact_id": source.get("artifact_id"),
+            "in_tour": self._is_in_tour(source.get("in_tour")),
             "inventory_number": inventory_number or None,
             "title": source.get("title"),
             "museum_id": source.get("museum_id"),
@@ -378,6 +431,7 @@ class OpenSearchGateway:
             "id": image_id or None,
             "image_id": image_id or None,
             "artifact_id": str(source.get("artifact_id") or "").strip() or None,
+            "in_tour": self._is_in_tour(source.get("in_tour")),
             "museum_id": source.get("museum_id"),
             "local_path": local_path,
             "source_url": source_url,
@@ -402,8 +456,16 @@ class OpenSearchGateway:
         top_k: int,
         filters: dict[str, Any] | None,
         sort: dict[str, Any] | None,
+        from_offset: int = 0,
+        size_override: int | None = None,
     ) -> dict[str, Any]:
-        size = max(top_k, 1)
+        from_value = max(int(from_offset), 0)
+        size = (
+            max(int(size_override), 1)
+            if size_override is not None
+            else self._artifact_candidate_size(top_k)
+        )
+        knn_k = max((from_value + size) * 3, size)
         filter_clauses = self._build_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
@@ -418,7 +480,7 @@ class OpenSearchGateway:
                 "knn": {
                     "text_embedding": {
                         "vector": query_embedding,
-                        "k": max(size * 3, size),
+                        "k": knn_k,
                     }
                 }
             }
@@ -480,6 +542,7 @@ class OpenSearchGateway:
 
         body: dict[str, Any] = {
             "size": size,
+            "track_total_hits": True,
             "_source": [
                 "artifact_id",
                 "inventory_number",
@@ -499,6 +562,7 @@ class OpenSearchGateway:
                 "search_text",
                 "detail_type",
                 "detail_url",
+                "in_tour",
                 "image_ids",
                 "image_file_ids",
                 "image_paths",
@@ -512,6 +576,8 @@ class OpenSearchGateway:
                 "fields": {"search_text": {"number_of_fragments": 1, "fragment_size": 220}},
             },
         }
+        if from_value:
+            body["from"] = from_value
 
         if embedding_only:
             # Embeddings-only mode: avoid hybrid/BM25 entirely and run strict KNN + filters.
@@ -519,7 +585,7 @@ class OpenSearchGateway:
                 "knn": {
                     "text_embedding": {
                         "vector": query_embedding,
-                        "k": max(size * 3, size),
+                        "k": knn_k,
                     }
                 }
             }
@@ -544,6 +610,29 @@ class OpenSearchGateway:
         if len(text) <= max_chars:
             return text
         return f"{text[:max_chars].rstrip()}..."
+
+    def _artifact_results_from_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for hit in hits:
+            source = hit.get("_source", {}) or {}
+            highlight = hit.get("highlight", {}) or {}
+            highlight_search_text = highlight.get("search_text", [])
+            snippet = ""
+            if isinstance(highlight_search_text, list) and highlight_search_text:
+                snippet = self._truncate(highlight_search_text[0], max_chars=260)
+            elif source.get("description"):
+                snippet = self._truncate(source.get("description"), max_chars=260)
+            else:
+                snippet = self._truncate(source.get("search_text"), max_chars=260)
+
+            results.append(
+                self._artifact_payload_from_source(
+                    source=source,
+                    score=hit.get("_score"),
+                    snippet=snippet,
+                )
+            )
+        return results
 
     def _search_relevant_context_sync(
         self,
@@ -610,28 +699,63 @@ class OpenSearchGateway:
             top_1_hit=top_1_hit,
         )
         results: list[dict[str, Any]] = []
+        results = self._artifact_results_from_hits(hits)
 
-        for hit in hits:
-            source = hit.get("_source", {}) or {}
-            highlight = hit.get("highlight", {}) or {}
-            highlight_search_text = highlight.get("search_text", [])
-            snippet = ""
-            if isinstance(highlight_search_text, list) and highlight_search_text:
-                snippet = self._truncate(highlight_search_text[0], max_chars=260)
-            elif source.get("description"):
-                snippet = self._truncate(source.get("description"), max_chars=260)
-            else:
-                snippet = self._truncate(source.get("search_text"), max_chars=260)
+        return self._prioritize_in_tour_results(results, top_k=top_k)
 
-            results.append(
-                self._artifact_payload_from_source(
-                    source=source,
-                    score=hit.get("_score"),
-                    snippet=snippet,
-                )
-            )
+    def _search_relevant_context_page_sync(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        query_text: str,
+        lexical_query: str | None,
+        query_embedding: list[float],
+        from_offset: int,
+        page_size: int,
+        filters: dict[str, Any] | None,
+        sort: dict[str, Any] | None,
+    ) -> OpenSearchRetrievalPage:
+        client = self._ensure_client()
+        body = self._build_query_body(
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            query_text=query_text,
+            lexical_query=lexical_query,
+            query_embedding=query_embedding,
+            top_k=page_size,
+            filters=filters,
+            sort=sort,
+            from_offset=from_offset,
+            size_override=page_size,
+        )
+        self._log(logging.INFO, "opensearch.retrieve.body", body=body)
 
-        return results
+        search_kwargs: dict[str, Any] = {
+            "index": self.settings.OPENSEARCH_INDEX_ARTIFACT,
+            "body": body,
+        }
+        if not self.settings.CHAT_RETRIEVAL_EMBEDDING_ONLY:
+            search_kwargs["search_pipeline"] = "nlp-search-pipeline"
+
+        response = client.search(**search_kwargs)
+        hits = response.get("hits", {}).get("hits", [])
+        total_value = self._total_hits_value(response)
+        self._log(
+            logging.INFO,
+            "opensearch.retrieve.response",
+            index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            took_ms=response.get("took"),
+            timed_out=response.get("timed_out"),
+            hits_returned=len(hits),
+            hits_total=total_value,
+            from_offset=from_offset,
+            page_size=page_size,
+        )
+        results = self._artifact_results_from_hits(hits)
+        return OpenSearchRetrievalPage(results=results, total=total_value)
 
     async def search_relevant_context(
         self,
@@ -657,6 +781,44 @@ class OpenSearchGateway:
             sort=sort,
         )
 
+    async def search_relevant_context_page(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        query_text: str,
+        lexical_query: str | None = None,
+        query_embedding: list[float],
+        from_offset: int,
+        page_size: int,
+        filters: dict[str, Any] | None = None,
+        sort: dict[str, Any] | None = None,
+    ) -> OpenSearchRetrievalPage:
+        return await asyncio.to_thread(
+            self._search_relevant_context_page_sync,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            query_text=query_text,
+            lexical_query=lexical_query,
+            query_embedding=query_embedding,
+            from_offset=from_offset,
+            page_size=page_size,
+            filters=filters,
+            sort=sort,
+        )
+
+    def _image_results_from_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for hit in hits:
+            source = hit.get("_source", {}) or {}
+            artifact_id = str(source.get("artifact_id") or "").strip()
+            if not artifact_id:
+                continue
+            payload = self._image_payload_from_source(score=hit.get("_score"), source=source)
+            if payload.get("artifact_id"):
+                results.append(payload)
+        return results
+
     def _search_similar_images_sync(
         self,
         *,
@@ -666,7 +828,8 @@ class OpenSearchGateway:
         top_k: int,
     ) -> list[dict[str, Any]]:
         client = self._ensure_client()
-        size = max(top_k, 1)
+        requested_top_k = max(top_k, 1)
+        size = self._artifact_candidate_size(requested_top_k)
         in_tour_boost_clause = self._build_in_tour_boost_clause()
         bool_query: dict[str, Any] = {
             "filter": self._build_image_filter_clauses(
@@ -699,6 +862,7 @@ class OpenSearchGateway:
                 "inventory_number",
                 "caption",
                 "alt_text",
+                "in_tour",
             ],
             "query": {"bool": bool_query},
         }
@@ -736,16 +900,83 @@ class OpenSearchGateway:
             top_1_hit=top_1_hit,
         )
 
-        results: list[dict[str, Any]] = []
-        for hit in hits:
-            source = hit.get("_source", {}) or {}
-            artifact_id = str(source.get("artifact_id") or "").strip()
-            if not artifact_id:
-                continue
-            payload = self._image_payload_from_source(score=hit.get("_score"), source=source)
-            if payload.get("artifact_id"):
-                results.append(payload)
-        return results
+        results = self._image_results_from_hits(hits)
+        return self._prioritize_in_tour_results(results, top_k=requested_top_k)
+
+    def _search_similar_images_page_sync(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        image_embedding: list[float],
+        from_offset: int,
+        page_size: int,
+    ) -> OpenSearchRetrievalPage:
+        client = self._ensure_client()
+        from_value = max(int(from_offset), 0)
+        size = max(int(page_size), 1)
+        in_tour_boost_clause = self._build_in_tour_boost_clause()
+        bool_query: dict[str, Any] = {
+            "filter": self._build_image_filter_clauses(
+                museum_slug=museum_slug,
+                museum_id=museum_id,
+            ),
+            "must": [
+                {
+                    "knn": {
+                        "visual_embedding": {
+                            "vector": image_embedding,
+                            "k": max((from_value + size) * 3, size),
+                        }
+                    }
+                }
+            ],
+        }
+        if in_tour_boost_clause:
+            bool_query["should"] = [in_tour_boost_clause]
+
+        body: dict[str, Any] = {
+            "from": from_value,
+            "size": size,
+            "track_total_hits": True,
+            "_source": [
+                "image_id",
+                "artifact_id",
+                "museum_id",
+                "local_path",
+                "source_url",
+                "artifact_title",
+                "inventory_number",
+                "caption",
+                "alt_text",
+                "in_tour",
+            ],
+            "query": {"bool": bool_query},
+        }
+        self._log(logging.INFO, "opensearch.image_retrieve.body", body=body)
+        response = client.search(
+            index=self.settings.OPENSEARCH_INDEX_IMAGE,
+            body=body,
+        )
+        hits = response.get("hits", {}).get("hits", [])
+        total_value = self._total_hits_value(response)
+        self._log(
+            logging.INFO,
+            "opensearch.image_retrieve.response",
+            index=self.settings.OPENSEARCH_INDEX_IMAGE,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            took_ms=response.get("took"),
+            timed_out=response.get("timed_out"),
+            hits_returned=len(hits),
+            hits_total=total_value,
+            from_offset=from_value,
+            page_size=size,
+        )
+        return OpenSearchRetrievalPage(
+            results=self._image_results_from_hits(hits),
+            total=total_value,
+        )
 
     def _search_similar_images_multi_sync(
         self,
@@ -760,7 +991,8 @@ class OpenSearchGateway:
             return []
 
         client = self._ensure_client()
-        size = max(top_k, 1)
+        requested_top_k = max(top_k, 1)
+        size = self._artifact_candidate_size(requested_top_k)
         filter_clauses = self._build_image_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
@@ -800,6 +1032,7 @@ class OpenSearchGateway:
                 "inventory_number",
                 "caption",
                 "alt_text",
+                "in_tour",
             ],
             "query": {"bool": bool_query},
         }
@@ -837,16 +1070,94 @@ class OpenSearchGateway:
             top_1_hit=top_1_hit,
         )
 
-        results: list[dict[str, Any]] = []
-        for hit in hits:
-            source = hit.get("_source", {}) or {}
-            artifact_id = str(source.get("artifact_id") or "").strip()
-            if not artifact_id:
-                continue
-            payload = self._image_payload_from_source(score=hit.get("_score"), source=source)
-            if payload.get("artifact_id"):
-                results.append(payload)
-        return results
+        results = self._image_results_from_hits(hits)
+        return self._prioritize_in_tour_results(results, top_k=requested_top_k)
+
+    def _search_similar_images_multi_page_sync(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        image_embeddings: list[list[float]],
+        from_offset: int,
+        page_size: int,
+    ) -> OpenSearchRetrievalPage:
+        embeddings = [embedding for embedding in image_embeddings if embedding]
+        if not embeddings:
+            return OpenSearchRetrievalPage(results=[], total=0)
+
+        client = self._ensure_client()
+        from_value = max(int(from_offset), 0)
+        size = max(int(page_size), 1)
+        filter_clauses = self._build_image_filter_clauses(
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+        )
+        in_tour_boost_clause = self._build_in_tour_boost_clause()
+
+        should_clauses: list[dict[str, Any]] = []
+        for embedding in embeddings:
+            should_clauses.append(
+                {
+                    "knn": {
+                        "visual_embedding": {
+                            "vector": embedding,
+                            "k": max(30, (from_value + size) * 3),
+                            "boost": 3.0,
+                        }
+                    }
+                }
+            )
+
+        bool_query: dict[str, Any] = {
+            "filter": filter_clauses,
+            "must": [{"bool": {"should": should_clauses, "minimum_should_match": 1}}],
+        }
+        if in_tour_boost_clause:
+            bool_query["should"] = [in_tour_boost_clause]
+
+        body: dict[str, Any] = {
+            "from": from_value,
+            "size": size,
+            "track_total_hits": True,
+            "_source": [
+                "image_id",
+                "artifact_id",
+                "museum_id",
+                "local_path",
+                "source_url",
+                "artifact_title",
+                "inventory_number",
+                "caption",
+                "alt_text",
+                "in_tour",
+            ],
+            "query": {"bool": bool_query},
+        }
+        self._log(logging.INFO, "opensearch.image_retrieve.body", body=body)
+        response = client.search(
+            index=self.settings.OPENSEARCH_INDEX_IMAGE,
+            body=body,
+        )
+        hits = response.get("hits", {}).get("hits", [])
+        total_value = self._total_hits_value(response)
+        self._log(
+            logging.INFO,
+            "opensearch.image_retrieve.response",
+            index=self.settings.OPENSEARCH_INDEX_IMAGE,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            took_ms=response.get("took"),
+            timed_out=response.get("timed_out"),
+            hits_returned=len(hits),
+            hits_total=total_value,
+            from_offset=from_value,
+            page_size=size,
+        )
+        return OpenSearchRetrievalPage(
+            results=self._image_results_from_hits(hits),
+            total=total_value,
+        )
 
     async def search_similar_images(
         self,
@@ -864,6 +1175,24 @@ class OpenSearchGateway:
             top_k=top_k,
         )
 
+    async def search_similar_images_page(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        image_embedding: list[float],
+        from_offset: int,
+        page_size: int,
+    ) -> OpenSearchRetrievalPage:
+        return await asyncio.to_thread(
+            self._search_similar_images_page_sync,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            image_embedding=image_embedding,
+            from_offset=from_offset,
+            page_size=page_size,
+        )
+
     async def search_similar_images_multi(
         self,
         *,
@@ -878,6 +1207,24 @@ class OpenSearchGateway:
             museum_id=museum_id,
             image_embeddings=image_embeddings,
             top_k=top_k,
+        )
+
+    async def search_similar_images_multi_page(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        image_embeddings: list[list[float]],
+        from_offset: int,
+        page_size: int,
+    ) -> OpenSearchRetrievalPage:
+        return await asyncio.to_thread(
+            self._search_similar_images_multi_page_sync,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            image_embeddings=image_embeddings,
+            from_offset=from_offset,
+            page_size=page_size,
         )
 
     def _fetch_images_by_artifact_ids_sync(
@@ -932,6 +1279,7 @@ class OpenSearchGateway:
                 "inventory_number",
                 "caption",
                 "alt_text",
+                "in_tour",
             ],
             "query": {
                 "bool": {

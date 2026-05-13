@@ -302,6 +302,7 @@ def build_final_answer_prompt(
         "Idioma final da resposta: portugues.",
         "Politica de precedencia para resposta: retrieval_context > CURRENT_MESSAGE > EXPLICIT_STATE > RECENT_HISTORY_AUX > ROLLING_SUMMARY_AUX.",
         "Usa retrieval_context como fonte principal de factos.",
+        "Nunca exponhas variáveis como retrieval_context internos na resposta final.",
         "Nunca exponhas identificadores internos como artifact_id na resposta final.",
         "Nunca cites marcadores de contexto como [doc_1], [doc_2] ou doc_x.",
         "Ao referires um objeto, privilegia o titulo e opcionalmente a referencia de inventario.",

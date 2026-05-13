@@ -1,5 +1,21 @@
 import unittest
 from types import SimpleNamespace
+import sys
+import types
+
+if "pydantic_settings" not in sys.modules:
+    pydantic_settings_stub = types.ModuleType("pydantic_settings")
+
+    class _BaseSettings:
+        def __init__(self, **_: object) -> None:
+            pass
+
+    class _SettingsConfigDict(dict):
+        pass
+
+    pydantic_settings_stub.BaseSettings = _BaseSettings
+    pydantic_settings_stub.SettingsConfigDict = _SettingsConfigDict
+    sys.modules["pydantic_settings"] = pydantic_settings_stub
 
 from app.services.opensearch_client import OpenSearchGateway
 
@@ -23,6 +39,91 @@ class _DummyClient:
     def search(self, *, index: str, body: dict[str, object]) -> dict[str, object]:
         self.last_search = {"index": index, "body": body}
         return {"hits": {"hits": [], "total": {"value": 0}}, "took": 1, "timed_out": False}
+
+
+class _SearchDummyClient:
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, object] | None = None
+
+    def search(self, **kwargs: object) -> dict[str, object]:
+        self.last_kwargs = dict(kwargs)
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 4.2,
+                        "_source": {
+                            "artifact_id": "artifact_out_1",
+                            "inventory_number": "100",
+                            "title": "Vestido Fora do Percurso",
+                            "museum_id": "museum_1",
+                            "category": "Vestuário",
+                            "description": "Vestido de criança.",
+                            "search_text": "vestido crianca",
+                            "image_id": "img_out_1",
+                            "artifact_title": "Vestido Fora do Percurso",
+                            "caption": "caption out",
+                            "alt_text": "alt out",
+                            "in_tour": False,
+                        },
+                    },
+                    {
+                        "_score": 3.1,
+                        "_source": {
+                            "artifact_id": "artifact_in_1",
+                            "inventory_number": "101",
+                            "title": "Vestido em Percurso",
+                            "museum_id": "museum_1",
+                            "category": "Vestuário",
+                            "description": "Vestido de criança no percurso.",
+                            "search_text": "vestido crianca percurso",
+                            "image_id": "img_in_1",
+                            "artifact_title": "Vestido em Percurso",
+                            "caption": "caption in",
+                            "alt_text": "alt in",
+                            "in_tour": True,
+                        },
+                    },
+                ],
+                "total": {"value": 2},
+            },
+            "took": 2,
+            "timed_out": False,
+        }
+
+
+class _PagedSearchDummyClient:
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, object] | None = None
+
+    def search(self, **kwargs: object) -> dict[str, object]:
+        self.last_kwargs = dict(kwargs)
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 2.4,
+                        "_source": {
+                            "artifact_id": "artifact_page_1",
+                            "inventory_number": "200",
+                            "title": "Resultado Paginado",
+                            "museum_id": "museum_1",
+                            "category": "VestuÃ¡rio",
+                            "description": "Resultado vindo da pagina OpenSearch.",
+                            "search_text": "resultado paginado",
+                            "image_id": "img_page_1",
+                            "artifact_title": "Resultado Paginado",
+                            "caption": "caption page",
+                            "alt_text": "alt page",
+                            "in_tour": True,
+                        },
+                    }
+                ],
+                "total": {"value": 23},
+            },
+            "took": 3,
+            "timed_out": False,
+        }
 
 
 class OpenSearchFieldMappingTests(unittest.TestCase):
@@ -134,6 +235,130 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertEqual(bool_query["filter"], [{"term": {"museum_id": "8"}}])
         should = bool_query["should"]
         self.assertIn({"terms": {"inventory_number": ["967"]}}, should)
+
+    def test_text_retrieval_prioritizes_in_tour_results(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _SearchDummyClient()
+        gateway._client = dummy
+
+        results = gateway._search_relevant_context_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="vestidos crianca",
+            lexical_query="vestidos crianca",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=2,
+            filters=None,
+            sort=None,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["artifact_id"], "artifact_in_1")
+        self.assertIs(results[0]["in_tour"], True)
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertGreaterEqual(body["size"], 2)
+        self.assertIn("in_tour", body["_source"])
+
+    def test_text_retrieval_page_uses_opensearch_from_size_and_total(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        page = gateway._search_relevant_context_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="vestidos crianca",
+            lexical_query="vestidos crianca",
+            query_embedding=[0.1, 0.2, 0.3],
+            from_offset=10,
+            page_size=5,
+            filters=None,
+            sort=None,
+        )
+
+        self.assertEqual(page.total, 23)
+        self.assertEqual(page.results[0]["artifact_id"], "artifact_page_1")
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["from"], 10)
+        self.assertEqual(body["size"], 5)
+        self.assertTrue(body["track_total_hits"])
+        queries = body["query"]["hybrid"]["queries"]
+        knn_query = next(
+            q["bool"]["must"][0]["knn"]
+            for q in queries
+            if "bool" in q and "knn" in q["bool"]["must"][0]
+        )
+        self.assertGreaterEqual(knn_query["text_embedding"]["k"], 15)
+
+    def test_image_retrieval_prioritizes_in_tour_results(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _SearchDummyClient()
+        gateway._client = dummy
+
+        results = gateway._search_similar_images_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            image_embedding=[0.1, 0.2, 0.3],
+            top_k=2,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["artifact_id"], "artifact_in_1")
+        self.assertIs(results[0]["in_tour"], True)
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertGreaterEqual(body["size"], 2)
+        self.assertIn("in_tour", body["_source"])
+
+    def test_image_retrieval_page_uses_opensearch_from_size_and_total(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        page = gateway._search_similar_images_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            image_embedding=[0.1, 0.2, 0.3],
+            from_offset=6,
+            page_size=4,
+        )
+
+        self.assertEqual(page.total, 23)
+        self.assertEqual(page.results[0]["artifact_id"], "artifact_page_1")
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["from"], 6)
+        self.assertEqual(body["size"], 4)
+        self.assertTrue(body["track_total_hits"])
+        knn_query = body["query"]["bool"]["must"][0]["knn"]
+        self.assertGreaterEqual(knn_query["visual_embedding"]["k"], 10)
+
+    def test_multiview_retrieval_prioritizes_in_tour_results(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _SearchDummyClient()
+        gateway._client = dummy
+
+        results = gateway._search_similar_images_multi_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            image_embeddings=[[0.1, 0.2, 0.3], [0.2, 0.3, 0.4]],
+            top_k=2,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0]["artifact_id"], "artifact_in_1")
+        self.assertIs(results[0]["in_tour"], True)
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertGreaterEqual(body["size"], 2)
+        self.assertIn("in_tour", body["_source"])
 
 
 if __name__ == "__main__":
