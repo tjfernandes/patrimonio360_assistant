@@ -1,7 +1,13 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactNode, SyntheticEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { resolveEmbedLanguage, t } from '../i18n'
-import { regenerateAssistantMessage, sendChatMessage, warmChatSession } from '../services/chatApi'
+import {
+  fetchChatResultsPage,
+  regenerateAssistantMessage,
+  sendChatMessage,
+  warmChatSession,
+} from '../services/chatApi'
 import type {
   ChatArtifactImage,
   ChatArtifactResult,
@@ -24,6 +30,8 @@ interface TourChatWidgetProps {
 }
 
 const DEFAULT_PANEL_SIZE = { width: 650, height: 800 }
+const CHAT_PANEL_CLOSE_ANIMATION_MS = 300
+const ARTIFACT_MODAL_CLOSE_ANIMATION_MS = 260
 const SUPPORTED_MODEL_EXTENSIONS = new Set(['glb', 'gltf', 'obj'])
 const MAX_IMAGE_FILE_SIZE_MB = 40
 const MAX_MODEL_FILE_SIZE_MB = 400
@@ -141,6 +149,7 @@ function TourChatWidget({
 }: TourChatWidgetProps) {
   const [language, setLanguage] = useState<ChatLanguage>(resolveEmbedLanguage(initialLanguage))
   const [isOpen, setIsOpen] = useState(false)
+  const [isChatClosing, setIsChatClosing] = useState(false)
   const [draft, setDraft] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
@@ -156,11 +165,15 @@ function TourChatWidget({
   const [statusMessages, setStatusMessages] = useState<string[]>([])
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
+  const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
+  const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([
     buildStarterMessage(),
   ])
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const chatCloseTimerRef = useRef<number | null>(null)
+  const artifactModalCloseTimerRef = useRef<number | null>(null)
   const objectUrlsRef = useRef<string[]>([])
   const dragCounterRef = useRef(0)
   const normalizedBackendBaseUrl = normalizeBaseUrl(backendBaseUrl)
@@ -172,6 +185,82 @@ function TourChatWidget({
 
   const stripStarterNotice = (items: ChatMessage[]) =>
     items.filter((item) => !item.isCenteredNotice)
+
+  const openChat = () => {
+    if (chatCloseTimerRef.current !== null) {
+      window.clearTimeout(chatCloseTimerRef.current)
+      chatCloseTimerRef.current = null
+    }
+    setIsChatClosing(false)
+    setIsOpen(true)
+  }
+
+  const closeChat = () => {
+    if (isChatClosing) {
+      return
+    }
+
+    setIsChatClosing(true)
+    if (chatCloseTimerRef.current !== null) {
+      window.clearTimeout(chatCloseTimerRef.current)
+    }
+    chatCloseTimerRef.current = window.setTimeout(() => {
+      setIsOpen(false)
+      setIsChatClosing(false)
+      chatCloseTimerRef.current = null
+    }, CHAT_PANEL_CLOSE_ANIMATION_MS)
+  }
+
+  const openArtifactModal = (artifact: ChatArtifactResult) => {
+    if (artifactModalCloseTimerRef.current !== null) {
+      window.clearTimeout(artifactModalCloseTimerRef.current)
+      artifactModalCloseTimerRef.current = null
+    }
+    setIsArtifactModalClosing(false)
+    setSelectedArtifactResult(artifact)
+  }
+
+  const closeArtifactModal = useCallback(() => {
+    if (!selectedArtifactResult || isArtifactModalClosing) {
+      return
+    }
+
+    setIsArtifactModalClosing(true)
+    if (artifactModalCloseTimerRef.current !== null) {
+      window.clearTimeout(artifactModalCloseTimerRef.current)
+    }
+    artifactModalCloseTimerRef.current = window.setTimeout(() => {
+      setSelectedArtifactResult(null)
+      setIsArtifactModalClosing(false)
+      artifactModalCloseTimerRef.current = null
+    }, ARTIFACT_MODAL_CLOSE_ANIMATION_MS)
+  }, [isArtifactModalClosing, selectedArtifactResult])
+
+  const mergeUniqueByKey = <T,>(
+    currentValues: T[] | undefined,
+    nextValues: T[] | undefined,
+    getKey: (item: T) => string,
+  ) => {
+    const merged: T[] = []
+    const seen = new Set<string>()
+    for (const item of currentValues || []) {
+      const key = getKey(item).trim()
+      if (!key || seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      merged.push(item)
+    }
+    for (const item of nextValues || []) {
+      const key = getKey(item).trim()
+      if (!key || seen.has(key)) {
+        continue
+      }
+      seen.add(key)
+      merged.push(item)
+    }
+    return merged
+  }
 
   const createObjectPreviewUrl = (file: File) => {
     const previewUrl = URL.createObjectURL(file)
@@ -232,6 +321,11 @@ function TourChatWidget({
     clearSelectedUpload()
     setIsAssistantLoading(false)
     setStatusMessages([])
+    if (artifactModalCloseTimerRef.current !== null) {
+      window.clearTimeout(artifactModalCloseTimerRef.current)
+      artifactModalCloseTimerRef.current = null
+    }
+    setIsArtifactModalClosing(false)
     setSelectedArtifactResult(null)
     setMessages([buildStarterMessage()])
   }
@@ -249,7 +343,36 @@ function TourChatWidget({
   }, [initialLanguage])
 
   useEffect(() => {
+    if (typeof document === 'undefined') {
+      return
+    }
+
+    const resolvePortalRoot = () => {
+      const fullscreenElement = document.fullscreenElement
+      if (fullscreenElement instanceof HTMLElement) {
+        setPortalRoot(fullscreenElement)
+        return
+      }
+      setPortalRoot(document.body)
+    }
+
+    resolvePortalRoot()
+    document.addEventListener('fullscreenchange', resolvePortalRoot)
     return () => {
+      document.removeEventListener('fullscreenchange', resolvePortalRoot)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (chatCloseTimerRef.current !== null) {
+        window.clearTimeout(chatCloseTimerRef.current)
+        chatCloseTimerRef.current = null
+      }
+      if (artifactModalCloseTimerRef.current !== null) {
+        window.clearTimeout(artifactModalCloseTimerRef.current)
+        artifactModalCloseTimerRef.current = null
+      }
       for (const objectUrl of objectUrlsRef.current) {
         URL.revokeObjectURL(objectUrl)
       }
@@ -281,7 +404,7 @@ function TourChatWidget({
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setSelectedArtifactResult(null)
+        closeArtifactModal()
       }
     }
 
@@ -289,7 +412,7 @@ function TourChatWidget({
     return () => {
       window.removeEventListener('keydown', onKeyDown)
     }
-  }, [selectedArtifactResult])
+  }, [closeArtifactModal, selectedArtifactResult])
 
   const handleSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -369,6 +492,12 @@ function TourChatWidget({
           imageMatches: chatResponse.imageMatches,
           artifactResults: chatResponse.artifactResults,
           navigationTargets: chatResponse.navigationTargets,
+          resultsPage: chatResponse.resultsPage,
+          resultsPageSize: chatResponse.resultsPageSize,
+          resultsTotal: chatResponse.resultsTotal,
+          resultsHasMore: chatResponse.resultsHasMore,
+          isLoadingMoreResults: false,
+          loadMoreResultsError: null,
         },
       ])
     } else if (chatResponse?.error) {
@@ -380,6 +509,13 @@ function TourChatWidget({
           text: `${tt('errorPrefix')}: ${chatResponse.error}`,
           imageMatches: chatResponse.imageMatches,
           artifactResults: chatResponse.artifactResults,
+          navigationTargets: chatResponse.navigationTargets,
+          resultsPage: chatResponse.resultsPage,
+          resultsPageSize: chatResponse.resultsPageSize,
+          resultsTotal: chatResponse.resultsTotal,
+          resultsHasMore: chatResponse.resultsHasMore,
+          isLoadingMoreResults: false,
+          loadMoreResultsError: null,
         },
       ])
     } else {
@@ -454,6 +590,12 @@ function TourChatWidget({
                 imageMatches: chatResponse.imageMatches,
                 artifactResults: chatResponse.artifactResults,
                 navigationTargets: chatResponse.navigationTargets,
+                resultsPage: chatResponse.resultsPage,
+                resultsPageSize: chatResponse.resultsPageSize,
+                resultsTotal: chatResponse.resultsTotal,
+                resultsHasMore: chatResponse.resultsHasMore,
+                isLoadingMoreResults: false,
+                loadMoreResultsError: null,
               }
             : message,
         ),
@@ -465,7 +607,15 @@ function TourChatWidget({
             ? {
                 ...message,
                 text: `${tt('errorPrefix')}: ${chatResponse.error}`,
-                navigationTargets: [],
+                imageMatches: chatResponse.imageMatches,
+                artifactResults: chatResponse.artifactResults,
+                navigationTargets: chatResponse.navigationTargets ?? [],
+                resultsPage: chatResponse.resultsPage,
+                resultsPageSize: chatResponse.resultsPageSize,
+                resultsTotal: chatResponse.resultsTotal,
+                resultsHasMore: chatResponse.resultsHasMore,
+                isLoadingMoreResults: false,
+                loadMoreResultsError: null,
               }
             : message,
         ),
@@ -475,6 +625,102 @@ function TourChatWidget({
     setIsAssistantLoading(false)
     setStatusMessages([])
     setIsSending(false)
+  }
+
+  const handleLoadMoreResults = async (messageId: string) => {
+    if (isSending || !conversationId) {
+      return
+    }
+    const targetMessage = messages.find((message) => message.id === messageId)
+    if (!targetMessage || !targetMessage.resultsHasMore || targetMessage.isLoadingMoreResults) {
+      return
+    }
+
+    const nextPage = Math.max(1, (targetMessage.resultsPage || 1) + 1)
+    const pageSize =
+      typeof targetMessage.resultsPageSize === 'number' && targetMessage.resultsPageSize > 0
+        ? targetMessage.resultsPageSize
+        : undefined
+
+    setMessages((previous) =>
+      previous.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              isLoadingMoreResults: true,
+              loadMoreResultsError: null,
+            }
+          : message,
+      ),
+    )
+
+    const resultsPage = await fetchChatResultsPage({
+      backendBaseUrl,
+      museumSlug,
+      museumId,
+      museumName,
+      language,
+      conversationId,
+      resultsPage: nextPage,
+      resultsPageSize: pageSize,
+    })
+
+    if (resultsPage?.conversationId) {
+      setConversationId(resultsPage.conversationId)
+    }
+
+    if (!resultsPage || resultsPage.error) {
+      const errorMessage = resultsPage?.error || tt('backendNoReply')
+      setMessages((previous) =>
+        previous.map((message) =>
+          message.id === messageId
+            ? {
+                ...message,
+                isLoadingMoreResults: false,
+                loadMoreResultsError: errorMessage,
+              }
+            : message,
+        ),
+      )
+      return
+    }
+
+    setMessages((previous) =>
+      previous.map((message) => {
+        if (message.id !== messageId) {
+          return message
+        }
+        return {
+          ...message,
+          artifactResults: mergeUniqueByKey(
+            message.artifactResults,
+            resultsPage.artifactResults,
+            (artifact) => artifact.artifactId,
+          ),
+          imageMatches: mergeUniqueByKey(
+            message.imageMatches,
+            resultsPage.imageMatches,
+            (match) =>
+              [
+                match.artifactId || '',
+                match.inventory || '',
+                match.originalImageName || '',
+              ].join('|'),
+          ),
+          navigationTargets: mergeUniqueByKey(
+            message.navigationTargets,
+            resultsPage.navigationTargets,
+            (target) => [target.overlayId, target.panoramaKey, target.inventoryId].join('|'),
+          ),
+          resultsPage: resultsPage.resultsPage,
+          resultsPageSize: resultsPage.resultsPageSize,
+          resultsTotal: resultsPage.resultsTotal,
+          resultsHasMore: resultsPage.resultsHasMore,
+          isLoadingMoreResults: false,
+          loadMoreResultsError: null,
+        }
+      }),
+    )
   }
 
   const handlePickImage = () => {
@@ -701,7 +947,7 @@ function TourChatWidget({
     }
 
     return (
-      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2`}>
         {imageMatches.map((match, index) => {
           const imageUrl = buildImageAssetUrl(normalizedBackendBaseUrl, match.originalImageName)
           const linkedArtifact = resolveArtifactResultForImageMatch(match, artifactResults)
@@ -758,7 +1004,12 @@ function TourChatWidget({
           return (
             <article
               key={`${match.originalImageName}-${index}`}
-              className="overflow-hidden rounded-xl border border-[#d9c0bc] bg-white/80"
+              className={`${isChatClosing ? 'p360-chat-result-card-exit' : 'p360-chat-result-card'} overflow-hidden rounded-xl border border-[#d9c0bc] bg-white/80`}
+              style={{
+                animationDelay: isChatClosing
+                  ? `${Math.min((imageMatches.length - index - 1) * 30, 180)}ms`
+                  : `${Math.min(index * 45, 240)}ms`,
+              }}
             >
               {imageUrl ? (
                 <button
@@ -775,7 +1026,7 @@ function TourChatWidget({
                       resolvedNavigationInventory: linkedTarget?.inventoryId,
                     })
                     if (linkedArtifact) {
-                      setSelectedArtifactResult(linkedArtifact)
+                      openArtifactModal(linkedArtifact)
                       return
                     }
                     setLightboxImage({
@@ -807,7 +1058,7 @@ function TourChatWidget({
                     type="button"
                     onClick={() => onNavigateToTarget?.(linkedTarget)}
                     disabled={!onNavigateToTarget}
-                  className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-[#cfb3ad] bg-[rgba(250,244,242,0.95)] px-2 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-[#18304a] bg-[#13283f] px-2 py-1 text-[11px] font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     {tt('viewInTour')}
                   </button>
@@ -840,7 +1091,7 @@ function TourChatWidget({
     }
 
     return (
-      <div className="mt-2 rounded-xl border border-[#dfcbc6] bg-white/75 p-2.5">
+      <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-2 rounded-xl border border-[#dfcbc6] bg-white/75 p-2.5`}>
         <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
           {tt('tourObjects')}
         </p>
@@ -851,7 +1102,12 @@ function TourChatWidget({
               type="button"
               onClick={() => onNavigateToTarget?.(target)}
               disabled={!onNavigateToTarget}
-              className="flex w-full items-center justify-between rounded-lg border border-[#cfb3ad] bg-[rgba(250,244,242,0.95)] px-2.5 py-1.5 text-left text-xs text-[#3c1d24] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+              className={`${isChatClosing ? 'p360-chat-result-card-exit' : 'p360-chat-result-card'} flex w-full items-center justify-between rounded-lg border border-[#18304a] bg-[#13283f] px-2.5 py-1.5 text-left text-xs text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60`}
+              style={{
+                animationDelay: isChatClosing
+                  ? `${Math.min((targetsToRender.length - index - 1) * 30, 180)}ms`
+                  : `${Math.min(index * 45, 240)}ms`,
+              }}
             >
               <span className="min-w-0 pr-2">
                 <span className="block truncate font-semibold">
@@ -859,10 +1115,10 @@ function TourChatWidget({
                   {target.title ? ` - ${target.title}` : ''}
                 </span>
                 {target.location ? (
-                  <span className="block truncate text-[11px] text-[#7e6669]">{target.location}</span>
+                  <span className="block truncate text-[11px] text-[#c9e6ff]">{target.location}</span>
                 ) : null}
               </span>
-              <span className="shrink-0 text-[11px] font-semibold text-[#6d0b1b]">{tt('viewInTour')}</span>
+              <span className="shrink-0 text-[11px] font-semibold text-[#e7f4ff]">{tt('viewInTour')}</span>
             </button>
           ))}
         </div>
@@ -874,8 +1130,8 @@ function TourChatWidget({
     return (
       <button
         type="button"
-        onClick={() => setIsOpen(true)}
-        className="absolute bottom-4 left-4 z-[600] inline-flex items-center gap-2 rounded-2xl border border-white/35 bg-[#3f0d18b8] px-4 py-2.5 text-sm font-semibold text-white shadow-[0_16px_40px_-22px_rgba(63,13,24,1)] transition-colors hover:bg-[#4f0814cc]"
+        onClick={openChat}
+        className="absolute bottom-4 left-4 z-[2] inline-flex max-w-[30px] items-center justify-center gap-3 rounded-4xl border border-[#5c0a17] bg-[#6d0b1b] px-6 py-3.5 text-base font-semibold text-white shadow-[0_18px_42px_-20px_rgba(63,13,24,1)] transition-colors hover:bg-[#4f0814] sm:min-w-[250px] sm:min-h-[48px] sm:px-6 sm:py-3.5 sm:text-lg sm:font-bold lg:px-8 lg:py-4 lg:text-xl"
       >
         <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
           <path
@@ -893,7 +1149,7 @@ function TourChatWidget({
 
   return (
     <div
-      className="absolute bottom-4 left-4 z-[600] flex flex-col overflow-hidden rounded-2xl border border-[#dac3be] bg-[rgba(250,245,242,0.95)] shadow-[0_18px_45px_-28px_rgba(35,14,20,1)] backdrop-blur-[1px]"
+      className={`${isChatClosing ? 'p360-chat-panel-exit' : 'p360-chat-panel-enter'} absolute bottom-4 left-4 z-[600] flex flex-col overflow-hidden rounded-2xl border border-[#dac3be] bg-[rgba(250,245,242,0.95)] shadow-[0_18px_45px_-28px_rgba(35,14,20,1)] backdrop-blur-[1px]`}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -938,7 +1194,7 @@ function TourChatWidget({
           </button>
           <button
             type="button"
-            onClick={() => setIsOpen(false)}
+            onClick={closeChat}
             className="rounded-lg border border-[#ccb1ab] bg-white/90 px-2.5 py-1 text-xs font-semibold text-[#5a2730] transition-colors hover:bg-white"
           >
             {tt('close')}
@@ -951,7 +1207,7 @@ function TourChatWidget({
           {messages.map((message) =>
             message.isCenteredNotice ? (
               <div key={message.id} className="flex min-h-[44vh] items-center justify-center px-4">
-                <div className="max-w-[460px] rounded-2xl border border-[#dec9c4] bg-white/70 px-6 py-5 text-center shadow-[0_20px_40px_-30px_rgba(40,14,20,0.75)]">
+                <div className="p360-chat-message-enter max-w-[460px] rounded-2xl border border-[#dec9c4] bg-white/70 px-6 py-5 text-center shadow-[0_20px_40px_-30px_rgba(40,14,20,0.75)]">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#7a4b54]">
                     {tt('welcome')}
                   </p>
@@ -960,7 +1216,7 @@ function TourChatWidget({
                 </div>
               </div>
             ) : message.role === 'assistant' ? (
-              <article key={message.id} className="mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
+              <article key={message.id} className="p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
                 <div className="mb-2 flex items-center gap-2">
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#6d0b1b]/12 text-[#6d0b1b]">
                     <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
@@ -980,6 +1236,21 @@ function TourChatWidget({
                   )}
                   {renderNavigationTargets(message.navigationTargets, message.imageMatches)}
                 </div>
+                {message.id === latestAssistantMessageId && message.resultsHasMore ? (
+                  <div className="p360-chat-results-enter mt-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleLoadMoreResults(message.id)}
+                      disabled={isSending || !conversationId || message.isLoadingMoreResults}
+                      className="inline-flex items-center justify-center rounded-md border border-[#cfb3ad] bg-[rgba(250,244,242,0.95)] px-2.5 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {message.isLoadingMoreResults ? tt('loadingMoreResults') : tt('viewMoreResults')}
+                    </button>
+                    {message.loadMoreResultsError ? (
+                      <p className="mt-1 text-[11px] text-[#8a1f2e]">{message.loadMoreResultsError}</p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="-ml-2 mt-1 flex items-center gap-1.5">
                   <button
                     type="button"
@@ -1021,7 +1292,7 @@ function TourChatWidget({
             ) : (
               <div
                 key={message.id}
-                className="ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
+                className="p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
               >
                 <p>{message.text}</p>
                 {message.uploadedImageUrl ? (
@@ -1050,7 +1321,7 @@ function TourChatWidget({
                     {message.uploadedModelUrl ? (
                       <Suspense
                         fallback={
-                          <div className="h-48 w-full">
+                          <div className="h-72 w-full">
                             <ModelViewerLoadingFallback label={tt('modelViewerLoading')} />
                           </div>
                         }
@@ -1061,7 +1332,7 @@ function TourChatWidget({
                           modelFormat={message.uploadedModelFormat}
                           loadingLabel={tt('modelViewerLoading')}
                           errorLabel={tt('modelViewerError')}
-                          className="h-48 w-full"
+                          className="h-72 w-full"
                         />
                       </Suspense>
                     ) : (
@@ -1092,7 +1363,7 @@ function TourChatWidget({
             ),
           )}
           {isAssistantLoading ? (
-            <article className="mr-auto max-w-[94%] rounded-xl border border-[#ddc6c2] bg-white/70 px-3 py-2 text-[#341d22]">
+            <article className="p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] rounded-xl border border-[#ddc6c2] bg-white/70 px-3 py-2 text-[#341d22]">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-[#6d0b1b]/25 border-t-[#6d0b1b]" />
                 <span className="text-xs font-semibold text-[#5a2730]">
@@ -1257,163 +1528,179 @@ function TourChatWidget({
         </div>
       ) : null}
 
-      {selectedArtifactResult ? (
-        <div
-          className="absolute inset-0 z-[1190] flex items-center justify-center bg-[rgba(18,8,12,0.72)] p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label={tt('artifactDetailsAria')}
-          onClick={() => setSelectedArtifactResult(null)}
-        >
-          <article
-            className="flex max-h-[96%] w-full max-w-[900px] flex-col overflow-hidden rounded-2xl border border-[#d8c4be] bg-[rgba(252,246,244,0.98)] shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-start justify-between border-b border-[#e3ceca] px-4 py-3">
-              <div className="min-w-0">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
-                  {tt('artifactDetails')}
-                </p>
-                <h3 className="truncate text-base font-semibold text-[#2f1c20]">
-                  {selectedArtifactResult.title || selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
-                </h3>
-                <p className="truncate text-xs text-[#6b5b5f]">
-                  {selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
-                </p>
-              </div>
+      {selectedArtifactResult && portalRoot
+        ? createPortal(
+            <div
+              className={`${isArtifactModalClosing ? 'p360-chat-modal-backdrop-exit' : 'p360-chat-modal-backdrop-enter'} fixed inset-0 z-[1800] flex items-center justify-center bg-[rgba(18,8,12,0.72)] p-4 md:p-6`}
+              role="dialog"
+              aria-modal="true"
+              aria-label={tt('artifactDetailsAria')}
+              onClick={closeArtifactModal}
+            >
+              <article
+                className={`${isArtifactModalClosing ? 'p360-chat-modal-card-exit' : 'p360-chat-modal-card-enter'} flex max-h-[92vh] w-[94vw] max-w-[1280px] flex-col overflow-hidden rounded-2xl border border-[#d8c4be] bg-[rgba(252,246,244,0.98)] shadow-2xl`}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-start justify-between border-b border-[#e3ceca] px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
+                      {tt('artifactDetails')}
+                    </p>
+                    <h3 className="truncate text-lg font-semibold text-[#2f1c20] lg:text-2xl">
+                      {selectedArtifactResult.title || selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
+                    </h3>
+                    <p className="truncate text-sm text-[#6b5b5f] lg:text-base">
+                      {selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeArtifactModal}
+                    className="rounded-lg border border-[#ccb1ab] bg-white/90 px-3 py-1.5 text-sm font-semibold text-[#5a2730] transition-colors hover:bg-white lg:text-base"
+                  >
+                    {tt('close')}
+                  </button>
+                </div>
+
+                <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 lg:grid-cols-[1.3fr_1fr]">
+                  <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
+                    {([
+                      //['artifactId', selectedArtifactResult.artifactId],
+                      ['inventory', selectedArtifactResult.inventoryNumber],
+                      ['museum', selectedArtifactResult.museum],
+                      ['category', selectedArtifactResult.category],
+                      ['superCategory', selectedArtifactResult.superCategory],
+                      ['creator', selectedArtifactResult.creator],
+                      ['dateOrPeriod', selectedArtifactResult.dateOrPeriod],
+                      ['supportOrMaterial', selectedArtifactResult.supportOrMaterial],
+                      ['technique', selectedArtifactResult.technique],
+                      ['productionCenter', selectedArtifactResult.productionCenter],
+                      ['incorporation', selectedArtifactResult.incorporation],
+                      ['detailType', selectedArtifactResult.detailType],
+                    ] as Array<[string, string | undefined]>)
+                      .filter(([, value]) => Boolean(value))
+                      .map(([labelKey, value]) => (
+                        <div key={labelKey} className="grid grid-cols-[150px_1fr] gap-2 text-sm lg:grid-cols-[190px_1fr] lg:text-base">
+                          <span className="font-semibold text-[#5a2730]">{tt(`artifactField.${labelKey}`)}:</span>
+                          <span className="text-[#2f1c20]">{value}</span>
+                        </div>
+                      ))}
+
+                    {selectedArtifactResult.detailUrl ? (
+                      <a
+                        href={selectedArtifactResult.detailUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center rounded-md border border-[#cfb3ad] bg-white px-3 py-1.5 text-sm font-semibold text-[#6d0b1b] transition-colors hover:bg-[rgba(250,244,242,0.95)] lg:text-base"
+                      >
+                        {tt('openDetailUrl')}
+                      </a>
+                    ) : null}
+
+                    {selectedArtifactResult.description ? (
+                      <div className="mt-2 rounded-lg border border-[#ebdcda] bg-[rgba(255,255,255,0.85)] p-2.5">
+                        <p className="mb-1 text-xs font-bold uppercase tracking-[0.1em] text-[#6d0b1b] lg:text-sm">
+                          {tt('artifactDescription')}
+                        </p>
+                        <p className="text-sm leading-relaxed text-[#2f1c20] lg:text-base">{selectedArtifactResult.description}</p>
+                      </div>
+                    ) : null}
+
+                    {selectedArtifactResult.originHistory ? (
+                      <div className="mt-2 rounded-lg border border-[#ebdcda] bg-[rgba(255,255,255,0.85)] p-2.5">
+                        <p className="mb-1 text-xs font-bold uppercase tracking-[0.1em] text-[#6d0b1b] lg:text-sm">
+                          {tt('artifactOriginHistory')}
+                        </p>
+                        <p className="text-sm leading-relaxed text-[#2f1c20] lg:text-base">
+                          {selectedArtifactResult.originHistory}
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
+                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
+                      {tt('artifactImages')} ({selectedArtifactResult.images.length})
+                    </p>
+                    {selectedArtifactResult.images.length === 0 ? (
+                      <p className="text-sm text-[#6b5b5f] lg:text-base">{tt('artifactNoImages')}</p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        {selectedArtifactResult.images.map((image, index) => {
+                          const imageUrl = resolveArtifactImageUrl(image)
+                          const label =
+                            image.altText ||
+                            image.caption ||
+                            image.originalImageName ||
+                            `${tt('imageLabel')} ${index + 1}`
+                          return (
+                            <article
+                              key={`${image.imageId || image.localPath || image.sourceUrl || index}`}
+                              className="overflow-hidden rounded-lg border border-[#ddc8c4] bg-white"
+                            >
+                              {imageUrl ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setLightboxImage({ src: imageUrl, alt: label })}
+                                  className="block w-full cursor-zoom-in"
+                                >
+                                  <img
+                                    src={imageUrl}
+                                    alt={label}
+                                    className="h-24 w-full object-cover"
+                                    loading="lazy"
+                                  />
+                                </button>
+                              ) : (
+                                <div className="flex h-24 items-center justify-center bg-[#f3e9e6] text-[11px] text-[#7b686c]">
+                                  {tt('imageUnavailable')}
+                                </div>
+                              )}
+                              {/* <p className="truncate px-2 py-1 text-[10px] text-[#6b5b5f]">
+                                {image.localPath || image.originalImageName || image.imageId || image.sourceUrl}
+                              </p> */}
+                            </article>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </article>
+            </div>,
+            portalRoot,
+          )
+        : null}
+
+      {lightboxImage && portalRoot
+        ? createPortal(
+            <div
+              className="p360-chat-modal-backdrop-enter fixed inset-0 z-[1900] flex items-center justify-center bg-[rgba(18,8,12,0.78)] p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-label={tt('lightboxAria')}
+              onClick={() => setLightboxImage(null)}
+            >
               <button
                 type="button"
-                onClick={() => setSelectedArtifactResult(null)}
-                className="rounded-lg border border-[#ccb1ab] bg-white/90 px-2.5 py-1 text-xs font-semibold text-[#5a2730] transition-colors hover:bg-white"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setLightboxImage(null)
+                }}
+                className="absolute right-4 top-4 rounded-lg border border-white/30 bg-black/40 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-black/60"
               >
                 {tt('close')}
               </button>
-            </div>
-
-            <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 lg:grid-cols-[1.3fr_1fr]">
-              <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
-                {([
-                  //['artifactId', selectedArtifactResult.artifactId],
-                  ['inventory', selectedArtifactResult.inventoryNumber],
-                  ['museum', selectedArtifactResult.museum],
-                  ['category', selectedArtifactResult.category],
-                  ['superCategory', selectedArtifactResult.superCategory],
-                  ['creator', selectedArtifactResult.creator],
-                  ['dateOrPeriod', selectedArtifactResult.dateOrPeriod],
-                  ['supportOrMaterial', selectedArtifactResult.supportOrMaterial],
-                  ['technique', selectedArtifactResult.technique],
-                  ['originHistory', selectedArtifactResult.originHistory],
-                  ['productionCenter', selectedArtifactResult.productionCenter],
-                  ['incorporation', selectedArtifactResult.incorporation],
-                  ['detailType', selectedArtifactResult.detailType],
-                ] as Array<[string, string | undefined]>)
-                  .filter(([, value]) => Boolean(value))
-                  .map(([labelKey, value]) => (
-                    <div key={labelKey} className="grid grid-cols-[130px_1fr] gap-2 text-xs">
-                      <span className="font-semibold text-[#5a2730]">{tt(`artifactField.${labelKey}`)}:</span>
-                      <span className="text-[#2f1c20]">{value}</span>
-                    </div>
-                  ))}
-
-                {selectedArtifactResult.detailUrl ? (
-                  <a
-                    href={selectedArtifactResult.detailUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center rounded-md border border-[#cfb3ad] bg-white px-2 py-1 text-xs font-semibold text-[#6d0b1b] transition-colors hover:bg-[rgba(250,244,242,0.95)]"
-                  >
-                    {tt('openDetailUrl')}
-                  </a>
-                ) : null}
-
-                {selectedArtifactResult.description ? (
-                  <div className="mt-2 rounded-lg border border-[#ebdcda] bg-[rgba(255,255,255,0.85)] p-2.5">
-                    <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6d0b1b]">
-                      {tt('artifactDescription')}
-                    </p>
-                    <p className="text-xs leading-relaxed text-[#2f1c20]">{selectedArtifactResult.description}</p>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
-                  {tt('artifactImages')} ({selectedArtifactResult.images.length})
-                </p>
-                {selectedArtifactResult.images.length === 0 ? (
-                  <p className="text-xs text-[#6b5b5f]">{tt('artifactNoImages')}</p>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2">
-                    {selectedArtifactResult.images.map((image, index) => {
-                      const imageUrl = resolveArtifactImageUrl(image)
-                      const label =
-                        image.altText ||
-                        image.caption ||
-                        image.originalImageName ||
-                        `${tt('imageLabel')} ${index + 1}`
-                      return (
-                        <article
-                          key={`${image.imageId || image.localPath || image.sourceUrl || index}`}
-                          className="overflow-hidden rounded-lg border border-[#ddc8c4] bg-white"
-                        >
-                          {imageUrl ? (
-                            <button
-                              type="button"
-                              onClick={() => setLightboxImage({ src: imageUrl, alt: label })}
-                              className="block w-full cursor-zoom-in"
-                            >
-                              <img
-                                src={imageUrl}
-                                alt={label}
-                                className="h-24 w-full object-cover"
-                                loading="lazy"
-                              />
-                            </button>
-                          ) : (
-                            <div className="flex h-24 items-center justify-center bg-[#f3e9e6] text-[11px] text-[#7b686c]">
-                              {tt('imageUnavailable')}
-                            </div>
-                          )}
-                          {/* <p className="truncate px-2 py-1 text-[10px] text-[#6b5b5f]">
-                            {image.localPath || image.originalImageName || image.imageId || image.sourceUrl}
-                          </p> */}
-                        </article>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          </article>
-        </div>
-      ) : null}
-
-      {lightboxImage ? (
-        <div
-          className="absolute inset-0 z-[1200] flex items-center justify-center bg-[rgba(18,8,12,0.78)] p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label={tt('lightboxAria')}
-          onClick={() => setLightboxImage(null)}
-        >
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              setLightboxImage(null)
-            }}
-            className="absolute right-4 top-4 rounded-lg border border-white/30 bg-black/40 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-black/60"
-          >
-            {tt('close')}
-          </button>
-          <img
-            src={lightboxImage.src}
-            alt={lightboxImage.alt}
-            className="h-auto max-h-[98%] w-auto max-w-[98%] rounded-xl border border-white/20 bg-black/20 object-contain shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          />
-        </div>
-      ) : null}
+              <img
+                src={lightboxImage.src}
+                alt={lightboxImage.alt}
+                className="p360-chat-modal-card-enter h-auto max-h-[98%] w-auto max-w-[98%] rounded-xl border border-white/20 bg-black/20 object-contain shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              />
+            </div>,
+            portalRoot,
+          )
+        : null}
     </div>
   )
 }

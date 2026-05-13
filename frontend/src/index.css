@@ -56,3 +56,207 @@ body {
 .card-enter {
   animation: fadeUp 420ms ease-out both;
 }
+
+@keyframes p360ChatPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+    transform-origin: left bottom;
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    transform-origin: left bottom;
+  }
+}
+
+@keyframes p360ChatPanelOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    transform-origin: left bottom;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+    transform-origin: left bottom;
+  }
+}
+
+@keyframes p360ChatMessageIn {
+  from {
+    opacity: 0;
+    transform: translate3d(var(--p360-message-x, 0), 12px, 0) scale(0.98);
+    filter: blur(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes p360ChatResultsIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes p360ChatResultsOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes p360ChatResultCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes p360ChatResultCardOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+}
+
+@keyframes p360ChatModalBackdropIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes p360ChatModalBackdropOut {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes p360ChatModalCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes p360ChatModalCardOut {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(18px) scale(0.96);
+  }
+}
+
+.p360-chat-panel-enter {
+  animation: p360ChatPanelIn 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.p360-chat-panel-exit {
+  animation: p360ChatPanelOut 300ms cubic-bezier(0.7, 0, 0.84, 0) both;
+  pointer-events: none;
+}
+
+.p360-chat-message-enter {
+  animation: p360ChatMessageIn 380ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.p360-chat-message-enter-assistant {
+  --p360-message-x: -18px;
+}
+
+.p360-chat-message-enter-user {
+  --p360-message-x: 18px;
+}
+
+.p360-chat-results-enter {
+  animation: p360ChatResultsIn 320ms ease-out both;
+}
+
+.p360-chat-results-exit {
+  animation: p360ChatResultsOut 260ms ease-in both;
+}
+
+.p360-chat-result-card {
+  animation: p360ChatResultCardIn 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.p360-chat-result-card-exit {
+  animation: p360ChatResultCardOut 240ms ease-in both;
+}
+
+.p360-chat-modal-backdrop-enter {
+  animation: p360ChatModalBackdropIn 220ms ease-out both;
+}
+
+.p360-chat-modal-backdrop-exit {
+  animation: p360ChatModalBackdropOut 220ms ease-in both;
+  pointer-events: none;
+}
+
+.p360-chat-modal-card-enter {
+  animation: p360ChatModalCardIn 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.p360-chat-modal-card-exit {
+  animation: p360ChatModalCardOut 260ms cubic-bezier(0.7, 0, 0.84, 0) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .p360-chat-panel-enter,
+  .p360-chat-panel-exit,
+  .p360-chat-message-enter,
+  .p360-chat-results-enter,
+  .p360-chat-results-exit,
+  .p360-chat-result-card,
+  .p360-chat-result-card-exit,
+  .p360-chat-modal-backdrop-enter,
+  .p360-chat-modal-backdrop-exit,
+  .p360-chat-modal-card-enter,
+  .p360-chat-modal-card-exit {
+    animation: none;
+  }
+}

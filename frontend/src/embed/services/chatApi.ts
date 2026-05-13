@@ -20,12 +20,20 @@ interface SendChatMessageRequest extends ChatApiRequest {
   conversationId?: string
   uploadFile?: File | null
   uploadKind?: ChatUploadKind | null
+  resultsPage?: number
+  resultsPageSize?: number
   onStatus?: (message: string) => void
 }
 
 interface RegenerateChatMessageRequest extends ChatApiRequest {
   conversationId: string
   onStatus?: (message: string) => void
+}
+
+interface FetchChatResultsPageRequest extends ChatApiRequest {
+  conversationId: string
+  resultsPage: number
+  resultsPageSize?: number
 }
 
 export interface SendChatMessageResult {
@@ -36,6 +44,22 @@ export interface SendChatMessageResult {
   imageMatches?: ChatImageMatch[]
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
+  resultsPage: number
+  resultsPageSize: number
+  resultsTotal: number
+  resultsHasMore: boolean
+  error?: string
+}
+
+export interface ChatResultsPageResult {
+  conversationId?: string
+  imageMatches?: ChatImageMatch[]
+  artifactResults?: ChatArtifactResult[]
+  navigationTargets?: ChatNavigationTarget[]
+  resultsPage: number
+  resultsPageSize: number
+  resultsTotal: number
+  resultsHasMore: boolean
   error?: string
 }
 
@@ -55,6 +79,10 @@ interface RawChatPayload {
   }>
   artifact_results?: RawArtifactResult[]
   navigation_targets?: RawNavigationTarget[]
+  results_page?: number
+  results_page_size?: number
+  results_total?: number
+  results_has_more?: boolean
 }
 
 interface RawArtifactResult {
@@ -70,6 +98,7 @@ interface RawArtifactResult {
   support_or_material?: string
   technique?: string
   origin_history?: string
+  historical_origin?: string
   incorporation?: string
   production_center?: string
   description?: string
@@ -173,7 +202,7 @@ function normalizeArtifactResultEntry(entry: RawArtifactResult | undefined): Cha
     dateOrPeriod: String(entry.date_or_period || '').trim() || undefined,
     supportOrMaterial: String(entry.support_or_material || '').trim() || undefined,
     technique: String(entry.technique || '').trim() || undefined,
-    originHistory: String(entry.origin_history || '').trim() || undefined,
+    originHistory: String(entry.origin_history || entry.historical_origin || '').trim() || undefined,
     incorporation: String(entry.incorporation || '').trim() || undefined,
     productionCenter: String(entry.production_center || '').trim() || undefined,
     description: String(entry.description || '').trim() || undefined,
@@ -230,6 +259,46 @@ function normalizeArtifactResults(payload: RawChatPayload): ChatArtifactResult[]
   return artifactResults
 }
 
+function normalizeResultsMeta(
+  payload: RawChatPayload,
+  fallbackTotal: number,
+): Pick<
+  SendChatMessageResult,
+  'resultsPage' | 'resultsPageSize' | 'resultsTotal' | 'resultsHasMore'
+> {
+  const resultsPage =
+    typeof payload.results_page === 'number' && Number.isFinite(payload.results_page)
+      ? Math.max(1, Math.trunc(payload.results_page))
+      : 1
+  const resultsPageSize =
+    typeof payload.results_page_size === 'number' && Number.isFinite(payload.results_page_size)
+      ? Math.max(0, Math.trunc(payload.results_page_size))
+      : 0
+  const resultsTotal =
+    typeof payload.results_total === 'number' && Number.isFinite(payload.results_total)
+      ? Math.max(0, Math.trunc(payload.results_total))
+      : Math.max(0, fallbackTotal)
+  const resultsHasMore = Boolean(payload.results_has_more)
+  return {
+    resultsPage,
+    resultsPageSize,
+    resultsTotal,
+    resultsHasMore,
+  }
+}
+
+function emptyResultsMeta(): Pick<
+  SendChatMessageResult,
+  'resultsPage' | 'resultsPageSize' | 'resultsTotal' | 'resultsHasMore'
+> {
+  return {
+    resultsPage: 1,
+    resultsPageSize: 0,
+    resultsTotal: 0,
+    resultsHasMore: false,
+  }
+}
+
 function buildResultFromPayload(
   payload: RawChatPayload,
   language: ChatLanguage,
@@ -237,6 +306,10 @@ function buildResultFromPayload(
   const imageMatches = normalizeImageMatches(payload)
   const artifactResults = normalizeArtifactResults(payload)
   const navigationTargets = normalizeNavigationTargets(payload)
+  const meta = normalizeResultsMeta(
+    payload,
+    Math.max(artifactResults.length, imageMatches.length),
+  )
   if (!payload.reply) {
     return {
       reply: '',
@@ -246,6 +319,7 @@ function buildResultFromPayload(
       imageMatches,
       artifactResults,
       navigationTargets,
+      ...meta,
       error: t(language, 'chatApi.emptyReply'),
     }
   }
@@ -258,6 +332,24 @@ function buildResultFromPayload(
     imageMatches,
     artifactResults,
     navigationTargets,
+    ...meta,
+  }
+}
+
+function buildResultsPageFromPayload(payload: RawChatPayload): ChatResultsPageResult {
+  const imageMatches = normalizeImageMatches(payload)
+  const artifactResults = normalizeArtifactResults(payload)
+  const navigationTargets = normalizeNavigationTargets(payload)
+  const meta = normalizeResultsMeta(
+    payload,
+    Math.max(artifactResults.length, imageMatches.length),
+  )
+  return {
+    conversationId: payload.conversation_id,
+    imageMatches,
+    artifactResults,
+    navigationTargets,
+    ...meta,
   }
 }
 
@@ -315,6 +407,7 @@ async function readStreamingResult(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
       error: t(language, 'chatApi.streamWithoutBody'),
     }
   }
@@ -365,6 +458,7 @@ async function readStreamingResult(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
       error: streamError,
     }
   }
@@ -374,6 +468,7 @@ async function readStreamingResult(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
       error: t(language, 'chatApi.streamWithoutResult'),
     }
   }
@@ -404,11 +499,20 @@ export async function sendChatMessage(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
       error: t(language, 'chatApi.backendNotConfigured'),
     }
   }
 
   const useStreaming = typeof request.onStatus === 'function'
+  const resultsPage =
+    typeof request.resultsPage === 'number' && Number.isFinite(request.resultsPage)
+      ? Math.max(1, Math.trunc(request.resultsPage))
+      : undefined
+  const resultsPageSize =
+    typeof request.resultsPageSize === 'number' && Number.isFinite(request.resultsPageSize)
+      ? Math.max(1, Math.min(50, Math.trunc(request.resultsPageSize)))
+      : undefined
 
   try {
     let response: Response
@@ -425,6 +529,12 @@ export async function sendChatMessage(
       form.set('message', request.text)
       if (request.conversationId) {
         form.set('conversation_id', request.conversationId)
+      }
+      if (resultsPage !== undefined) {
+        form.set('results_page', String(resultsPage))
+      }
+      if (resultsPageSize !== undefined) {
+        form.set('results_page_size', String(resultsPageSize))
       }
       form.set('response_format', 'text')
       form.set('image', request.uploadFile)
@@ -450,6 +560,12 @@ export async function sendChatMessage(
       form.set('message', request.text)
       if (request.conversationId) {
         form.set('conversation_id', request.conversationId)
+      }
+      if (resultsPage !== undefined) {
+        form.set('results_page', String(resultsPage))
+      }
+      if (resultsPageSize !== undefined) {
+        form.set('results_page_size', String(resultsPageSize))
       }
       form.set('response_format', 'text')
       form.set('model_file', request.uploadFile)
@@ -478,6 +594,8 @@ export async function sendChatMessage(
             language,
             message: request.text,
             conversation_id: request.conversationId,
+            results_page: resultsPage,
+            results_page_size: resultsPageSize,
             response_format: { type: 'text' },
           }),
         },
@@ -490,6 +608,7 @@ export async function sendChatMessage(
         reply: '',
         responseFormat: 'text',
         replyJson: null,
+        ...emptyResultsMeta(),
         error: message,
       }
     }
@@ -505,6 +624,76 @@ export async function sendChatMessage(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
+      error: t(language, 'chatApi.networkError'),
+    }
+  }
+}
+
+export async function fetchChatResultsPage(
+  request: FetchChatResultsPageRequest,
+): Promise<ChatResultsPageResult | null> {
+  const language = resolveEmbedLanguage(request.language)
+  const backendBaseUrl = normalizeBackendBaseUrl(request.backendBaseUrl)
+  if (!backendBaseUrl) {
+    return {
+      conversationId: request.conversationId,
+      imageMatches: [],
+      artifactResults: [],
+      navigationTargets: [],
+      ...emptyResultsMeta(),
+      error: t(language, 'chatApi.backendNotConfigured'),
+    }
+  }
+
+  const resultsPage = Math.max(1, Math.trunc(request.resultsPage))
+  const resultsPageSize =
+    typeof request.resultsPageSize === 'number' && Number.isFinite(request.resultsPageSize)
+      ? Math.max(1, Math.min(50, Math.trunc(request.resultsPageSize)))
+      : undefined
+
+  try {
+    const response = await fetch(`${getChatApiBaseUrl(backendBaseUrl)}/messages/results`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        museum_slug: request.museumSlug,
+        museum_id: request.museumId,
+        conversation_id: request.conversationId,
+        results_page: resultsPage,
+        results_page_size: resultsPageSize,
+      }),
+    })
+
+    if (!response.ok) {
+      const message = await parseErrorResponse(response, language)
+      return {
+        conversationId: request.conversationId,
+        imageMatches: [],
+        artifactResults: [],
+        navigationTargets: [],
+        resultsPage,
+        resultsPageSize: resultsPageSize ?? 0,
+        resultsTotal: 0,
+        resultsHasMore: false,
+        error: message,
+      }
+    }
+
+    const payload = (await response.json()) as RawChatPayload
+    return buildResultsPageFromPayload(payload)
+  } catch {
+    return {
+      conversationId: request.conversationId,
+      imageMatches: [],
+      artifactResults: [],
+      navigationTargets: [],
+      resultsPage,
+      resultsPageSize: resultsPageSize ?? 0,
+      resultsTotal: 0,
+      resultsHasMore: false,
       error: t(language, 'chatApi.networkError'),
     }
   }
@@ -520,6 +709,7 @@ export async function regenerateAssistantMessage(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
       error: t(language, 'chatApi.backendNotConfigured'),
     }
   }
@@ -552,6 +742,7 @@ export async function regenerateAssistantMessage(
         reply: '',
         responseFormat: 'text',
         replyJson: null,
+        ...emptyResultsMeta(),
         error: message,
       }
     }
@@ -567,6 +758,7 @@ export async function regenerateAssistantMessage(
       reply: '',
       responseFormat: 'text',
       replyJson: null,
+      ...emptyResultsMeta(),
       error: t(language, 'chatApi.networkError'),
     }
   }

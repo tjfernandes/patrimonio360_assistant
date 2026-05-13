@@ -67,7 +67,7 @@ function TourAssistantEmbed({
       <button
         type="button"
         onClick={handleToggleFullscreen}
-        className={`absolute z-[500] rounded-lg border border-[#d4b2b6] bg-white/92 px-3 py-2 text-xs font-semibold text-[#4f0814] transition-colors hover:bg-white ${fullscreenButtonClassName}`}
+        className={`absolute z-[500] min-w-[180px] min-h-[48px] text-lg rounded-lg border border-[#d4b2b6] bg-white/92 px-3 py-2 font-semibold text-[#4f0814] transition-colors hover:bg-white ${fullscreenButtonClassName}`}
       >
         {isFullscreen ? t(language, 'assistantEmbed.exitFullscreen') : t(language, 'assistantEmbed.enterFullscreen')}
       </button>

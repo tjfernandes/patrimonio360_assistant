@@ -65,6 +65,12 @@ export interface ChatMessage {
   uploadedImageUrl?: string
   uploadedModelUrl?: string
   uploadedModelFormat?: ChatModelFormat
+  resultsPage?: number
+  resultsPageSize?: number
+  resultsTotal?: number
+  resultsHasMore?: boolean
+  isLoadingMoreResults?: boolean
+  loadMoreResultsError?: string | null
 }
 
 export interface TourAssistantEmbedProps {
