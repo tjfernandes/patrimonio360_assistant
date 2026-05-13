@@ -458,6 +458,7 @@ class OpenSearchGateway:
         sort: dict[str, Any] | None,
         from_offset: int = 0,
         size_override: int | None = None,
+        pagination_depth: int | None = None,
     ) -> dict[str, Any]:
         from_value = max(int(from_offset), 0)
         size = (
@@ -578,6 +579,10 @@ class OpenSearchGateway:
         }
         if from_value:
             body["from"] = from_value
+        if pagination_depth is not None and not embedding_only:
+            hybrid_query = body.get("query", {}).get("hybrid")
+            if isinstance(hybrid_query, dict):
+                hybrid_query["pagination_depth"] = max(int(pagination_depth), size, 1)
 
         if embedding_only:
             # Embeddings-only mode: avoid hybrid/BM25 entirely and run strict KNN + filters.
@@ -728,6 +733,7 @@ class OpenSearchGateway:
             sort=sort,
             from_offset=from_offset,
             size_override=page_size,
+            pagination_depth=max(int(from_offset), 0) + max(int(page_size), 1),
         )
         self._log(logging.INFO, "opensearch.retrieve.body", body=body)
 
@@ -1250,14 +1256,17 @@ class OpenSearchGateway:
 
         per_artifact_value = max(per_artifact, 1)
         max_total_value = max(max_total, per_artifact_value)
-        candidate_size = min(
-            500,
-            max(
-                max_total_value,
-                len(unique_ids) * per_artifact_value * 4,
-                len(unique_ids),
-            ),
-        )
+        if per_artifact_value == 1:
+            candidate_size = min(max_total_value, len(unique_ids))
+        else:
+            candidate_size = min(
+                500,
+                max(
+                    max_total_value,
+                    len(unique_ids) * per_artifact_value * 4,
+                    len(unique_ids),
+                ),
+            )
 
         client = self._ensure_client()
         filter_clauses: list[dict[str, Any]] = [{"terms": {"artifact_id": unique_ids}}]
@@ -1287,6 +1296,8 @@ class OpenSearchGateway:
                 }
             },
         }
+        if per_artifact_value == 1:
+            body["collapse"] = {"field": "artifact_id"}
         self._log(
             logging.INFO,
             "opensearch.image_fetch_by_artifact.body",

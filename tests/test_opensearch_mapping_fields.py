@@ -126,6 +126,38 @@ class _PagedSearchDummyClient:
         }
 
 
+class _ImageFetchDummyClient:
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, object] | None = None
+
+    def search(self, **kwargs: object) -> dict[str, object]:
+        self.last_kwargs = dict(kwargs)
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 1.0,
+                        "_source": {
+                            "artifact_id": "artifact_1",
+                            "image_id": "image_1",
+                            "museum_id": "museum_1",
+                            "local_path": "Images/artifact_1/image_1.jpg",
+                            "source_url": None,
+                            "artifact_title": "Artifact 1",
+                            "inventory_number": "I1",
+                            "caption": "caption",
+                            "alt_text": "alt",
+                            "in_tour": True,
+                        },
+                    }
+                ],
+                "total": {"value": 3},
+            },
+            "took": 3,
+            "timed_out": False,
+        }
+
+
 class OpenSearchFieldMappingTests(unittest.TestCase):
     def test_lexical_multi_match_uses_text_subfields(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -286,6 +318,8 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertEqual(body["from"], 10)
         self.assertEqual(body["size"], 5)
         self.assertTrue(body["track_total_hits"])
+        self.assertEqual(body["query"]["hybrid"]["pagination_depth"], 15)
+        self.assertEqual(dummy.last_kwargs["search_pipeline"], "nlp-search-pipeline")
         queries = body["query"]["hybrid"]["queries"]
         knn_query = next(
             q["bool"]["must"][0]["knn"]
@@ -314,6 +348,25 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         assert isinstance(body, dict)
         self.assertGreaterEqual(body["size"], 2)
         self.assertIn("in_tour", body["_source"])
+
+    def test_image_fetch_by_artifact_collapses_one_image_per_artifact(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _ImageFetchDummyClient()
+        gateway._client = dummy
+
+        gateway._fetch_images_by_artifact_ids_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            artifact_ids=["artifact_1", "artifact_2", "artifact_3"],
+            per_artifact=1,
+            max_total=3,
+        )
+
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["size"], 3)
+        self.assertEqual(body["collapse"], {"field": "artifact_id"})
 
     def test_image_retrieval_page_uses_opensearch_from_size_and_total(self) -> None:
         gateway = OpenSearchGateway(_settings())

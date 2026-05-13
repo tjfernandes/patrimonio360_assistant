@@ -132,6 +132,55 @@ class _LLMRewriteEnglishLeak:
         )
 
 
+class _EmbeddingOk:
+    async def embed_text(self, text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+
+class _WindowOpenSearchGateway:
+    def __init__(self) -> None:
+        self.search_page_calls: list[dict[str, object]] = []
+
+    async def search_relevant_context_page(self, **kwargs: object):
+        self.search_page_calls.append(dict(kwargs))
+        page_size = int(kwargs.get("page_size") or 0)
+        return types.SimpleNamespace(
+            total=1234,
+            results=[
+                {
+                    "artifact_id": f"artifact_{index}",
+                    "inventory_number": f"I{index}",
+                    "title": f"Resultado {index}",
+                    "museum_id": "mnt",
+                    "description": "Resultado textual paginado.",
+                    "image_count": 999,
+                }
+                for index in range(1, page_size + 1)
+            ],
+        )
+
+
+class _ArtifactImagesGateway:
+    def __init__(self) -> None:
+        self.image_fetch_calls: list[dict[str, object]] = []
+
+    async def fetch_images_by_artifact_ids(self, **kwargs: object) -> list[dict[str, object]]:
+        self.image_fetch_calls.append(dict(kwargs))
+        image_hits: list[dict[str, object]] = []
+        for artifact_id in kwargs.get("artifact_ids") or []:
+            image_hits.extend(
+                [
+                    {
+                        "artifact_id": artifact_id,
+                        "image_id": f"{artifact_id}_image_{index}",
+                        "local_path": f"{artifact_id}/image_{index}.jpg",
+                    }
+                    for index in range(1, 4)
+                ]
+            )
+        return image_hits
+
+
 def _build_service() -> ChatService:
     settings = get_settings()
     return ChatService(
@@ -519,6 +568,77 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(lexical, "vestidos crianca")
         self.assertEqual(embedding, "")
 
+    def test_text_retrieval_window_uses_results_page_size_not_candidate_count(self) -> None:
+        settings = get_settings()
+        previous_candidates = settings.CHAT_RETRIEVAL_CANDIDATES
+        gateway = _WindowOpenSearchGateway()
+        try:
+            settings.CHAT_RETRIEVAL_CANDIDATES = 1000
+            service = ChatService(
+                settings=settings,
+                opensearch_gateway=gateway,
+                embedding_provider=_EmbeddingOk(),
+                model_retrieval_service=_Dummy(),
+                tour_navigation_service=_Dummy(),
+                llm_service=_LLMRewriteFail(),
+                session_store=ChatSessionStore(settings),
+            )
+
+            _, total, docs, _ = asyncio.run(
+                service._retrieve_context(
+                    museum_slug="mnt",
+                    museum_id="mnt",
+                    query="vestidos de crianca",
+                    filters={},
+                    sort={},
+                    result_window_size=10,
+                )
+            )
+        finally:
+            settings.CHAT_RETRIEVAL_CANDIDATES = previous_candidates
+
+        self.assertEqual(total, 1234)
+        self.assertEqual(len(docs), 10)
+        self.assertEqual(gateway.search_page_calls[0]["page_size"], 10)
+
+    def test_text_artifact_hydration_limits_images_to_visible_page(self) -> None:
+        settings = get_settings()
+        gateway = _ArtifactImagesGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+        )
+        docs = [
+            {
+                "artifact_id": f"artifact_{index}",
+                "inventory_number": f"I{index}",
+                "title": f"Resultado {index}",
+                "museum_id": "mnt",
+                "image_count": 999,
+            }
+            for index in range(1, 11)
+        ]
+
+        artifacts = asyncio.run(
+            service._build_artifact_results(
+                museum_slug="mnt",
+                museum_id="mnt",
+                artifact_docs=docs,
+                max_images_per_artifact=1,
+            )
+        )
+
+        self.assertEqual(len(artifacts), 10)
+        self.assertEqual(len(gateway.image_fetch_calls), 1)
+        self.assertEqual(gateway.image_fetch_calls[0]["per_artifact"], 1)
+        self.assertEqual(gateway.image_fetch_calls[0]["max_total"], 10)
+        self.assertTrue(all(len(artifact.images) <= 1 for artifact in artifacts))
+
     def test_docs_llm_filter_is_skipped_for_search_intent(self) -> None:
         settings = get_settings()
         service = ChatService(
@@ -716,6 +836,7 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(len(gateway.search_page_calls), 1)
         self.assertEqual(gateway.search_page_calls[0]["from_offset"], 2)
         self.assertEqual(gateway.search_page_calls[0]["page_size"], 2)
+        self.assertEqual(len(gateway.image_fetch_calls), 1)
 
     def test_get_results_page_materializes_structured_list_page_from_opensearch(self) -> None:
         settings = get_settings()

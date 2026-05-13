@@ -258,6 +258,9 @@ class ChatService:
             return base
         return max(1, min(int(requested_page_size), 50))
 
+    def _text_results_default_page_size(self) -> int:
+        return max(int(self.settings.CHAT_RETRIEVAL_RESULTS_PAGE_SIZE), 1)
+
     def _paginate_retrieval_results(
         self,
         *,
@@ -503,12 +506,8 @@ class ChatService:
             sort=dict(request.get("sort") or {}),
         )
         docs = page_result.results
-        artifact_results = await self._build_artifact_results(
-            museum_slug=payload.museum_slug,
-            museum_id=str(request.get("museum_id") or payload.museum_id or "").strip() or None,
-            artifact_docs=docs,
-        )
         image_matches: list[ImageMatchResult] = []
+        image_hits: list[dict[str, Any]] = []
         artifact_ids = [
             str(doc.get("artifact_id") or "").strip()
             for doc in docs
@@ -541,6 +540,13 @@ class ChatService:
             museum_slug=payload.museum_slug,
             museum_id=str(request.get("museum_id") or payload.museum_id or "").strip() or None,
             docs=docs,
+        )
+        artifact_results = await self._build_artifact_results(
+            museum_slug=payload.museum_slug,
+            museum_id=str(request.get("museum_id") or payload.museum_id or "").strip() or None,
+            artifact_docs=docs,
+            max_images_per_artifact=1,
+            artifact_image_hits=image_hits,
         )
         image_matches = self._enrich_image_matches(
             context="text_page",
@@ -713,23 +719,28 @@ class ChatService:
                 results_page=max(payload.results_page, 1),
                 results_page_size=self._resolve_results_page_size(
                     payload.results_page_size,
-                    default_size=max(self.settings.CHAT_RETRIEVAL_TOP_K, 1),
+                    default_size=self._text_results_default_page_size(),
                 ),
                 results_total=0,
                 results_has_more=False,
             )
 
+        retrieval_request = dict(state.last_paged_retrieval_request or {})
+        retrieval_kind = str(retrieval_request.get("kind") or "")
+        default_page_size_floor = (
+            self._text_results_default_page_size()
+            if retrieval_kind == "text"
+            else max(self.settings.CHAT_RETRIEVAL_TOP_K, 1)
+        )
         default_page_size = max(
             int(state.last_paged_results_default_page_size or 0),
-            max(self.settings.CHAT_RETRIEVAL_TOP_K, 1),
+            default_page_size_floor,
         )
         results_page = max(payload.results_page, 1)
         results_page_size = self._resolve_results_page_size(
             payload.results_page_size,
             default_size=default_page_size,
         )
-        retrieval_request = dict(state.last_paged_retrieval_request or {})
-        retrieval_kind = str(retrieval_request.get("kind") or "")
         if retrieval_kind == "text":
             response = await self._materialize_text_results_page(
                 state=state,
@@ -1019,6 +1030,14 @@ class ChatService:
         retrieval_request: dict[str, Any] = {}
         image_matches: list[ImageMatchResult] = []
         artifact_results: list[ArtifactResult] = []
+        artifact_image_hits: list[dict[str, Any]] = []
+        text_results_default_page_size = self._text_results_default_page_size()
+        text_results_page = max(payload.results_page, 1)
+        text_results_page_size = self._resolve_results_page_size(
+            payload.results_page_size,
+            default_size=text_results_default_page_size,
+        )
+        text_results_window_size = min(text_results_page * text_results_page_size, 50)
         if router_decision["mode"] == "rag" and self.settings.CHAT_ENABLE_RAG:
             # Retrieval must stay strict to user wording (no expansion/rewrite additions).
             retrieval_query = payload.message
@@ -1034,6 +1053,7 @@ class ChatService:
                 query=retrieval_query,
                 filters=effective_filters,
                 sort=effective_sort,
+                result_window_size=text_results_window_size,
             )
             await self._emit_status(
                 status_cb,
@@ -1070,7 +1090,7 @@ class ChatService:
                 ]
                 if artifact_ids:
                     try:
-                        image_hits = await self.opensearch_gateway.fetch_images_by_artifact_ids(
+                        artifact_image_hits = await self.opensearch_gateway.fetch_images_by_artifact_ids(
                             museum_slug=payload.museum_slug,
                             museum_id=self._resolve_museum_id(payload),
                             artifact_ids=artifact_ids,
@@ -1086,9 +1106,9 @@ class ChatService:
                             museum_id=self._resolve_museum_id(payload),
                             reason=f"artifact_image_fetch_failed: {exc}",
                         )
-                        image_hits = []
+                        artifact_image_hits = []
                     image_matches = self._build_image_matches(
-                        image_hits=image_hits,
+                        image_hits=artifact_image_hits,
                         artifact_docs=retrieved_docs,
                     )
                     image_matches = await self._filter_image_matches_with_llm(
@@ -1122,6 +1142,8 @@ class ChatService:
             museum_slug=payload.museum_slug,
             museum_id=self._resolve_museum_id(payload),
             artifact_docs=retrieved_docs,
+            max_images_per_artifact=1,
+            artifact_image_hits=artifact_image_hits,
         )
         navigation_targets = self._resolve_navigation_targets(
             museum_slug=payload.museum_slug,
@@ -1159,7 +1181,7 @@ class ChatService:
             navigation_targets=navigation_targets,
             page=payload.results_page,
             page_size=payload.results_page_size,
-            default_page_size=max(self.settings.CHAT_RETRIEVAL_TOP_K, 1),
+            default_page_size=text_results_default_page_size,
             total_override=retrieved_docs_count,
             retrieval_request=retrieval_request,
         )
@@ -2570,6 +2592,7 @@ class ChatService:
         query: str,
         filters: dict[str, object],
         sort: dict[str, object],
+        result_window_size: int | None = None,
     ) -> tuple[str, int, list[dict[str, object]], dict[str, Any]]:
         raw_query = (query or "").strip()
         lexical_query_fallback = self._build_lexical_query(
@@ -2648,7 +2671,14 @@ class ChatService:
             return "", 0, [], {}
 
         final_top_k = max(self.settings.CHAT_RETRIEVAL_TOP_K, 1)
-        retrieval_candidates_k = max(self.settings.CHAT_RETRIEVAL_CANDIDATES, final_top_k, 1)
+        if result_window_size is None:
+            retrieval_page_size = max(
+                self.settings.CHAT_RETRIEVAL_CANDIDATES,
+                final_top_k,
+                1,
+            )
+        else:
+            retrieval_page_size = max(int(result_window_size), final_top_k, 1)
 
         try:
             page_result = await self.opensearch_gateway.search_relevant_context_page(
@@ -2658,7 +2688,7 @@ class ChatService:
                 lexical_query=lexical_query,
                 query_embedding=query_embedding,
                 from_offset=0,
-                page_size=retrieval_candidates_k,
+                page_size=retrieval_page_size,
                 filters=filters,
                 sort=sort,
             )
@@ -3102,29 +3132,40 @@ class ChatService:
         museum_slug: str,
         museum_id: str | None,
         artifact_docs: list[dict[str, object]],
+        max_images_per_artifact: int | None = None,
+        artifact_image_hits: list[dict[str, Any]] | None = None,
     ) -> list[ArtifactResult]:
         if not artifact_docs:
             return []
 
         artifact_ids = self._extract_artifact_ids_from_docs(artifact_docs)
-        image_hits: list[dict[str, Any]] = []
-        if artifact_ids:
-            per_artifact = 1
-            total_expected = 0
-            for doc in artifact_docs:
-                raw_count = doc.get("image_count")
-                if isinstance(raw_count, str) and raw_count.strip().isdigit():
-                    count = int(raw_count.strip())
-                elif isinstance(raw_count, (int, float)):
-                    count = int(raw_count)
-                else:
-                    count = 0
-                count = max(count, 1)
-                per_artifact = max(per_artifact, count)
-                total_expected += count
+        image_hits: list[dict[str, Any]] = list(artifact_image_hits or [])
+        image_limit = (
+            max(int(max_images_per_artifact), 0)
+            if max_images_per_artifact is not None
+            else None
+        )
+        if artifact_ids and image_limit != 0 and artifact_image_hits is None:
+            if image_limit is None:
+                per_artifact = 1
+                total_expected = 0
+                for doc in artifact_docs:
+                    raw_count = doc.get("image_count")
+                    if isinstance(raw_count, str) and raw_count.strip().isdigit():
+                        count = int(raw_count.strip())
+                    elif isinstance(raw_count, (int, float)):
+                        count = int(raw_count)
+                    else:
+                        count = 0
+                    count = max(count, 1)
+                    per_artifact = max(per_artifact, count)
+                    total_expected += count
 
-            per_artifact = min(per_artifact, 120)
-            max_total = min(max(total_expected, len(artifact_ids)), 1000)
+                per_artifact = min(per_artifact, 120)
+                max_total = min(max(total_expected, len(artifact_ids)), 1000)
+            else:
+                per_artifact = max(image_limit, 1)
+                max_total = max(len(artifact_ids) * per_artifact, 1)
 
             try:
                 image_hits = await self.opensearch_gateway.fetch_images_by_artifact_ids(
@@ -3188,6 +3229,8 @@ class ChatService:
                     or normalized_source_url
                     or normalized_original_name
                 )
+                if image_limit is not None and len(images) >= image_limit:
+                    return
                 if not dedupe_key:
                     return
                 if dedupe_key in seen_keys:

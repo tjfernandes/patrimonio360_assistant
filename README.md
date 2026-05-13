@@ -172,8 +172,9 @@ Notes:
   - `CHAT_ENABLE_RAG`
   - `CHAT_ENABLE_LLM_LEXICAL_QUERY` (uses the configured LLM to clean PT/EN lexical OpenSearch queries; falls back to local normalization)
   - `CHAT_USE_QUERY_EMBEDDINGS` (if `false`, retrieval is skipped)
-  - `CHAT_RETRIEVAL_CANDIDATES` (retrieval candidate count before final `top_k` slice)
-  - `CHAT_RETRIEVAL_TOP_K`
+  - `CHAT_RETRIEVAL_CANDIDATES` (fallback retrieval candidate count before final `top_k` slice)
+  - `CHAT_RETRIEVAL_TOP_K` (documents used in the answer prompt)
+  - `CHAT_RETRIEVAL_RESULTS_PAGE_SIZE` (default text results page size)
   - `CHAT_IMAGE_RETRIEVAL_TOP_K`
   - `CHAT_IMAGE_ARTIFACT_TOP_K`
   - `CHAT_IMAGE_DEFAULT_MESSAGE`
