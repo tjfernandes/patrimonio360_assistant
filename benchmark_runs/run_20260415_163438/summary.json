@@ -1,0 +1,137 @@
+{
+  "generated_at": "2026-04-15T16:35:31.859376+00:00",
+  "overall": [
+    {
+      "group_type": "overall",
+      "group_value": "all",
+      "total_cases": 49,
+      "scored_cases": 49,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.32653061224489793,
+      "recall_at_5": 0.673469387755102,
+      "mrr": 0.42993197278911566,
+      "ndcg_at_5": 0.061853180219380556,
+      "latency_first_ms": 36.71408442927974,
+      "latency_final_ms": 411.35893402070553
+    }
+  ],
+  "by_museum": [
+    {
+      "group_type": "museum",
+      "group_value": "mnaz",
+      "total_cases": 18,
+      "scored_cases": 18,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.16666666666666666,
+      "recall_at_5": 0.8333333333333334,
+      "mrr": 0.3611111111111111,
+      "ndcg_at_5": 0.12370636043876111,
+      "latency_first_ms": null,
+      "latency_final_ms": 81.09746500021073
+    },
+    {
+      "group_type": "museum",
+      "group_value": "mnt",
+      "total_cases": 31,
+      "scored_cases": 31,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.41935483870967744,
+      "recall_at_5": 0.5806451612903226,
+      "mrr": 0.4698924731182796,
+      "ndcg_at_5": 0.0,
+      "latency_first_ms": 36.71408442927974,
+      "latency_final_ms": 603.1236579680896
+    }
+  ],
+  "by_mode": [
+    {
+      "group_type": "mode",
+      "group_value": "image",
+      "total_cases": 10,
+      "scored_cases": 10,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.9,
+      "recall_at_5": 0.9,
+      "mrr": 0.9,
+      "ndcg_at_5": null,
+      "latency_first_ms": null,
+      "latency_final_ms": 111.00606820036774
+    },
+    {
+      "group_type": "mode",
+      "group_value": "model_3d",
+      "total_cases": 7,
+      "scored_cases": 7,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.8571428571428571,
+      "recall_at_5": 0.8571428571428571,
+      "mrr": 0.8571428571428571,
+      "ndcg_at_5": null,
+      "latency_first_ms": 36.71408442927974,
+      "latency_final_ms": 2439.2198435717937
+    },
+    {
+      "group_type": "mode",
+      "group_value": "rewriting_pair",
+      "total_cases": 4,
+      "scored_cases": 4,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.25,
+      "mrr": 0.08333333333333333,
+      "ndcg_at_5": 0.0,
+      "latency_first_ms": null,
+      "latency_final_ms": 82.92775625068316
+    },
+    {
+      "group_type": "mode",
+      "group_value": "text_multi",
+      "total_cases": 8,
+      "scored_cases": 8,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.375,
+      "mrr": 0.10416666666666666,
+      "ndcg_at_5": 0.0773164752742257,
+      "latency_first_ms": null,
+      "latency_final_ms": 47.53157962613841
+    },
+    {
+      "group_type": "mode",
+      "group_value": "text_single",
+      "total_cases": 20,
+      "scored_cases": 20,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.05,
+      "recall_at_5": 0.7,
+      "mrr": 0.24499999999999997,
+      "ndcg_at_5": null,
+      "latency_first_ms": null,
+      "latency_final_ms": 63.00122589982493
+    }
+  ],
+  "by_variant": [
+    {
+      "group_type": "variant",
+      "group_value": "full",
+      "total_cases": 49,
+      "scored_cases": 49,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.32653061224489793,
+      "recall_at_5": 0.673469387755102,
+      "mrr": 0.42993197278911566,
+      "ndcg_at_5": 0.061853180219380556,
+      "latency_first_ms": 36.71408442927974,
+      "latency_final_ms": 411.35893402070553
+    }
+  ]
+}

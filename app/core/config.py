@@ -95,9 +95,11 @@ class Settings(BaseSettings):
     CHAT_RETRIEVAL_CANDIDATES: int = 15
     CHAT_RETRIEVAL_TOP_K: int = 5
     CHAT_RETRIEVAL_RESULTS_PAGE_SIZE: int = 10
+    CHAT_RETRIEVAL_PAGINATION_WINDOW: int = 150
     CHAT_IN_TOUR_BOOST: float = 5
     CHAT_IMAGE_RETRIEVAL_TOP_K: int = 6
     CHAT_IMAGE_ARTIFACT_TOP_K: int = 5
+    CHAT_IMAGE_RETRIEVAL_PAGINATION_WINDOW: int = 150
     CHAT_IMAGE_DEFAULT_MESSAGE: str = "Analisa a imagem e identifica a peça mais provável no museu."
     CHAT_MODEL_DEFAULT_MESSAGE: str = "Analisa este modelo 3D e identifica a peça mais provável no museu."
     CHAT_MODEL_FIRST_PASS_VIEWS: int = 3

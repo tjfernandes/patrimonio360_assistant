@@ -261,6 +261,29 @@ class ChatService:
     def _text_results_default_page_size(self) -> int:
         return max(int(self.settings.CHAT_RETRIEVAL_RESULTS_PAGE_SIZE), 1)
 
+    def _text_retrieval_window_size(self, *, minimum: int = 1) -> int:
+        configured = int(getattr(self.settings, "CHAT_RETRIEVAL_PAGINATION_WINDOW", 0) or 0)
+        return max(configured, int(minimum), 1)
+
+    def _image_retrieval_window_size(self, *, minimum: int = 1) -> int:
+        configured = int(
+            getattr(self.settings, "CHAT_IMAGE_RETRIEVAL_PAGINATION_WINDOW", 0) or 0
+        )
+        return max(configured, int(minimum), 1)
+
+    def _retrieval_window_from_request(self, request: dict[str, Any]) -> int | None:
+        try:
+            value = int(request.get("retrieval_window_size") or 0)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _bounded_retrieval_total(self, total: int, retrieval_window_size: int | None) -> int:
+        resolved_total = max(int(total), 0)
+        if retrieval_window_size is None:
+            return resolved_total
+        return min(resolved_total, max(int(retrieval_window_size), 1))
+
     def _paginate_retrieval_results(
         self,
         *,
@@ -375,6 +398,11 @@ class ChatService:
         except (TypeError, ValueError):
             stored_total = 0
         reported_total = max(stored_total, int(page_total), 0)
+        retrieval_window_size = self._retrieval_window_from_request(request)
+        reported_total = self._bounded_retrieval_total(
+            reported_total,
+            retrieval_window_size,
+        )
         request["results_total"] = reported_total
         return reported_total
 
@@ -504,6 +532,7 @@ class ChatService:
             page_size=page_size,
             filters=dict(request.get("filters") or {}),
             sort=dict(request.get("sort") or {}),
+            retrieval_window_size=self._retrieval_window_from_request(request),
         )
         docs = page_result.results
         image_matches: list[ImageMatchResult] = []
@@ -595,6 +624,7 @@ class ChatService:
                 image_embeddings=list(request.get("image_embeddings") or []),
                 from_offset=from_offset,
                 page_size=page_size,
+                retrieval_window_size=self._retrieval_window_from_request(request),
             )
         else:
             page_result = await self.opensearch_gateway.search_similar_images_page(
@@ -603,6 +633,7 @@ class ChatService:
                 image_embedding=list(request.get("image_embedding") or []),
                 from_offset=from_offset,
                 page_size=page_size,
+                retrieval_window_size=self._retrieval_window_from_request(request),
             )
 
         image_hits = page_result.results
@@ -1422,6 +1453,9 @@ class ChatService:
             self.settings.CHAT_RETRIEVAL_CANDIDATES,
             1,
         )
+        image_retrieval_window_size = self._image_retrieval_window_size(
+            minimum=image_candidates_k,
+        )
         try:
             image_page = await self.opensearch_gateway.search_similar_images_page(
                 museum_slug=payload.museum_slug,
@@ -1429,9 +1463,13 @@ class ChatService:
                 image_embedding=image_embedding,
                 from_offset=0,
                 page_size=image_candidates_k,
+                retrieval_window_size=image_retrieval_window_size,
             )
             image_hits = image_page.results
-            image_results_total = image_page.total
+            image_results_total = self._bounded_retrieval_total(
+                image_page.total,
+                image_retrieval_window_size,
+            )
         except Exception as exc:
             self._log(
                 logging.ERROR,
@@ -1564,6 +1602,7 @@ class ChatService:
                 "museum_id": museum_id,
                 "artifact_museum_id": explicit_museum_id,
                 "image_embedding": image_embedding,
+                "retrieval_window_size": image_retrieval_window_size,
                 "results_total": image_results_total,
             },
         )
@@ -1903,6 +1942,7 @@ class ChatService:
                 "museum_id": museum_id,
                 "artifact_museum_id": explicit_museum_id,
                 "image_embeddings": model_image_embeddings,
+                "retrieval_window_size": retrieval_result.retrieval_window_size,
                 "results_total": model_results_total,
             },
         )
@@ -2679,6 +2719,9 @@ class ChatService:
             )
         else:
             retrieval_page_size = max(int(result_window_size), final_top_k, 1)
+        retrieval_window_size = self._text_retrieval_window_size(
+            minimum=retrieval_page_size,
+        )
 
         try:
             page_result = await self.opensearch_gateway.search_relevant_context_page(
@@ -2691,6 +2734,7 @@ class ChatService:
                 page_size=retrieval_page_size,
                 filters=filters,
                 sort=sort,
+                retrieval_window_size=retrieval_window_size,
             )
         except Exception:
             self._log(logging.ERROR, "chat.retrieve_error", museum_slug=museum_slug)
@@ -2704,6 +2748,7 @@ class ChatService:
 
         docs_for_context = docs[:final_top_k]
         context = self._format_docs_for_prompt(docs=docs_for_context, top_k=final_top_k)
+        results_total = self._bounded_retrieval_total(page_result.total, retrieval_window_size)
         retrieval_request = {
             "kind": "text",
             "museum_id": museum_id,
@@ -2712,9 +2757,10 @@ class ChatService:
             "query_embedding": query_embedding,
             "filters": dict(filters),
             "sort": dict(sort),
-            "results_total": page_result.total,
+            "retrieval_window_size": retrieval_window_size,
+            "results_total": results_total,
         }
-        return context, page_result.total, docs, retrieval_request
+        return context, results_total, docs, retrieval_request
 
     def _tokenize_for_language_guardrail(self, text: str) -> list[str]:
         normalized = unicodedata.normalize("NFKD", (text or "").casefold())

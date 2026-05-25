@@ -175,14 +175,17 @@ Notes:
   - `CHAT_RETRIEVAL_CANDIDATES` (fallback retrieval candidate count before final `top_k` slice)
   - `CHAT_RETRIEVAL_TOP_K` (documents used in the answer prompt)
   - `CHAT_RETRIEVAL_RESULTS_PAGE_SIZE` (default text results page size)
+  - `CHAT_RETRIEVAL_PAGINATION_WINDOW` (fixed text KNN/hybrid candidate window used across result pages)
   - `CHAT_IMAGE_RETRIEVAL_TOP_K`
   - `CHAT_IMAGE_ARTIFACT_TOP_K`
+  - `CHAT_IMAGE_RETRIEVAL_PAGINATION_WINDOW` (fixed visual KNN candidate window used across image/model result pages)
   - `CHAT_IMAGE_DEFAULT_MESSAGE`
   - `CHAT_MODEL_DEFAULT_MESSAGE`
   - `CHAT_MODEL_FIRST_PASS_VIEWS`
   - `CHAT_MODEL_TOTAL_VIEWS`
   - `CHAT_MODEL_LOW_CONFIDENCE_SCORE_THRESHOLD`
   - `CHAT_MODEL_CACHE_SIZE`
+- Pagination methodology: `docs/opensearch-pagination-methodology.md`
 - `IMAGE_ASSET_ROOT` (filesystem root used to resolve `image_ref`; supports legacy filename and safe relative `local_path`)
 - `POI_TOURS_DIR` (optional directory with `panorama-overlays-inventory-<museum>.json` for tour navigation targets)
   - `MULTIVIEW_WORKER_HOST`

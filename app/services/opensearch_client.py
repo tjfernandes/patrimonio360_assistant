@@ -445,6 +445,18 @@ class OpenSearchGateway:
             "inventory": inventory_number or None,
         }
 
+    def _resolve_knn_k(
+        self,
+        *,
+        from_offset: int,
+        size: int,
+        retrieval_window_size: int | None,
+        minimum: int = 1,
+    ) -> int:
+        if retrieval_window_size is not None:
+            return max(int(retrieval_window_size), int(size), int(minimum), 1)
+        return max((int(from_offset) + int(size)) * 3, int(size), int(minimum), 1)
+
     def _build_query_body(
         self,
         *,
@@ -459,6 +471,7 @@ class OpenSearchGateway:
         from_offset: int = 0,
         size_override: int | None = None,
         pagination_depth: int | None = None,
+        retrieval_window_size: int | None = None,
     ) -> dict[str, Any]:
         from_value = max(int(from_offset), 0)
         size = (
@@ -466,7 +479,16 @@ class OpenSearchGateway:
             if size_override is not None
             else self._artifact_candidate_size(top_k)
         )
-        knn_k = max((from_value + size) * 3, size)
+        retrieval_window = (
+            max(int(retrieval_window_size), 1)
+            if retrieval_window_size is not None
+            else None
+        )
+        knn_k = self._resolve_knn_k(
+            from_offset=from_value,
+            size=size,
+            retrieval_window_size=retrieval_window,
+        )
         filter_clauses = self._build_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
@@ -579,10 +601,13 @@ class OpenSearchGateway:
         }
         if from_value:
             body["from"] = from_value
-        if pagination_depth is not None and not embedding_only:
+        resolved_pagination_depth = pagination_depth
+        if resolved_pagination_depth is None and retrieval_window is not None:
+            resolved_pagination_depth = retrieval_window
+        if resolved_pagination_depth is not None and not embedding_only:
             hybrid_query = body.get("query", {}).get("hybrid")
             if isinstance(hybrid_query, dict):
-                hybrid_query["pagination_depth"] = max(int(pagination_depth), size, 1)
+                hybrid_query["pagination_depth"] = max(int(resolved_pagination_depth), size, 1)
 
         if embedding_only:
             # Embeddings-only mode: avoid hybrid/BM25 entirely and run strict KNN + filters.
@@ -720,6 +745,7 @@ class OpenSearchGateway:
         page_size: int,
         filters: dict[str, Any] | None,
         sort: dict[str, Any] | None,
+        retrieval_window_size: int | None = None,
     ) -> OpenSearchRetrievalPage:
         client = self._ensure_client()
         body = self._build_query_body(
@@ -733,7 +759,12 @@ class OpenSearchGateway:
             sort=sort,
             from_offset=from_offset,
             size_override=page_size,
-            pagination_depth=max(int(from_offset), 0) + max(int(page_size), 1),
+            pagination_depth=(
+                max(int(retrieval_window_size), 1)
+                if retrieval_window_size is not None
+                else max(int(from_offset), 0) + max(int(page_size), 1)
+            ),
+            retrieval_window_size=retrieval_window_size,
         )
         self._log(logging.INFO, "opensearch.retrieve.body", body=body)
 
@@ -799,6 +830,7 @@ class OpenSearchGateway:
         page_size: int,
         filters: dict[str, Any] | None = None,
         sort: dict[str, Any] | None = None,
+        retrieval_window_size: int | None = None,
     ) -> OpenSearchRetrievalPage:
         return await asyncio.to_thread(
             self._search_relevant_context_page_sync,
@@ -811,6 +843,7 @@ class OpenSearchGateway:
             page_size=page_size,
             filters=filters,
             sort=sort,
+            retrieval_window_size=retrieval_window_size,
         )
 
     def _image_results_from_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -917,10 +950,21 @@ class OpenSearchGateway:
         image_embedding: list[float],
         from_offset: int,
         page_size: int,
+        retrieval_window_size: int | None = None,
     ) -> OpenSearchRetrievalPage:
         client = self._ensure_client()
         from_value = max(int(from_offset), 0)
         size = max(int(page_size), 1)
+        retrieval_window = (
+            max(int(retrieval_window_size), 1)
+            if retrieval_window_size is not None
+            else None
+        )
+        knn_k = self._resolve_knn_k(
+            from_offset=from_value,
+            size=size,
+            retrieval_window_size=retrieval_window,
+        )
         in_tour_boost_clause = self._build_in_tour_boost_clause()
         bool_query: dict[str, Any] = {
             "filter": self._build_image_filter_clauses(
@@ -932,7 +976,7 @@ class OpenSearchGateway:
                     "knn": {
                         "visual_embedding": {
                             "vector": image_embedding,
-                            "k": max((from_value + size) * 3, size),
+                            "k": knn_k,
                         }
                     }
                 }
@@ -1087,6 +1131,7 @@ class OpenSearchGateway:
         image_embeddings: list[list[float]],
         from_offset: int,
         page_size: int,
+        retrieval_window_size: int | None = None,
     ) -> OpenSearchRetrievalPage:
         embeddings = [embedding for embedding in image_embeddings if embedding]
         if not embeddings:
@@ -1095,6 +1140,17 @@ class OpenSearchGateway:
         client = self._ensure_client()
         from_value = max(int(from_offset), 0)
         size = max(int(page_size), 1)
+        retrieval_window = (
+            max(int(retrieval_window_size), 1)
+            if retrieval_window_size is not None
+            else None
+        )
+        knn_k = self._resolve_knn_k(
+            from_offset=from_value,
+            size=size,
+            retrieval_window_size=retrieval_window,
+            minimum=30,
+        )
         filter_clauses = self._build_image_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
@@ -1108,7 +1164,7 @@ class OpenSearchGateway:
                     "knn": {
                         "visual_embedding": {
                             "vector": embedding,
-                            "k": max(30, (from_value + size) * 3),
+                            "k": knn_k,
                             "boost": 3.0,
                         }
                     }
@@ -1189,6 +1245,7 @@ class OpenSearchGateway:
         image_embedding: list[float],
         from_offset: int,
         page_size: int,
+        retrieval_window_size: int | None = None,
     ) -> OpenSearchRetrievalPage:
         return await asyncio.to_thread(
             self._search_similar_images_page_sync,
@@ -1197,6 +1254,7 @@ class OpenSearchGateway:
             image_embedding=image_embedding,
             from_offset=from_offset,
             page_size=page_size,
+            retrieval_window_size=retrieval_window_size,
         )
 
     async def search_similar_images_multi(
@@ -1223,6 +1281,7 @@ class OpenSearchGateway:
         image_embeddings: list[list[float]],
         from_offset: int,
         page_size: int,
+        retrieval_window_size: int | None = None,
     ) -> OpenSearchRetrievalPage:
         return await asyncio.to_thread(
             self._search_similar_images_multi_page_sync,
@@ -1231,6 +1290,7 @@ class OpenSearchGateway:
             image_embeddings=image_embeddings,
             from_offset=from_offset,
             page_size=page_size,
+            retrieval_window_size=retrieval_window_size,
         )
 
     def _fetch_images_by_artifact_ids_sync(

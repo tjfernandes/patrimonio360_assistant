@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-04-15T17:20:54.128638+00:00",
+  "overall": [
+    {
+      "group_type": "overall",
+      "group_value": "all",
+      "total_cases": 43,
+      "scored_cases": 43,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.4186046511627907,
+      "recall_at_5": 0.627906976744186,
+      "mrr": 0.4872093023255814,
+      "ndcg_at_5": 0.04879750624901271,
+      "latency_first_ms": 35.63977928570239,
+      "latency_final_ms": 464.05313120915304
+    }
+  ],
+  "by_museum": [
+    {
+      "group_type": "museum",
+      "group_value": "mnaz",
+      "total_cases": 16,
+      "scored_cases": 16,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.3125,
+      "recall_at_5": 0.6875,
+      "mrr": 0.43229166666666663,
+      "ndcg_at_5": 0.09759501249802542,
+      "latency_first_ms": null,
+      "latency_final_ms": 96.99206593791132
+    },
+    {
+      "group_type": "museum",
+      "group_value": "mnt",
+      "total_cases": 27,
+      "scored_cases": 27,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.48148148148148145,
+      "recall_at_5": 0.5925925925925926,
+      "mrr": 0.519753086419753,
+      "ndcg_at_5": 0.0,
+      "latency_first_ms": 35.63977928570239,
+      "latency_final_ms": 681.570799518037
+    }
+  ],
+  "by_mode": [
+    {
+      "group_type": "mode",
+      "group_value": "image",
+      "total_cases": 10,
+      "scored_cases": 10,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.9,
+      "recall_at_5": 0.9,
+      "mrr": 0.9,
+      "ndcg_at_5": null,
+      "latency_first_ms": null,
+      "latency_final_ms": 82.13473520045227
+    },
+    {
+      "group_type": "mode",
+      "group_value": "model_3d",
+      "total_cases": 7,
+      "scored_cases": 7,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.8571428571428571,
+      "recall_at_5": 0.8571428571428571,
+      "mrr": 0.8571428571428571,
+      "ndcg_at_5": null,
+      "latency_first_ms": 35.63977928570239,
+      "latency_final_ms": 2441.5498241422547
+    },
+    {
+      "group_type": "mode",
+      "group_value": "text_multi",
+      "total_cases": 4,
+      "scored_cases": 4,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.25,
+      "mrr": 0.08333333333333333,
+      "ndcg_at_5": 0.04879750624901271,
+      "latency_first_ms": null,
+      "latency_final_ms": 49.4733642490246
+    },
+    {
+      "group_type": "mode",
+      "group_value": "text_single",
+      "total_cases": 22,
+      "scored_cases": 22,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.13636363636363635,
+      "recall_at_5": 0.5,
+      "mrr": 0.2553030303030303,
+      "ndcg_at_5": null,
+      "latency_first_ms": null,
+      "latency_final_ms": 83.82704836350803
+    }
+  ],
+  "by_variant": [
+    {
+      "group_type": "variant",
+      "group_value": "full",
+      "total_cases": 43,
+      "scored_cases": 43,
+      "skipped_cases": 0,
+      "error_cases": 0,
+      "recall_at_1": 0.4186046511627907,
+      "recall_at_5": 0.627906976744186,
+      "mrr": 0.4872093023255814,
+      "ndcg_at_5": 0.04879750624901271,
+      "latency_first_ms": 35.63977928570239,
+      "latency_final_ms": 464.05313120915304
+    }
+  ]
+}

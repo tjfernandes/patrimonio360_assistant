@@ -571,9 +571,11 @@ class ContextUsagePolicyTests(unittest.TestCase):
     def test_text_retrieval_window_uses_results_page_size_not_candidate_count(self) -> None:
         settings = get_settings()
         previous_candidates = settings.CHAT_RETRIEVAL_CANDIDATES
+        previous_window = settings.CHAT_RETRIEVAL_PAGINATION_WINDOW
         gateway = _WindowOpenSearchGateway()
         try:
             settings.CHAT_RETRIEVAL_CANDIDATES = 1000
+            settings.CHAT_RETRIEVAL_PAGINATION_WINDOW = 150
             service = ChatService(
                 settings=settings,
                 opensearch_gateway=gateway,
@@ -596,10 +598,12 @@ class ContextUsagePolicyTests(unittest.TestCase):
             )
         finally:
             settings.CHAT_RETRIEVAL_CANDIDATES = previous_candidates
+            settings.CHAT_RETRIEVAL_PAGINATION_WINDOW = previous_window
 
-        self.assertEqual(total, 1234)
+        self.assertEqual(total, 150)
         self.assertEqual(len(docs), 10)
         self.assertEqual(gateway.search_page_calls[0]["page_size"], 10)
+        self.assertEqual(gateway.search_page_calls[0]["retrieval_window_size"], 150)
 
     def test_text_artifact_hydration_limits_images_to_visible_page(self) -> None:
         settings = get_settings()

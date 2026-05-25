@@ -328,6 +328,36 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         )
         self.assertGreaterEqual(knn_query["text_embedding"]["k"], 15)
 
+    def test_text_retrieval_page_uses_fixed_retrieval_window(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        gateway._search_relevant_context_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="vestidos crianca",
+            lexical_query="vestidos crianca",
+            query_embedding=[0.1, 0.2, 0.3],
+            from_offset=15,
+            page_size=15,
+            filters=None,
+            sort=None,
+            retrieval_window_size=150,
+        )
+
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["query"]["hybrid"]["pagination_depth"], 150)
+        queries = body["query"]["hybrid"]["queries"]
+        knn_query = next(
+            q["bool"]["must"][0]["knn"]
+            for q in queries
+            if "bool" in q and "knn" in q["bool"]["must"][0]
+        )
+        self.assertEqual(knn_query["text_embedding"]["k"], 150)
+
     def test_image_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())
         dummy = _SearchDummyClient()
@@ -391,6 +421,47 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertTrue(body["track_total_hits"])
         knn_query = body["query"]["bool"]["must"][0]["knn"]
         self.assertGreaterEqual(knn_query["visual_embedding"]["k"], 10)
+
+    def test_image_retrieval_page_uses_fixed_retrieval_window(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        gateway._search_similar_images_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            image_embedding=[0.1, 0.2, 0.3],
+            from_offset=15,
+            page_size=15,
+            retrieval_window_size=150,
+        )
+
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        knn_query = body["query"]["bool"]["must"][0]["knn"]
+        self.assertEqual(knn_query["visual_embedding"]["k"], 150)
+
+    def test_multiview_retrieval_page_uses_fixed_retrieval_window(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        gateway._search_similar_images_multi_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            image_embeddings=[[0.1, 0.2, 0.3], [0.2, 0.3, 0.4]],
+            from_offset=15,
+            page_size=15,
+            retrieval_window_size=150,
+        )
+
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        nested_bool = body["query"]["bool"]["must"][0]["bool"]
+        first_knn = nested_bool["should"][0]["knn"]
+        self.assertEqual(first_knn["visual_embedding"]["k"], 150)
 
     def test_multiview_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())
