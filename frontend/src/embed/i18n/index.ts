@@ -31,6 +31,8 @@ const TRANSLATIONS: Record<ChatLanguage, TranslationTree> = {
       artifactImages: 'Imagens associadas',
       artifactNoImages: 'Sem imagens associadas.',
       imageUnavailable: 'Imagem indisponivel',
+      previousImage: 'Imagem anterior',
+      nextImage: 'Imagem seguinte',
       openDetailUrl: 'Abrir ficha no portal',
       artifactField: {
         artifactId: 'ID',
@@ -95,7 +97,7 @@ const TRANSLATIONS: Record<ChatLanguage, TranslationTree> = {
     },
     assistantEmbed: {
       enterFullscreen: 'Fullscreen',
-      exitFullscreen: 'Sair fullscreen',
+      exitFullscreen: 'Exit fullscreen',
       virtualTour: 'Tour virtual',
     },
     embedPage: {
@@ -128,6 +130,8 @@ const TRANSLATIONS: Record<ChatLanguage, TranslationTree> = {
       artifactImages: 'Associated images',
       artifactNoImages: 'No associated images.',
       imageUnavailable: 'Image unavailable',
+      previousImage: 'Previous image',
+      nextImage: 'Next image',
       openDetailUrl: 'Open artifact page',
       artifactField: {
         artifactId: 'ID',
@@ -150,7 +154,7 @@ const TRANSLATIONS: Record<ChatLanguage, TranslationTree> = {
       newConversation: 'New conversation',
       close: 'Close',
       welcome: 'Welcome',
-      welcomeTitle: 'AMALIA Virtual Assistant',
+      welcomeTitle: 'Virtual Assistant',
       welcomeDescription:
         'Ask a question about the museum or upload an image for visual collection search.',
       assistantBadge: 'SYSTEM',

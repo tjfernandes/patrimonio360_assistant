@@ -165,6 +165,7 @@ function TourChatWidget({
   const [statusMessages, setStatusMessages] = useState<string[]>([])
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
+  const [selectedArtifactImageIndex, setSelectedArtifactImageIndex] = useState(0)
   const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -217,6 +218,7 @@ function TourChatWidget({
       artifactModalCloseTimerRef.current = null
     }
     setIsArtifactModalClosing(false)
+    setSelectedArtifactImageIndex(0)
     setSelectedArtifactResult(artifact)
   }
 
@@ -231,6 +233,7 @@ function TourChatWidget({
     }
     artifactModalCloseTimerRef.current = window.setTimeout(() => {
       setSelectedArtifactResult(null)
+      setSelectedArtifactImageIndex(0)
       setIsArtifactModalClosing(false)
       artifactModalCloseTimerRef.current = null
     }, ARTIFACT_MODAL_CLOSE_ANIMATION_MS)
@@ -327,7 +330,16 @@ function TourChatWidget({
     }
     setIsArtifactModalClosing(false)
     setSelectedArtifactResult(null)
+    setSelectedArtifactImageIndex(0)
     setMessages([buildStarterMessage()])
+  }
+
+  const handleLanguageChange = (nextLanguage: ChatLanguage) => {
+    if (isSending || nextLanguage === language) {
+      return
+    }
+    setLanguage(nextLanguage)
+    resetConversation()
   }
 
   useEffect(() => {
@@ -1071,6 +1083,140 @@ function TourChatWidget({
     )
   }
 
+  const renderArtifactImageViewer = (images: ChatArtifactImage[]) => {
+    if (images.length === 0) {
+      return null
+    }
+
+    const activeIndex = Math.min(Math.max(selectedArtifactImageIndex, 0), images.length - 1)
+    const activeImage = images[activeIndex]
+    const activeImageUrl = resolveArtifactImageUrl(activeImage)
+    const activeLabel =
+      activeImage.altText ||
+      activeImage.caption ||
+      activeImage.originalImageName ||
+      `${tt('imageLabel')} ${activeIndex + 1}`
+    const hasMultipleImages = images.length > 1
+    const moveImage = (direction: number) => {
+      setSelectedArtifactImageIndex((current) => {
+        const normalized = ((current % images.length) + images.length) % images.length
+        return (normalized + direction + images.length) % images.length
+      })
+    }
+
+    return (
+      <div className="space-y-2">
+        <div className="relative overflow-hidden rounded-lg border border-[#ddc8c4] bg-[#f8f1ef]">
+          {activeImageUrl ? (
+            <button
+              type="button"
+              onClick={() => setLightboxImage({ src: activeImageUrl, alt: activeLabel })}
+              className="flex h-[46vh] min-h-[280px] max-h-[540px] w-full cursor-zoom-in items-center justify-center p-2"
+            >
+              <img
+                src={activeImageUrl}
+                alt={activeLabel}
+                className="max-h-full max-w-full object-contain"
+                loading="lazy"
+              />
+            </button>
+          ) : (
+            <div className="flex h-[46vh] min-h-[280px] max-h-[540px] items-center justify-center p-3 text-sm text-[#7b686c]">
+              {tt('imageUnavailable')}
+            </div>
+          )}
+
+          {hasMultipleImages ? (
+            <>
+              <button
+                type="button"
+                onClick={() => moveImage(-1)}
+                aria-label={tt('previousImage')}
+                title={tt('previousImage')}
+                className="absolute left-2 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-white/65 bg-black/38 text-white shadow-sm transition-colors hover:bg-black/58"
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+                  <path
+                    d="M15 18l-6-6 6-6"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => moveImage(1)}
+                aria-label={tt('nextImage')}
+                title={tt('nextImage')}
+                className="absolute right-2 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border border-white/65 bg-black/38 text-white shadow-sm transition-colors hover:bg-black/58"
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+                  <path
+                    d="M9 18l6-6-6-6"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </>
+          ) : null}
+
+          <div className="absolute right-2 top-2 rounded-full bg-black/45 px-2 py-0.5 text-[11px] font-semibold text-white">
+            {activeIndex + 1} / {images.length}
+          </div>
+        </div>
+
+        {activeImage.caption || activeImage.altText ? (
+          <p className="rounded-lg border border-[#eadbd8] bg-white/70 px-2.5 py-1.5 text-xs leading-snug text-[#6b5b5f]">
+            {activeImage.caption || activeImage.altText}
+          </p>
+        ) : null}
+
+        {hasMultipleImages ? (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {images.map((image, index) => {
+              const imageUrl = resolveArtifactImageUrl(image)
+              const label =
+                image.altText ||
+                image.caption ||
+                image.originalImageName ||
+                `${tt('imageLabel')} ${index + 1}`
+              return (
+                <button
+                  key={`${image.imageId || image.localPath || image.sourceUrl || index}`}
+                  type="button"
+                  onClick={() => setSelectedArtifactImageIndex(index)}
+                  aria-label={label}
+                  title={label}
+                  className={`flex h-16 w-20 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-[#f8f1ef] p-1 transition-colors ${
+                    index === activeIndex
+                      ? 'border-[#6d0b1b] ring-2 ring-[#6d0b1b]/20'
+                      : 'border-[#ddc8c4] hover:border-[#b8918b]'
+                  }`}
+                >
+                  {imageUrl ? (
+                    <img
+                      src={imageUrl}
+                      alt={label}
+                      className="max-h-full max-w-full object-contain"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <span className="text-[10px] text-[#7b686c]">{index + 1}</span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
   const renderNavigationTargets = (
     navigationTargets: ChatNavigationTarget[] | undefined,
     imageMatches: ChatImageMatch[] | undefined,
@@ -1174,8 +1320,9 @@ function TourChatWidget({
               <button
                 key={option}
                 type="button"
-                onClick={() => setLanguage(option)}
-                className={`px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] transition-colors ${
+                onClick={() => handleLanguageChange(option)}
+                disabled={isSending}
+                className={`px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                   language === option
                     ? 'bg-[#6d0b1b] text-white'
                     : 'text-[#5a2730] hover:bg-white'
@@ -1625,44 +1772,7 @@ function TourChatWidget({
                     {selectedArtifactResult.images.length === 0 ? (
                       <p className="text-sm text-[#6b5b5f] lg:text-base">{tt('artifactNoImages')}</p>
                     ) : (
-                      <div className="grid grid-cols-2 gap-2">
-                        {selectedArtifactResult.images.map((image, index) => {
-                          const imageUrl = resolveArtifactImageUrl(image)
-                          const label =
-                            image.altText ||
-                            image.caption ||
-                            image.originalImageName ||
-                            `${tt('imageLabel')} ${index + 1}`
-                          return (
-                            <article
-                              key={`${image.imageId || image.localPath || image.sourceUrl || index}`}
-                              className="overflow-hidden rounded-lg border border-[#ddc8c4] bg-white"
-                            >
-                              {imageUrl ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setLightboxImage({ src: imageUrl, alt: label })}
-                                  className="block w-full cursor-zoom-in"
-                                >
-                                  <img
-                                    src={imageUrl}
-                                    alt={label}
-                                    className="h-24 w-full object-cover"
-                                    loading="lazy"
-                                  />
-                                </button>
-                              ) : (
-                                <div className="flex h-24 items-center justify-center bg-[#f3e9e6] text-[11px] text-[#7b686c]">
-                                  {tt('imageUnavailable')}
-                                </div>
-                              )}
-                              {/* <p className="truncate px-2 py-1 text-[10px] text-[#6b5b5f]">
-                                {image.localPath || image.originalImageName || image.imageId || image.sourceUrl}
-                              </p> */}
-                            </article>
-                          )
-                        })}
-                      </div>
+                      renderArtifactImageViewer(selectedArtifactResult.images)
                     )}
                   </div>
                 </div>

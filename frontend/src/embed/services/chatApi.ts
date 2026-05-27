@@ -661,6 +661,7 @@ export async function fetchChatResultsPage(
       body: JSON.stringify({
         museum_slug: request.museumSlug,
         museum_id: request.museumId,
+        language,
         conversation_id: request.conversationId,
         results_page: resultsPage,
         results_page_size: resultsPageSize,
