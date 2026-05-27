@@ -246,7 +246,7 @@ class ModelRetrievalService:
     ) -> ModelRetrievalResult:
         cache_key = self._cache_key(model_bytes=model_bytes, file_name=file_name)
         entry = self._get_entry(cache_key, file_name)
-        await self._emit_status(progress_cb, "A gerar vistas do modelo 3D", stage="render_first_pass")
+        await self._emit_status(progress_cb, "status.generating_model_views", stage="render_first_pass")
         entry = await self._ensure_first_pass(
             cache_key=cache_key,
             entry=entry,
@@ -265,7 +265,7 @@ class ModelRetrievalService:
             candidate_top_k,
             1,
         )
-        await self._emit_status(progress_cb, "A procurar artefactos no acervo", stage="search_first_pass")
+        await self._emit_status(progress_cb, "status.searching_collection", stage="search_first_pass")
         image_embeddings = list(entry.first_pass_embeddings)
         image_page = await self.opensearch_gateway.search_similar_images_multi_page(
             museum_slug=museum_slug,

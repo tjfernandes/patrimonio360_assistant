@@ -19,6 +19,7 @@ if "pydantic_settings" not in sys.modules:
 
 from app.core.config import get_settings
 from app.prompts.chat_prompts import build_final_answer_prompt
+from app.query_planning import QueryExecutionResult, QueryPlan
 from app.schemas.chat import (
     ArtifactResult,
     ChatResultsPageRequest,
@@ -257,6 +258,67 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertIn("retrieval_context:", prompt)
         self.assertIn("fonte principal de factos", prompt)
         self.assertIn("media enviado neste turno", prompt)
+
+    def test_final_prompt_uses_selected_english_language(self) -> None:
+        prompt = build_final_answer_prompt(
+            museum_slug="mnaz",
+            museum_name="Museu Nacional do Azulejo",
+            input_modality="text",
+            mode="llm_only",
+            intent="fallback",
+            rolling_summary="",
+            filters_state={},
+            sort_state={},
+            user_message="hello",
+            rewritten_query="hello",
+            retrieval_context="",
+            use_history_for_answer=False,
+            language="en",
+        )
+
+        self.assertIn("Final answer language: English.", prompt)
+        self.assertIn("Write the final answer fully in English.", prompt)
+
+    def test_status_updates_use_selected_english_language(self) -> None:
+        service = _build_service()
+        events: list[dict[str, object]] = []
+
+        async def collect(event: dict[str, object]) -> None:
+            events.append(event)
+
+        asyncio.run(
+            service._emit_status(
+                collect,
+                "status.artifacts_found",
+                language="en",
+                artifact_count=2,
+            )
+        )
+
+        self.assertEqual(events[0]["message"], "Found 2 artifacts")
+
+    def test_structured_reply_uses_selected_english_language(self) -> None:
+        service = _build_service()
+        reply = service._format_structured_reply(
+            plan=QueryPlan(operation="count", confidence=0.9),
+            result=QueryExecutionResult(operation="count", count=3, total=3),
+            language="en",
+        )
+
+        self.assertEqual(
+            reply,
+            "There are 3 artifacts in the collection that match the request.",
+        )
+
+    def test_sanitizer_keeps_english_reply_english(self) -> None:
+        service = _build_service()
+        reply = service._sanitize_assistant_reply(
+            "Based on the information provided by the context, see [doc_1].",
+            docs=[{"title": "Tile Panel", "inventory_number": "MNAZ 1"}],
+            language="en",
+        )
+
+        self.assertEqual(reply, 'see the artifact "Tile Panel" (MNAZ 1).')
 
     def test_case_d_greeting_should_not_use_history_for_query(self) -> None:
         service = _build_service()

@@ -22,6 +22,7 @@ from app.schemas.chat import (
     ResponseFormatObject,
 )
 from app.services.chat_service import ChatService, get_chat_service
+from app.services.chat_i18n import translate
 
 router = APIRouter()
 SUPPORTED_MODEL_EXTENSIONS = {".glb", ".gltf", ".obj"}
@@ -94,29 +95,42 @@ def _build_streaming_response(
     )
 
 
-def _parse_metadata_field(metadata: str | None) -> dict[str, object] | None:
+def _parse_metadata_field(
+    metadata: str | None,
+    *,
+    language: str | None = None,
+) -> dict[str, object] | None:
     if not metadata:
         return None
     try:
         parsed = json.loads(metadata)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"metadata invalido: {exc}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.metadata_invalid", language, error=str(exc)),
+        ) from exc
     if isinstance(parsed, dict):
         return parsed
     return None
 
 
-def _validate_response_format(value: str) -> None:
+def _validate_response_format(value: str, *, language: str | None = None) -> None:
     if value not in {"text", "json_object"}:
-        raise HTTPException(status_code=400, detail="response_format invalido.")
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.response_format_invalid", language),
+        )
 
 
-def _validate_model_filename(filename: str | None) -> str:
+def _validate_model_filename(filename: str | None, *, language: str | None = None) -> str:
     file_name = (filename or "").strip()
     suffix = Path(file_name).suffix.lower()
     if not file_name or suffix not in SUPPORTED_MODEL_EXTENSIONS:
         allowed = ", ".join(sorted(SUPPORTED_MODEL_EXTENSIONS))
-        raise HTTPException(status_code=400, detail=f"Formato 3D invalido. Usa {allowed}.")
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.model_format_invalid", language, allowed=allowed),
+        )
     return file_name
 
 
@@ -189,9 +203,12 @@ async def post_chat_image_message(
 ) -> ChatMessageResponse:
     content = await image.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Imagem vazia no upload.")
-    _validate_response_format(response_format)
-    metadata_payload = _parse_metadata_field(metadata)
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.empty_image_upload", language),
+        )
+    _validate_response_format(response_format, language=language)
+    metadata_payload = _parse_metadata_field(metadata, language=language)
 
     payload = ChatImageMessageRequest(
         museum_slug=museum_slug,
@@ -234,9 +251,12 @@ async def post_chat_image_message_stream(
 ) -> StreamingResponse:
     content = await image.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Imagem vazia no upload.")
-    _validate_response_format(response_format)
-    metadata_payload = _parse_metadata_field(metadata)
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.empty_image_upload", language),
+        )
+    _validate_response_format(response_format, language=language)
+    metadata_payload = _parse_metadata_field(metadata, language=language)
 
     payload = ChatImageMessageRequest(
         museum_slug=museum_slug,
@@ -283,10 +303,13 @@ async def post_chat_model_message(
 ) -> ChatMessageResponse:
     content = await model_file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Modelo 3D vazio no upload.")
-    _validate_response_format(response_format)
-    validated_file_name = _validate_model_filename(model_file.filename)
-    metadata_payload = _parse_metadata_field(metadata)
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.empty_model_upload", language),
+        )
+    _validate_response_format(response_format, language=language)
+    validated_file_name = _validate_model_filename(model_file.filename, language=language)
+    metadata_payload = _parse_metadata_field(metadata, language=language)
 
     payload = ChatModelMessageRequest(
         museum_slug=museum_slug,
@@ -329,10 +352,13 @@ async def post_chat_model_message_stream(
 ) -> StreamingResponse:
     content = await model_file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="Modelo 3D vazio no upload.")
-    _validate_response_format(response_format)
-    validated_file_name = _validate_model_filename(model_file.filename)
-    metadata_payload = _parse_metadata_field(metadata)
+        raise HTTPException(
+            status_code=400,
+            detail=translate("error.empty_model_upload", language),
+        )
+    _validate_response_format(response_format, language=language)
+    validated_file_name = _validate_model_filename(model_file.filename, language=language)
+    metadata_payload = _parse_metadata_field(metadata, language=language)
 
     payload = ChatModelMessageRequest(
         museum_slug=museum_slug,

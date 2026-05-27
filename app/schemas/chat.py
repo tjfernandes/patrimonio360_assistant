@@ -229,6 +229,10 @@ class ChatResultsPageRequest(BaseModel):
         min_length=1,
         description="Museum id used for strict retrieval filters.",
     )
+    language: LanguageCode | None = Field(
+        default=None,
+        description="Preferred language for user-facing errors ('pt' or 'en').",
+    )
     conversation_id: str = Field(..., min_length=1, description="Existing conversation id.")
     results_page: int = Field(default=1, ge=1, description="Requested page number.")
     results_page_size: int | None = Field(

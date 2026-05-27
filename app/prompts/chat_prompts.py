@@ -300,6 +300,7 @@ def build_final_answer_prompt(
     prompt_parts = [
         "Es um assistente virtual para uma visita 360 ao museu.",
         "Idioma final da resposta: portugues.",
+        "Escreve a resposta final integralmente em portugues.",
         "Politica de precedencia para resposta: retrieval_context > CURRENT_MESSAGE > EXPLICIT_STATE > RECENT_HISTORY_AUX > ROLLING_SUMMARY_AUX.",
         "Usa retrieval_context como fonte principal de factos.",
         "Nunca exponhas variáveis como retrieval_context internos na resposta final.",

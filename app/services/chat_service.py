@@ -10,9 +10,9 @@ from uuid import uuid4
 
 from app.core.config import Settings, get_settings
 from app.prompts import (
-    ROUTER_SYSTEM_PROMPT,
     build_final_answer_prompt,
     build_router_user_prompt,
+    get_router_system_prompt,
 )
 from app.prompts.query_planner_prompts import (
     RETRIEVAL_QUERY_REWRITE_SYSTEM_PROMPT,
@@ -52,6 +52,7 @@ from app.services.chat_session_store import (
     ChatSessionStore,
     get_chat_session_store,
 )
+from app.services.chat_i18n import normalize_language, translate
 from app.services.llm_service import LLMService, LLMServiceError, get_llm_service
 from app.services.opensearch_client import OpenSearchGateway, get_opensearch_gateway
 from app.services.model_retrieval import ModelRetrievalService, get_model_retrieval_service
@@ -241,16 +242,39 @@ class ChatService:
     async def _emit_status(
         self,
         status_cb: StatusCallback | None,
-        message: str,
+        key: str,
+        *,
+        language: str | None = None,
         **fields: object,
     ) -> None:
         if status_cb is None:
             return
-        payload: dict[str, Any] = {"type": "status", "message": message, **fields}
+        payload: dict[str, Any] = {
+            "type": "status",
+            "key": key,
+            "message": translate(key, language, **fields),
+            **fields,
+        }
         try:
             await status_cb(payload)
         except Exception:
             logger.debug("status callback failed", exc_info=True)
+
+    def _sync_state_language(
+        self,
+        state: ChatSessionState,
+        requested_language: str | None,
+    ) -> str:
+        language = normalize_language(requested_language or state.language)
+        state.language = language
+        return language
+
+    def _final_system_prompt(self, system_prompt: str | None, language: str | None) -> str:
+        language_guard = translate("llm.final_language_guard", language)
+        base_prompt = (system_prompt or "").strip()
+        if not base_prompt:
+            return language_guard
+        return f"{base_prompt}\n\n{language_guard}"
 
     def _resolve_results_page_size(self, requested_page_size: int | None, *, default_size: int) -> int:
         base = max(int(default_size), 1)
@@ -755,6 +779,7 @@ class ChatService:
                 results_total=0,
                 results_has_more=False,
             )
+        self._sync_state_language(state, payload.language)
 
         retrieval_request = dict(state.last_paged_retrieval_request or {})
         retrieval_kind = str(retrieval_request.get("kind") or "")
@@ -922,8 +947,9 @@ class ChatService:
             conversation_id=conversation_id,
             museum_slug=payload.museum_slug,
         )
+        language = self._sync_state_language(state, payload.language)
         self.session_store.append_turn(state, role="user", text=payload.message)
-        await self._emit_status(status_cb, "A analisar pedido")
+        await self._emit_status(status_cb, "status.analyzing_request", language=language)
 
         context_policy = self._derive_context_policy(
             message=payload.message,
@@ -1072,7 +1098,7 @@ class ChatService:
         if router_decision["mode"] == "rag" and self.settings.CHAT_ENABLE_RAG:
             # Retrieval must stay strict to user wording (no expansion/rewrite additions).
             retrieval_query = payload.message
-            await self._emit_status(status_cb, "A procurar artefactos no acervo")
+            await self._emit_status(status_cb, "status.searching_collection", language=language)
             (
                 retrieval_context,
                 retrieved_docs_count,
@@ -1088,7 +1114,8 @@ class ChatService:
             )
             await self._emit_status(
                 status_cb,
-                f"Encontrados {retrieved_docs_count} artefactos",
+                "status.artifacts_found",
+                language=language,
                 artifact_count=retrieved_docs_count,
             )
             retrieved_docs = await self._filter_docs_with_llm(
@@ -1226,13 +1253,13 @@ class ChatService:
             effective_sort=effective_sort,
             use_history_for_answer=use_history_for_answer,
         )
-        await self._emit_status(status_cb, "A gerar resposta final")
+        await self._emit_status(status_cb, "status.generating_final_answer", language=language)
 
         try:
             llm_response = await self.llm_service.generate(
                 message=final_message,
                 response_format=requested_format,
-                system_prompt=payload.system_prompt,
+                system_prompt=self._final_system_prompt(payload.system_prompt, language),
                 model_override=payload.model_override,
             )
         except LLMServiceError as exc:
@@ -1244,10 +1271,7 @@ class ChatService:
                 error=str(exc),
             )
             # Soft-fail in dev so frontend keeps moving while LLM infra is still unstable.
-            fallback = (
-                f"LLM unavailable in dev: {exc}. "
-                "Check LLM_PROVIDER/LLM_BASE_URL/model settings in backend .env."
-            )
+            fallback = translate("error.llm_unavailable", language, error=str(exc))
             return ChatMessageResponse(
                 conversation_id=conversation_id,
                 response_format=requested_format,
@@ -1273,6 +1297,7 @@ class ChatService:
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
             docs=retrieved_docs,
+            language=language,
         )
         if final_reply_text != llm_response.text:
             self._log(
@@ -1308,7 +1333,7 @@ class ChatService:
         )
         self.session_store.save(state)
         self._log_state_after_reply(state)
-        await self._emit_status(status_cb, "Resposta pronta")
+        await self._emit_status(status_cb, "status.answer_ready", language=language)
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
@@ -1335,14 +1360,15 @@ class ChatService:
             conversation_id=payload.conversation_id,
             museum_slug=payload.museum_slug,
         )
+        language = self._sync_state_language(state, payload.language)
         if not state.history:
-            raise ValueError("Conversa sem histÃ³rico para regenerar.")
+            raise ValueError(translate("error.no_history_regenerate", language))
 
         while state.history and state.history[-1].role == "assistant":
             state.history.pop()
 
         if not state.history or state.history[-1].role != "user":
-            raise ValueError("NÃ£o existe mensagem de utilizador para regenerar resposta.")
+            raise ValueError(translate("error.no_user_message_regenerate", language))
 
         last_user_message = state.history[-1].text
         state.history.pop()
@@ -1352,6 +1378,7 @@ class ChatService:
             museum_slug=payload.museum_slug,
             museum_id=payload.museum_id,
             museum_name=payload.museum_name,
+            language=language,
             message=last_user_message,
             conversation_id=payload.conversation_id,
             response_format=payload.response_format,
@@ -1381,7 +1408,15 @@ class ChatService:
             museum_id=payload.museum_id,
             metadata=payload.metadata,
         )
-        user_message = (payload.message or "").strip() or self.settings.CHAT_IMAGE_DEFAULT_MESSAGE
+        state = self.session_store.load_or_create(
+            conversation_id=conversation_id,
+            museum_slug=payload.museum_slug,
+        )
+        language = self._sync_state_language(state, payload.language)
+        user_message = (payload.message or "").strip() or translate(
+            "message.default_image_query",
+            language,
+        )
         self._log(
             logging.INFO,
             "chat.receive_image",
@@ -1401,12 +1436,8 @@ class ChatService:
                 text=user_message,
             )
 
-        state = self.session_store.load_or_create(
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-        )
         self.session_store.append_turn(state, role="user", text=user_message)
-        await self._emit_status(status_cb, "A analisar imagem enviada")
+        await self._emit_status(status_cb, "status.analyzing_image", language=language)
 
         image_matches: list[ImageMatchResult] = []
         artifact_docs: list[dict[str, object]] = []
@@ -1435,10 +1466,7 @@ class ChatService:
                 museum_id=museum_id,
                 reason=f"image_embedding_failed: {exc}",
             )
-            fallback = (
-                "Nao consegui processar a imagem enviada. "
-                "Tenta novamente com outra imagem ou formato diferente."
-            )
+            fallback = translate("error.image_processing_failed", language)
             return ChatMessageResponse(
                 conversation_id=conversation_id,
                 response_format=requested_format,
@@ -1446,7 +1474,7 @@ class ChatService:
                 model_hint=payload.model_override or self.settings.llm_model_resolved,
             )
 
-        await self._emit_status(status_cb, "A procurar artefactos no acervo")
+        await self._emit_status(status_cb, "status.searching_collection", language=language)
         image_candidates_k = max(
             self.settings.CHAT_IMAGE_RETRIEVAL_TOP_K,
             self.settings.CHAT_IMAGE_ARTIFACT_TOP_K,
@@ -1532,7 +1560,8 @@ class ChatService:
                 )
             await self._emit_status(
                 status_cb,
-                f"Encontrados {len(artifact_docs)} artefactos",
+                "status.artifacts_found",
+                language=language,
                 artifact_count=len(artifact_docs),
             )
             self._log(
@@ -1552,7 +1581,12 @@ class ChatService:
                 museum_slug=payload.museum_slug,
                 museum_id=museum_id,
             )
-            await self._emit_status(status_cb, "Encontrados 0 artefactos", artifact_count=0)
+            await self._emit_status(
+                status_cb,
+                "status.artifacts_found",
+                language=language,
+                artifact_count=0,
+            )
 
         artifact_results = await self._build_artifact_results(
             museum_slug=payload.museum_slug,
@@ -1656,14 +1690,15 @@ class ChatService:
             rewritten_query=user_message,
             retrieval_context=retrieval_context,
             use_history_for_answer=False,
+            language=language,
         )
-        await self._emit_status(status_cb, "A gerar resposta final")
+        await self._emit_status(status_cb, "status.generating_final_answer", language=language)
 
         try:
             llm_response = await self.llm_service.generate(
                 message=final_message,
                 response_format=requested_format,
-                system_prompt=payload.system_prompt,
+                system_prompt=self._final_system_prompt(payload.system_prompt, language),
                 model_override=payload.model_override,
             )
         except LLMServiceError as exc:
@@ -1674,10 +1709,7 @@ class ChatService:
                 museum_slug=payload.museum_slug,
                 error=str(exc),
             )
-            fallback = (
-                f"LLM unavailable in dev: {exc}. "
-                "Check LLM_PROVIDER/LLM_BASE_URL/model settings in backend .env."
-            )
+            fallback = translate("error.llm_unavailable", language, error=str(exc))
             return ChatMessageResponse(
                 conversation_id=conversation_id,
                 response_format=requested_format,
@@ -1702,6 +1734,7 @@ class ChatService:
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
             docs=artifact_docs,
+            language=language,
         )
         if final_reply_text != llm_response.text:
             self._log(
@@ -1731,7 +1764,7 @@ class ChatService:
         )
         self.session_store.save(state)
         self._log_state_after_reply(state)
-        await self._emit_status(status_cb, "Resposta pronta")
+        await self._emit_status(status_cb, "status.answer_ready", language=language)
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
@@ -1768,7 +1801,15 @@ class ChatService:
             museum_id=payload.museum_id,
             metadata=payload.metadata,
         )
-        user_message = (payload.message or "").strip() or self.settings.CHAT_MODEL_DEFAULT_MESSAGE
+        state = self.session_store.load_or_create(
+            conversation_id=conversation_id,
+            museum_slug=payload.museum_slug,
+        )
+        language = self._sync_state_language(state, payload.language)
+        user_message = (payload.message or "").strip() or translate(
+            "message.default_model_query",
+            language,
+        )
         self._log(
             logging.INFO,
             "chat.receive_model",
@@ -1788,12 +1829,8 @@ class ChatService:
                 text=user_message,
             )
 
-        state = self.session_store.load_or_create(
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-        )
         self.session_store.append_turn(state, role="user", text=user_message)
-        await self._emit_status(status_cb, "A preparar modelo 3D")
+        await self._emit_status(status_cb, "status.preparing_model", language=language)
 
         image_matches: list[ImageMatchResult] = []
         artifact_docs: list[dict[str, object]] = []
@@ -1810,7 +1847,12 @@ class ChatService:
                 model_bytes=model_bytes,
                 file_name=file_name,
                 artifact_museum_id=explicit_museum_id,
-                progress_cb=lambda message, fields: self._emit_status(status_cb, message, **fields),
+                progress_cb=lambda message, fields: self._emit_status(
+                    status_cb,
+                    message,
+                    language=language,
+                    **fields,
+                ),
             )
             artifact_docs = retrieval_result.artifact_docs
             model_results_total = retrieval_result.image_hits_total
@@ -1877,10 +1919,7 @@ class ChatService:
                 reason=str(exc),
             )
             logger.exception("chat.model_retrieve_error exception")
-            fallback = (
-                "Nao consegui processar o modelo 3D enviado. "
-                "Tenta novamente com um ficheiro .glb, .gltf ou .obj valido."
-            )
+            fallback = translate("error.model_processing_failed", language)
             return ChatMessageResponse(
                 conversation_id=conversation_id,
                 response_format=requested_format,
@@ -1890,7 +1929,8 @@ class ChatService:
 
         await self._emit_status(
             status_cb,
-            f"Encontrados {len(artifact_docs)} artefactos",
+            "status.artifacts_found",
+            language=language,
             artifact_count=len(artifact_docs),
         )
 
@@ -1996,14 +2036,15 @@ class ChatService:
             rewritten_query=user_message,
             retrieval_context=retrieval_context,
             use_history_for_answer=False,
+            language=language,
         )
-        await self._emit_status(status_cb, "A gerar resposta final")
+        await self._emit_status(status_cb, "status.generating_final_answer", language=language)
 
         try:
             llm_response = await self.llm_service.generate(
                 message=final_message,
                 response_format=requested_format,
-                system_prompt=payload.system_prompt,
+                system_prompt=self._final_system_prompt(payload.system_prompt, language),
                 model_override=payload.model_override,
             )
         except LLMServiceError as exc:
@@ -2014,10 +2055,7 @@ class ChatService:
                 museum_slug=payload.museum_slug,
                 error=str(exc),
             )
-            fallback = (
-                f"LLM unavailable in dev: {exc}. "
-                "Check LLM_PROVIDER/LLM_BASE_URL/model settings in backend .env."
-            )
+            fallback = translate("error.llm_unavailable", language, error=str(exc))
             return ChatMessageResponse(
                 conversation_id=conversation_id,
                 response_format=requested_format,
@@ -2042,6 +2080,7 @@ class ChatService:
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
             docs=artifact_docs,
+            language=language,
         )
         if final_reply_text != llm_response.text:
             self._log(
@@ -2071,7 +2110,7 @@ class ChatService:
         )
         self.session_store.save(state)
         self._log_state_after_reply(state)
-        await self._emit_status(status_cb, "Resposta pronta")
+        await self._emit_status(status_cb, "status.answer_ready", language=language)
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
@@ -2188,7 +2227,12 @@ class ChatService:
         if mode != "structured":
             return None
 
-        await self._emit_status(status_cb, "A interpretar pedido analitico")
+        language = normalize_language(state.language)
+        await self._emit_status(
+            status_cb,
+            "status.interpreting_analytics_request",
+            language=language,
+        )
         try:
             plan = await plan_query(
                 payload.message,
@@ -2250,7 +2294,7 @@ class ChatService:
             dsl = dsl.model_copy(deep=True)
             dsl.body["track_total_hits"] = True
 
-        await self._emit_status(status_cb, "A consultar o acervo")
+        await self._emit_status(status_cb, "status.querying_collection", language=language)
         try:
             result = await self.opensearch_gateway.execute_structured_query(
                 plan=plan,
@@ -2279,7 +2323,11 @@ class ChatService:
             groups=len(result.groups),
         )
 
-        final_reply_text = self._format_structured_reply(plan=plan, result=result)
+        final_reply_text = self._format_structured_reply(
+            plan=plan,
+            result=result,
+            language=language,
+        )
         self._log(
             logging.INFO,
             "chat.structured.reply",
@@ -2326,7 +2374,7 @@ class ChatService:
         )
         self.session_store.save(state)
         self._log_state_after_reply(state)
-        await self._emit_status(status_cb, "Resposta pronta")
+        await self._emit_status(status_cb, "status.answer_ready", language=language)
 
         reply_json_payload: dict[str, object] | None = None
         if requested_format.type == "json_object":
@@ -2400,22 +2448,22 @@ class ChatService:
         *,
         plan: QueryPlan,
         result: QueryExecutionResult,
+        language: str | None = None,
     ) -> str:
         if plan.operation == "count":
             count = int(result.count or 0)
-            if count == 1:
-                return "Existe 1 artefacto no acervo que corresponde ao pedido."
-            return f"Existem {count} artefactos no acervo que correspondem ao pedido."
+            return translate("structured.count", language, count=count)
 
         if plan.operation == "exists":
             if result.exists:
-                return "Sim, existe pelo menos 1 artefacto no acervo que corresponde ao pedido."
-            return "Nao encontrei artefactos no acervo que correspondam ao pedido."
+                return translate("structured.exists.yes", language)
+            return translate("structured.exists.no", language)
 
         if plan.operation == "list":
             if not result.items:
-                return "Nao encontrei artefactos no acervo que correspondam ao pedido."
-            lines = ["Artefactos encontrados:"]
+                return translate("structured.list.empty", language)
+            lines = [translate("structured.list.header", language)]
+            inventory_label = translate("structured.list.inventory_prefix", language)
             for index, item in enumerate(result.items, start=1):
                 title = str(item.get("title") or "").strip()
                 inventory = self._doc_inventory(item)
@@ -2424,21 +2472,21 @@ class ChatService:
                 elif title:
                     lines.append(f"{index}. {title}")
                 elif inventory:
-                    lines.append(f"{index}. Inventario {inventory}")
+                    lines.append(f"{index}. {inventory_label} {inventory}")
                 else:
-                    lines.append(f"{index}. Artefacto sem titulo disponivel")
+                    lines.append(f"{index}. {translate('structured.list.untitled', language)}")
             return "\n".join(lines)
 
         if plan.operation == "group_by":
             if not result.groups:
-                return "Nao encontrei resultados no acervo para agrupar."
-            lines = ["Distribuicao encontrada:"]
+                return translate("structured.group.empty", language)
+            lines = [translate("structured.group.header", language)]
             for bucket in result.groups:
-                key = bucket.key.strip() or "Sem valor"
+                key = bucket.key.strip() or translate("structured.group.empty_key", language)
                 lines.append(f"- {key}: {bucket.doc_count}")
             return "\n".join(lines)
 
-        return "Nao foi possivel gerar resposta para esta query analitica."
+        return translate("structured.fallback", language)
 
     async def _route_message(
         self,
@@ -2521,12 +2569,13 @@ class ChatService:
             router_schema=router_schema,
             context_policy_hint=context_policy,
             conversation_state_aux=conversation_state_aux,
+            language=state.language,
         )
 
         router_response = await self.llm_service.generate(
             message=router_prompt,
             response_format=ResponseFormatObject(type="json_object"),
-            system_prompt=ROUTER_SYSTEM_PROMPT,
+            system_prompt=get_router_system_prompt(language=state.language),
             model_override=payload.model_override,
         )
 
@@ -3880,24 +3929,28 @@ class ChatService:
         text: str,
         *,
         docs: list[dict[str, object]] | None = None,
+        language: str | None = None,
     ) -> str:
         cleaned = text or ""
-        doc_label_map = self._build_doc_label_map(docs or [])
+        doc_label_map = self._build_doc_label_map(docs or [], language=language)
         if doc_label_map:
             cleaned = self._replace_doc_refs_with_labels(
                 text=cleaned,
                 doc_label_map=doc_label_map,
+                language=language,
             )
 
+        artifact_label = translate("sanitizer.artifact_label", language)
+        context_label = translate("sanitizer.context_label", language)
         cleaned = re.sub(
             r"`?\bartifact[_-]?\d+\b`?",
-            "a peca",
+            artifact_label,
             cleaned,
             flags=re.IGNORECASE,
         )
         cleaned = re.sub(
             r"\b(?:retrieval_context|current_message|explicit_state|recent_history_aux|rolling_summary_aux)\b",
-            "contexto",
+            context_label,
             cleaned,
             flags=re.IGNORECASE,
         )
@@ -3906,25 +3959,58 @@ class ChatService:
             "",
             cleaned,
         )
-        cleaned = re.sub(r"\bdocumento\s+a peca\b", "a peca", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r"\bdoc(?:umento)?[_\s-]*\d+\b", "a peca", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r"(?i)\bbased on the information provided by the context\b[:,]?\s*",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(
+            rf"\b(?:documento|document)\s+{re.escape(artifact_label)}\b",
+            artifact_label,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"\bdoc(?:umento|ument)?[_\s-]*\d+\b",
+            artifact_label,
+            cleaned,
+            flags=re.IGNORECASE,
+        )
         cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
         cleaned = re.sub(r" +([,.;:!?])", r"\1", cleaned)
         return cleaned.strip()
 
-    def _build_doc_label_map(self, docs: list[dict[str, object]]) -> dict[int, str]:
+    def _build_doc_label_map(
+        self,
+        docs: list[dict[str, object]],
+        *,
+        language: str | None = None,
+    ) -> dict[int, str]:
         labels: dict[int, str] = {}
         for index, doc in enumerate(docs, start=1):
             title = str(doc.get("title") or "").strip()
             inventory = self._doc_inventory(doc)
             if title and inventory:
-                labels[index] = f'a peca "{title}" ({inventory})'
+                labels[index] = translate(
+                    "sanitizer.titled_inventory_artifact",
+                    language,
+                    title=title,
+                    inventory=inventory,
+                )
             elif title:
-                labels[index] = f'a peca "{title}"'
+                labels[index] = translate(
+                    "sanitizer.titled_artifact",
+                    language,
+                    title=title,
+                )
             elif inventory:
-                labels[index] = f"a peca de inventario {inventory}"
+                labels[index] = translate(
+                    "sanitizer.inventory_artifact",
+                    language,
+                    inventory=inventory,
+                )
             else:
-                labels[index] = "a peca do acervo"
+                labels[index] = translate("sanitizer.collection_artifact", language)
         return labels
 
     def _compact_for_match(self, value: str) -> str:
@@ -3937,19 +4023,22 @@ class ChatService:
         *,
         text: str,
         doc_label_map: dict[int, str],
+        language: str | None = None,
     ) -> str:
+        fallback_label = translate("sanitizer.collection_artifact", language)
+
         def _replace(match: re.Match[str]) -> str:
             idx_text = match.group(1)
             try:
                 idx = int(idx_text)
             except Exception:
-                return "a peca do acervo"
-            return doc_label_map.get(idx, "a peca do acervo")
+                return fallback_label
+            return doc_label_map.get(idx, fallback_label)
 
         replaced = re.sub(r"\[doc_(\d+)\]", _replace, text, flags=re.IGNORECASE)
         replaced = re.sub(r"\bdoc[_-](\d+)\b", _replace, replaced, flags=re.IGNORECASE)
         replaced = re.sub(
-            r"\bdocumento\s+\[?doc[_-]?(\d+)\]?\b",
+            r"\b(?:documento|document)\s+\[?doc[_-]?(\d+)\]?\b",
             _replace,
             replaced,
             flags=re.IGNORECASE,
@@ -3982,6 +4071,7 @@ class ChatService:
             rewritten_query=rewritten_query,
             retrieval_context=retrieval_context,
             use_history_for_answer=use_history_for_answer,
+            language=state.language,
         )
 
     def _resolve_museum_id_values(
