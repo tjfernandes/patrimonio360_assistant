@@ -172,6 +172,8 @@ function TourChatWidget({
     buildStarterMessage(),
   ])
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+  const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map())
+  const activeTurnTopMessageIdRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const chatCloseTimerRef = useRef<number | null>(null)
   const artifactModalCloseTimerRef = useRef<number | null>(null)
@@ -183,6 +185,27 @@ function TourChatWidget({
   const latestAssistantMessageId = [...messages]
     .reverse()
     .find((message) => message.role === 'assistant' && !message.isCenteredNotice)?.id
+
+  const registerMessageElement = useCallback((messageId: string, element: HTMLElement | null) => {
+    if (element) {
+      messageElementsRef.current.set(messageId, element)
+      return
+    }
+    messageElementsRef.current.delete(messageId)
+  }, [])
+
+  const scrollActiveTurnToTop = useCallback(() => {
+    const messageId = activeTurnTopMessageIdRef.current
+    if (!messageId) {
+      return false
+    }
+    const target = messageElementsRef.current.get(messageId)
+    if (!target) {
+      return false
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    return true
+  }, [])
 
   const stripStarterNotice = (items: ChatMessage[]) =>
     items.filter((item) => !item.isCenteredNotice)
@@ -324,6 +347,7 @@ function TourChatWidget({
     clearSelectedUpload()
     setIsAssistantLoading(false)
     setStatusMessages([])
+    activeTurnTopMessageIdRef.current = null
     if (artifactModalCloseTimerRef.current !== null) {
       window.clearTimeout(artifactModalCloseTimerRef.current)
       artifactModalCloseTimerRef.current = null
@@ -343,8 +367,14 @@ function TourChatWidget({
   }
 
   useEffect(() => {
+    if (scrollActiveTurnToTop()) {
+      if (!isAssistantLoading) {
+        activeTurnTopMessageIdRef.current = null
+      }
+      return
+    }
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages])
+  }, [messages, isAssistantLoading, statusMessages, scrollActiveTurnToTop])
 
   useEffect(() => {
     void warmChatSession({ backendBaseUrl, museumSlug })
@@ -444,6 +474,7 @@ function TourChatWidget({
     const selectedModelFormatSnapshot = selectedModelFormat
 
     const userMessageId = createId()
+    activeTurnTopMessageIdRef.current = userMessageId
     setMessages((previous) => [
       ...stripStarterNotice(previous),
       {
@@ -1439,6 +1470,7 @@ function TourChatWidget({
             ) : (
               <div
                 key={message.id}
+                ref={(element) => registerMessageElement(message.id, element)}
                 className="p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
               >
                 <p>{message.text}</p>
