@@ -12,6 +12,16 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 38.775163, lon: -9.164985 },
   },
   {
+    museum_id: 'mj',
+    slug: 'mj',
+    name: 'Mosteiro dos Jerónimos',
+    description:
+      'Foi fundado por D. Manuel em 1498 para a Ordem de São Jerónimo, no local onde o Infante D. Henrique (1394-1460) mandara construir uma ermida dedicada a Santa Maria de Belém. A primiera pedra foi lançada em 1502 (ou 1501) segundo o projeto de Diogo de Boitaca, que orientou a primeira campanha d obras (terminada em 1516), e de João de Castilho, que comandou a segunda (1517-1522). A Castilho se deve a porta principal, a sacristia e o claustro. A porta poente é de autoria de Nicolau Chanterene. D. João III (reinado 1521-1557) apoiou a continuação da obra, mas, em 1569, estas foram suspensas e D. Catarina da Áustria (1507-1578) mandou refazer a capela-mor ao gosto renascentista, entregando a empreitada a João de Ruão. O Mosteiro sobrevive ao Terramoto, mas não à extinção das ordens religiosas. Depois de 1834, o edifício foi ocupado pela Casa Pia de Lisboa. As obras de restauro no século XIX alteraram-lhe toda a galeria de arcadas e poente da igreja e acrescentaram-lhe uma cúpula nuam das torres. Atualmente o edifício acolhe também a Casa Pia, o Museu da Marinha e o Museu Nacional de Arqueologia.',
+    address: 'Praça do Império 1400-206 Lisboa',
+    inaguration_year: 1502,
+    coordinates: { lat: 38.697846, lon: -9.205601 },
+  },
+  {
     museum_id: 'mnaz',
     slug: 'mnaz',
     name: 'Museu Nacional do Azulejo',
@@ -250,15 +260,5 @@ export const museumsMock: Museum[] = [
     address: 'Rua Alfredo Guimarães, 4800-407 Guimarães, Portugal',
     inaguration_year: 1928,
     coordinates: { lat: 41.442639, lon: -8.292278 },
-  },
-  {
-    museum_id: 'mj',
-    slug: 'mj',
-    name: 'Mosteiro dos Jerónimos',
-    description:
-      'Foi fundado por D. Manuel em 1498 para a Ordem de São Jerónimo, no local onde o Infante D. Henrique (1394-1460) mandara construir uma ermida dedicada a Santa Maria de Belém. A primiera pedra foi lançada em 1502 (ou 1501) segundo o projeto de Diogo de Boitaca, que orientou a primeira campanha d obras (terminada em 1516), e de João de Castilho, que comandou a segunda (1517-1522). A Castilho se deve a porta principal, a sacristia e o claustro. A porta poente é de autoria de Nicolau Chanterene. D. João III (reinado 1521-1557) apoiou a continuação da obra, mas, em 1569, estas foram suspensas e D. Catarina da Áustria (1507-1578) mandou refazer a capela-mor ao gosto renascentista, entregando a empreitada a João de Ruão. O Mosteiro sobrevive ao Terramoto, mas não à extinção das ordens religiosas. Depois de 1834, o edifício foi ocupado pela Casa Pia de Lisboa. As obras de restauro no século XIX alteraram-lhe toda a galeria de arcadas e poente da igreja e acrescentaram-lhe uma cúpula nuam das torres. Atualmente o edifício acolhe também a Casa Pia, o Museu da Marinha e o Museu Nacional de Arqueologia.',
-    address: 'Praça do Império 1400-206 Lisboa',
-    inaguration_year: 1502,
-    coordinates: { lat: 38.697846, lon: -9.205601 },
   },
 ]

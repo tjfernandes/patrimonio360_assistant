@@ -1,9 +1,15 @@
 import type {
+  ArtifactAuthor,
+  ArtifactDetailContext,
+  ArtifactExhibitionContext,
+  ArtifactSetContext,
+  ChatArtifactImage,
   ChatArtifactResult,
   ChatImageMatch,
   ChatLanguage,
   ChatNavigationTarget,
   ChatUploadKind,
+  RelatedArtifact,
 } from '../types'
 import { resolveEmbedLanguage, t } from '../i18n'
 
@@ -34,6 +40,7 @@ interface FetchChatResultsPageRequest extends ChatApiRequest {
   conversationId: string
   resultsPage: number
   resultsPageSize?: number
+  resultsRequestId?: string | null
 }
 
 export interface SendChatMessageResult {
@@ -48,6 +55,7 @@ export interface SendChatMessageResult {
   resultsPageSize: number
   resultsTotal: number
   resultsHasMore: boolean
+  resultsRequestId?: string | null
   error?: string
 }
 
@@ -60,6 +68,7 @@ export interface ChatResultsPageResult {
   resultsPageSize: number
   resultsTotal: number
   resultsHasMore: boolean
+  resultsRequestId?: string | null
   error?: string
 }
 
@@ -83,10 +92,12 @@ interface RawChatPayload {
   results_page_size?: number
   results_total?: number
   results_has_more?: boolean
+  results_request_id?: string | null
 }
 
 interface RawArtifactResult {
   artifact_id?: string
+  tipo_inventario?: string
   inventory_number?: string
   title?: string
   museum_id?: string
@@ -94,7 +105,11 @@ interface RawArtifactResult {
   category?: string
   super_category?: string
   creator?: string
+  creators?: string[]
+  creator_ids?: string[]
   date_or_period?: string
+  date_year_start?: number
+  date_year_end?: number
   support_or_material?: string
   technique?: string
   origin_history?: string
@@ -105,6 +120,16 @@ interface RawArtifactResult {
   search_text?: string
   detail_type?: string
   detail_url?: string
+  in_tour?: boolean
+  sets?: string[]
+  set_ids?: string[]
+  set_numbers?: string[]
+  exhibitions?: string[]
+  exhibition_ids?: string[]
+  exhibition_types?: string[]
+  exhibition_count?: number
+  bibliography?: string
+  bibliography_count?: number
   image_count?: number
   images?: RawArtifactImage[]
 }
@@ -112,6 +137,7 @@ interface RawArtifactResult {
 interface RawArtifactImage {
   original_image_name?: string
   image_id?: string
+  image_order?: number
   local_path?: string
   source_url?: string
   caption?: string
@@ -157,6 +183,38 @@ function normalizeNavigationTargetEntry(target: RawNavigationTarget | undefined)
   }
 }
 
+function normalizeArtifactImages(rawImages: RawArtifactImage[] | undefined): ChatArtifactImage[] {
+  if (!Array.isArray(rawImages)) {
+    return []
+  }
+  return rawImages
+    .map((image): ChatArtifactImage | null => {
+      const originalImageName = String(image.original_image_name || '').trim() || undefined
+      const imageId = String(image.image_id || '').trim() || undefined
+      const imageOrder =
+        typeof image.image_order === 'number' && Number.isFinite(image.image_order)
+          ? Math.trunc(image.image_order)
+          : undefined
+      const localPath = String(image.local_path || '').trim() || undefined
+      const sourceUrl = String(image.source_url || '').trim() || undefined
+      const caption = String(image.caption || '').trim() || undefined
+      const altText = String(image.alt_text || '').trim() || undefined
+      if (!originalImageName && !imageId && !localPath && !sourceUrl) {
+        return null
+      }
+      return {
+        originalImageName,
+        imageId,
+        imageOrder,
+        localPath,
+        sourceUrl,
+        caption,
+        altText,
+      }
+    })
+    .filter((image): image is ChatArtifactImage => image !== null)
+}
+
 function normalizeArtifactResultEntry(entry: RawArtifactResult | undefined): ChatArtifactResult | null {
   if (!entry) {
     return null
@@ -166,40 +224,37 @@ function normalizeArtifactResultEntry(entry: RawArtifactResult | undefined): Cha
     return null
   }
 
-  const images = Array.isArray(entry.images)
-    ? entry.images
-        .map((image) => {
-          const originalImageName = String(image.original_image_name || '').trim() || undefined
-          const imageId = String(image.image_id || '').trim() || undefined
-          const localPath = String(image.local_path || '').trim() || undefined
-          const sourceUrl = String(image.source_url || '').trim() || undefined
-          const caption = String(image.caption || '').trim() || undefined
-          const altText = String(image.alt_text || '').trim() || undefined
-          if (!originalImageName && !imageId && !localPath && !sourceUrl) {
-            return null
-          }
-          return {
-            originalImageName,
-            imageId,
-            localPath,
-            sourceUrl,
-            caption,
-            altText,
-          }
-        })
-        .filter((image): image is NonNullable<typeof image> => image !== null)
-    : []
+  const images = normalizeArtifactImages(entry.images)
+
+  const stringArray = (raw: unknown): string[] => {
+    if (!Array.isArray(raw)) return []
+    return raw
+      .map((v) => (v == null ? '' : String(v).trim()))
+      .filter((v) => v.length > 0)
+  }
+  const creators = stringArray(entry.creators)
+  const legacyCreator = String(entry.creator || '').trim()
+  if (creators.length === 0 && legacyCreator) {
+    creators.push(legacyCreator)
+  }
+  const intOrUndef = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined
 
   return {
     artifactId,
+    tipoInventario: String(entry.tipo_inventario || '').trim() || undefined,
     inventoryNumber: String(entry.inventory_number || '').trim() || undefined,
     title: String(entry.title || '').trim() || undefined,
     museumId: String(entry.museum_id || '').trim() || undefined,
     museum: String(entry.museum || '').trim() || undefined,
     category: String(entry.category || '').trim() || undefined,
     superCategory: String(entry.super_category || '').trim() || undefined,
-    creator: String(entry.creator || '').trim() || undefined,
+    creator: legacyCreator || creators[0] || undefined,
+    creators,
+    creatorIds: stringArray(entry.creator_ids),
     dateOrPeriod: String(entry.date_or_period || '').trim() || undefined,
+    dateYearStart: intOrUndef(entry.date_year_start),
+    dateYearEnd: intOrUndef(entry.date_year_end),
     supportOrMaterial: String(entry.support_or_material || '').trim() || undefined,
     technique: String(entry.technique || '').trim() || undefined,
     originHistory: String(entry.origin_history || entry.historical_origin || '').trim() || undefined,
@@ -209,6 +264,16 @@ function normalizeArtifactResultEntry(entry: RawArtifactResult | undefined): Cha
     searchText: String(entry.search_text || '').trim() || undefined,
     detailType: String(entry.detail_type || '').trim() || undefined,
     detailUrl: String(entry.detail_url || '').trim() || undefined,
+    inTour: Boolean(entry.in_tour),
+    sets: stringArray(entry.sets),
+    setIds: stringArray(entry.set_ids),
+    setNumbers: stringArray(entry.set_numbers),
+    exhibitions: stringArray(entry.exhibitions),
+    exhibitionIds: stringArray(entry.exhibition_ids),
+    exhibitionTypes: stringArray(entry.exhibition_types),
+    exhibitionCount: intOrUndef(entry.exhibition_count),
+    bibliography: String(entry.bibliography || '').trim() || undefined,
+    bibliographyCount: intOrUndef(entry.bibliography_count),
     imageCount: typeof entry.image_count === 'number' ? entry.image_count : undefined,
     images,
   }
@@ -264,7 +329,7 @@ function normalizeResultsMeta(
   fallbackTotal: number,
 ): Pick<
   SendChatMessageResult,
-  'resultsPage' | 'resultsPageSize' | 'resultsTotal' | 'resultsHasMore'
+  'resultsPage' | 'resultsPageSize' | 'resultsTotal' | 'resultsHasMore' | 'resultsRequestId'
 > {
   const resultsPage =
     typeof payload.results_page === 'number' && Number.isFinite(payload.results_page)
@@ -279,23 +344,29 @@ function normalizeResultsMeta(
       ? Math.max(0, Math.trunc(payload.results_total))
       : Math.max(0, fallbackTotal)
   const resultsHasMore = Boolean(payload.results_has_more)
+  const resultsRequestId =
+    typeof payload.results_request_id === 'string' && payload.results_request_id.trim()
+      ? payload.results_request_id.trim()
+      : null
   return {
     resultsPage,
     resultsPageSize,
     resultsTotal,
     resultsHasMore,
+    resultsRequestId,
   }
 }
 
 function emptyResultsMeta(): Pick<
   SendChatMessageResult,
-  'resultsPage' | 'resultsPageSize' | 'resultsTotal' | 'resultsHasMore'
+  'resultsPage' | 'resultsPageSize' | 'resultsTotal' | 'resultsHasMore' | 'resultsRequestId'
 > {
   return {
     resultsPage: 1,
     resultsPageSize: 0,
     resultsTotal: 0,
     resultsHasMore: false,
+    resultsRequestId: null,
   }
 }
 
@@ -665,6 +736,7 @@ export async function fetchChatResultsPage(
         conversation_id: request.conversationId,
         results_page: resultsPage,
         results_page_size: resultsPageSize,
+        results_request_id: request.resultsRequestId || undefined,
       }),
     })
 
@@ -679,6 +751,7 @@ export async function fetchChatResultsPage(
         resultsPageSize: resultsPageSize ?? 0,
         resultsTotal: 0,
         resultsHasMore: false,
+        resultsRequestId: request.resultsRequestId || null,
         error: message,
       }
     }
@@ -695,6 +768,7 @@ export async function fetchChatResultsPage(
       resultsPageSize: resultsPageSize ?? 0,
       resultsTotal: 0,
       resultsHasMore: false,
+      resultsRequestId: request.resultsRequestId || null,
       error: t(language, 'chatApi.networkError'),
     }
   }
@@ -762,5 +836,350 @@ export async function regenerateAssistantMessage(
       ...emptyResultsMeta(),
       error: t(language, 'chatApi.networkError'),
     }
+  }
+}
+
+// ----------------------------------------------------------------------- //
+// Detail context (modal): autores + conjuntos + exposicoes + relacionados.
+// ----------------------------------------------------------------------- //
+
+interface RawAuthorEntity {
+  entity_id?: string
+  name?: string
+  atividade?: string
+  data_nascimento?: string
+  data_obito?: string
+  local_nascimento?: string
+  local_obito?: string
+  biografia?: string
+  biography?: string
+  url?: string
+  n_objetos?: number
+}
+
+interface RawRelatedArtifact {
+  artifact_id?: string
+  inventory_number?: string
+  title?: string
+  museum_id?: string
+  museum?: string
+  category?: string
+  creators?: string[]
+  date_or_period?: string
+  detail_type?: string
+  detail_url?: string
+  in_tour?: boolean
+  image_count?: number
+  images?: RawArtifactImage[]
+  navigation_target?: RawNavigationTarget
+}
+
+interface RawSetContext {
+  entity_id?: string
+  name?: string
+  num_conjunto?: string
+  historial?: string
+  descricao?: string
+  url?: string
+  n_objetos?: number
+  artifacts?: RawRelatedArtifact[]
+  artifacts_returned?: number
+}
+
+interface RawExhibitionContext {
+  entity_id?: string
+  name?: string
+  tipo_exposicao?: string
+  local?: string
+  ano_inicial?: number
+  ano_final?: number
+  texto?: string
+  ficha_tecnica?: string
+  url?: string
+  n_objetos?: number
+  artifacts?: RawRelatedArtifact[]
+  artifacts_returned?: number
+}
+
+interface RawDetailContextPayload {
+  artifact_id?: string
+  authors?: RawAuthorEntity[]
+  sets?: RawSetContext[]
+  exhibitions?: RawExhibitionContext[]
+}
+
+function normalizeAuthor(raw: RawAuthorEntity): ArtifactAuthor {
+  const biography = String(raw.biografia || raw.biography || '').trim() || undefined
+  return {
+    entityId: String(raw.entity_id || '').trim(),
+    name: String(raw.name || '').trim() || undefined,
+    atividade: String(raw.atividade || '').trim() || undefined,
+    dataNascimento: String(raw.data_nascimento || '').trim() || undefined,
+    dataObito: String(raw.data_obito || '').trim() || undefined,
+    localNascimento: String(raw.local_nascimento || '').trim() || undefined,
+    localObito: String(raw.local_obito || '').trim() || undefined,
+    biografia: biography,
+    biography,
+    url: String(raw.url || '').trim() || undefined,
+    nObjetos: typeof raw.n_objetos === 'number' ? raw.n_objetos : undefined,
+  }
+}
+
+function normalizeRelatedArtifact(raw: RawRelatedArtifact): RelatedArtifact | null {
+  const artifactId = String(raw.artifact_id || '').trim()
+  if (!artifactId) return null
+  const creators = Array.isArray(raw.creators)
+    ? raw.creators.map((v) => String(v || '').trim()).filter((v) => v.length > 0)
+    : []
+  return {
+    artifactId,
+    inventoryNumber: String(raw.inventory_number || '').trim() || undefined,
+    title: String(raw.title || '').trim() || undefined,
+    museumId: String(raw.museum_id || '').trim() || undefined,
+    museum: String(raw.museum || '').trim() || undefined,
+    category: String(raw.category || '').trim() || undefined,
+    creators,
+    dateOrPeriod: String(raw.date_or_period || '').trim() || undefined,
+    detailType: String(raw.detail_type || '').trim() || undefined,
+    detailUrl: String(raw.detail_url || '').trim() || undefined,
+    inTour: Boolean(raw.in_tour),
+    imageCount: typeof raw.image_count === 'number' ? raw.image_count : undefined,
+    images: normalizeArtifactImages(raw.images),
+    navigationTarget: normalizeNavigationTargetEntry(raw.navigation_target) ?? undefined,
+  }
+}
+
+function normalizeSetContext(raw: RawSetContext): ArtifactSetContext {
+  const artifacts = Array.isArray(raw.artifacts)
+    ? raw.artifacts
+        .map((entry) => normalizeRelatedArtifact(entry))
+        .filter((entry): entry is RelatedArtifact => entry !== null)
+    : []
+  return {
+    entityId: String(raw.entity_id || '').trim(),
+    name: String(raw.name || '').trim() || undefined,
+    numConjunto: String(raw.num_conjunto || '').trim() || undefined,
+    historial: String(raw.historial || '').trim() || undefined,
+    descricao: String(raw.descricao || '').trim() || undefined,
+    url: String(raw.url || '').trim() || undefined,
+    nObjetos: typeof raw.n_objetos === 'number' ? raw.n_objetos : undefined,
+    artifacts,
+    artifactsReturned:
+      typeof raw.artifacts_returned === 'number' ? raw.artifacts_returned : artifacts.length,
+  }
+}
+
+function normalizeExhibitionContext(raw: RawExhibitionContext): ArtifactExhibitionContext {
+  const artifacts = Array.isArray(raw.artifacts)
+    ? raw.artifacts
+        .map((entry) => normalizeRelatedArtifact(entry))
+        .filter((entry): entry is RelatedArtifact => entry !== null)
+    : []
+  return {
+    entityId: String(raw.entity_id || '').trim(),
+    name: String(raw.name || '').trim() || undefined,
+    tipoExposicao: String(raw.tipo_exposicao || '').trim() || undefined,
+    local: String(raw.local || '').trim() || undefined,
+    anoInicial: typeof raw.ano_inicial === 'number' ? raw.ano_inicial : undefined,
+    anoFinal: typeof raw.ano_final === 'number' ? raw.ano_final : undefined,
+    texto: String(raw.texto || '').trim() || undefined,
+    fichaTecnica: String(raw.ficha_tecnica || '').trim() || undefined,
+    url: String(raw.url || '').trim() || undefined,
+    nObjetos: typeof raw.n_objetos === 'number' ? raw.n_objetos : undefined,
+    artifacts,
+    artifactsReturned:
+      typeof raw.artifacts_returned === 'number' ? raw.artifacts_returned : artifacts.length,
+  }
+}
+
+export interface FetchArtifactDetailContextRequest extends ChatApiRequest {
+  artifactId: string
+}
+
+export interface FetchArtifactDetailContextResult {
+  context?: ArtifactDetailContext
+  error?: string
+}
+
+export interface FetchRelatedArtifactsPageRequest extends ChatApiRequest {
+  artifactId: string
+  tipo: 'conjunto' | 'exposicao'
+  entityId: string
+  offset: number
+  limit: number
+}
+
+export interface FetchRelatedArtifactsPageResult {
+  artifactId: string
+  tipo: 'conjunto' | 'exposicao'
+  entityId: string
+  artifacts: RelatedArtifact[]
+  artifactsOffset: number
+  artifactsLimit: number
+  artifactsTotal: number
+  artifactsHasMore: boolean
+  error?: string
+}
+
+interface RawRelatedArtifactsPagePayload {
+  artifact_id?: string
+  tipo?: 'conjunto' | 'exposicao'
+  entity_id?: string
+  artifacts?: RawRelatedArtifact[]
+  artifacts_offset?: number
+  artifacts_limit?: number
+  artifacts_total?: number
+  artifacts_has_more?: boolean
+}
+
+export async function fetchArtifactDetailContext(
+  request: FetchArtifactDetailContextRequest,
+): Promise<FetchArtifactDetailContextResult> {
+  const language = resolveEmbedLanguage(request.language)
+  const backendBaseUrl = normalizeBackendBaseUrl(request.backendBaseUrl)
+  if (!backendBaseUrl) {
+    return { error: t(language, 'chatApi.backendNotConfigured') }
+  }
+  const artifactId = (request.artifactId || '').trim()
+  if (!artifactId) {
+    return { error: 'artifact_id obrigatorio.' }
+  }
+
+  const params = new URLSearchParams({ museum_slug: request.museumSlug })
+  if (request.museumId) params.set('museum_id', request.museumId)
+
+  try {
+    const response = await fetch(
+      `${getChatApiBaseUrl(backendBaseUrl)}/artifacts/${encodeURIComponent(artifactId)}/detail-context?${params}`,
+      { method: 'GET' },
+    )
+    if (!response.ok) {
+      return { error: await parseErrorResponse(response, language) }
+    }
+    const payload = (await response.json()) as RawDetailContextPayload
+    const authors = Array.isArray(payload.authors) ? payload.authors.map(normalizeAuthor) : []
+    const sets = Array.isArray(payload.sets) ? payload.sets.map(normalizeSetContext) : []
+    const exhibitions = Array.isArray(payload.exhibitions)
+      ? payload.exhibitions.map(normalizeExhibitionContext)
+      : []
+    return {
+      context: {
+        artifactId: String(payload.artifact_id || artifactId).trim(),
+        authors,
+        sets,
+        exhibitions,
+      },
+    }
+  } catch {
+    return { error: t(language, 'chatApi.networkError') }
+  }
+}
+
+export async function fetchRelatedArtifactsPage(
+  request: FetchRelatedArtifactsPageRequest,
+): Promise<FetchRelatedArtifactsPageResult> {
+  const language = resolveEmbedLanguage(request.language)
+  const backendBaseUrl = normalizeBackendBaseUrl(request.backendBaseUrl)
+  const fallback: FetchRelatedArtifactsPageResult = {
+    artifactId: request.artifactId,
+    tipo: request.tipo,
+    entityId: request.entityId,
+    artifacts: [],
+    artifactsOffset: Math.max(0, Math.trunc(request.offset)),
+    artifactsLimit: Math.max(1, Math.min(50, Math.trunc(request.limit))),
+    artifactsTotal: 0,
+    artifactsHasMore: false,
+  }
+  if (!backendBaseUrl) {
+    return { ...fallback, error: t(language, 'chatApi.backendNotConfigured') }
+  }
+
+  const params = new URLSearchParams({
+    artifact_id: request.artifactId,
+    tipo: request.tipo,
+    entity_id: request.entityId,
+    museum_slug: request.museumSlug,
+    offset: String(fallback.artifactsOffset),
+    limit: String(fallback.artifactsLimit),
+  })
+  if (request.museumId) params.set('museum_id', request.museumId)
+
+  try {
+    const response = await fetch(
+      `${getChatApiBaseUrl(backendBaseUrl)}/artifacts/related?${params}`,
+      { method: 'GET' },
+    )
+    if (!response.ok) {
+      return { ...fallback, error: await parseErrorResponse(response, language) }
+    }
+    const payload = (await response.json()) as RawRelatedArtifactsPagePayload
+    const artifacts = Array.isArray(payload.artifacts)
+      ? payload.artifacts
+          .map((entry) => normalizeRelatedArtifact(entry))
+          .filter((entry): entry is RelatedArtifact => entry !== null)
+      : []
+    return {
+      artifactId: String(payload.artifact_id || request.artifactId).trim(),
+      tipo: payload.tipo === 'exposicao' ? 'exposicao' : 'conjunto',
+      entityId: String(payload.entity_id || request.entityId).trim(),
+      artifacts,
+      artifactsOffset:
+        typeof payload.artifacts_offset === 'number'
+          ? Math.max(0, Math.trunc(payload.artifacts_offset))
+          : fallback.artifactsOffset,
+      artifactsLimit:
+        typeof payload.artifacts_limit === 'number'
+          ? Math.max(1, Math.min(50, Math.trunc(payload.artifacts_limit)))
+          : fallback.artifactsLimit,
+      artifactsTotal:
+        typeof payload.artifacts_total === 'number'
+          ? Math.max(0, Math.trunc(payload.artifacts_total))
+          : artifacts.length,
+      artifactsHasMore: Boolean(payload.artifacts_has_more),
+    }
+  } catch {
+    return { ...fallback, error: t(language, 'chatApi.networkError') }
+  }
+}
+
+export interface FetchArtifactFullRequest extends ChatApiRequest {
+  artifactId: string
+}
+
+export interface FetchArtifactFullResult {
+  artifact?: ChatArtifactResult
+  error?: string
+}
+
+export async function fetchArtifactFull(
+  request: FetchArtifactFullRequest,
+): Promise<FetchArtifactFullResult> {
+  const language = resolveEmbedLanguage(request.language)
+  const backendBaseUrl = normalizeBackendBaseUrl(request.backendBaseUrl)
+  if (!backendBaseUrl) {
+    return { error: t(language, 'chatApi.backendNotConfigured') }
+  }
+  const artifactId = (request.artifactId || '').trim()
+  if (!artifactId) {
+    return { error: 'artifact_id obrigatorio.' }
+  }
+  const params = new URLSearchParams({ museum_slug: request.museumSlug })
+  if (request.museumId) params.set('museum_id', request.museumId)
+  try {
+    const response = await fetch(
+      `${getChatApiBaseUrl(backendBaseUrl)}/artifacts/${encodeURIComponent(artifactId)}/full?${params}`,
+      { method: 'GET' },
+    )
+    if (!response.ok) {
+      return { error: await parseErrorResponse(response, language) }
+    }
+    const payload = (await response.json()) as RawArtifactResult
+    const artifact = normalizeArtifactResultEntry(payload)
+    if (!artifact) {
+      return { error: t(language, 'chatApi.emptyReply') }
+    }
+    return { artifact }
+  } catch {
+    return { error: t(language, 'chatApi.networkError') }
   }
 }

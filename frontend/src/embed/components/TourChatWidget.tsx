@@ -3,12 +3,17 @@ import type { DragEvent as ReactDragEvent, ReactNode, SyntheticEvent } from 'rea
 import { createPortal } from 'react-dom'
 import { resolveEmbedLanguage, t } from '../i18n'
 import {
+  fetchArtifactDetailContext,
+  fetchArtifactFull,
   fetchChatResultsPage,
+  fetchRelatedArtifactsPage,
   regenerateAssistantMessage,
   sendChatMessage,
   warmChatSession,
 } from '../services/chatApi'
 import type {
+  ArtifactDetailContext,
+  ArtifactExhibitionContext,
   ChatArtifactImage,
   ChatArtifactResult,
   ChatImageMatch,
@@ -17,6 +22,7 @@ import type {
   ChatMessage,
   ChatNavigationTarget,
   ChatUploadKind,
+  RelatedArtifact,
 } from '../types'
 import MessageMarkdown from './MessageMarkdown'
 
@@ -37,7 +43,10 @@ const MAX_IMAGE_FILE_SIZE_MB = 40
 const MAX_MODEL_FILE_SIZE_MB = 400
 const MAX_IMAGE_FILE_SIZE_BYTES = MAX_IMAGE_FILE_SIZE_MB * 1024 * 1024
 const MAX_MODEL_FILE_SIZE_BYTES = MAX_MODEL_FILE_SIZE_MB * 1024 * 1024
+const RELATED_ARTIFACTS_PAGE_SIZE = 10
 const LazyModelAttachmentViewer = lazy(() => import('./ModelAttachmentViewer'))
+
+type RelatedArtifactGroupKind = 'conjunto' | 'exposicao'
 
 function detectModelFormatFromName(fileName: string): ChatModelFormat | null {
   const extension = fileName.split('.').pop()?.toLowerCase() || ''
@@ -167,6 +176,13 @@ function TourChatWidget({
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
   const [selectedArtifactImageIndex, setSelectedArtifactImageIndex] = useState(0)
   const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
+  // Contexto relacional do artefacto aberto no modal (autores/conjuntos/exposicoes).
+  const [detailContext, setDetailContext] = useState<ArtifactDetailContext | null>(null)
+  const [isDetailContextLoading, setIsDetailContextLoading] = useState(false)
+  const [detailContextError, setDetailContextError] = useState<string | null>(null)
+  const [relatedLoadingKeys, setRelatedLoadingKeys] = useState<Set<string>>(() => new Set())
+  const [relatedLoadErrors, setRelatedLoadErrors] = useState<Record<string, string | null>>({})
+  const relatedLoadingKeysRef = useRef<Set<string>>(new Set())
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([
     buildStarterMessage(),
@@ -243,6 +259,10 @@ function TourChatWidget({
     setIsArtifactModalClosing(false)
     setSelectedArtifactImageIndex(0)
     setSelectedArtifactResult(artifact)
+    // Reset do contexto relacional; o useEffect carrega o novo.
+    setDetailContext(null)
+    setDetailContextError(null)
+    setIsDetailContextLoading(true)
   }
 
   const closeArtifactModal = useCallback(() => {
@@ -258,9 +278,59 @@ function TourChatWidget({
       setSelectedArtifactResult(null)
       setSelectedArtifactImageIndex(0)
       setIsArtifactModalClosing(false)
+      setDetailContext(null)
+      setDetailContextError(null)
+      setIsDetailContextLoading(false)
       artifactModalCloseTimerRef.current = null
     }, ARTIFACT_MODAL_CLOSE_ANIMATION_MS)
   }, [isArtifactModalClosing, selectedArtifactResult])
+
+  // Carrega contexto relacional quando o modal abre (lazy).
+  useEffect(() => {
+    if (!selectedArtifactResult) {
+      return
+    }
+    const artifactId = selectedArtifactResult.artifactId
+    if (!artifactId) {
+      setIsDetailContextLoading(false)
+      return
+    }
+    let cancelled = false
+    setDetailContext(null)
+    setIsDetailContextLoading(true)
+    setDetailContextError(null)
+    relatedLoadingKeysRef.current = new Set()
+    setRelatedLoadingKeys(new Set())
+    setRelatedLoadErrors({})
+    fetchArtifactDetailContext({
+      backendBaseUrl,
+      museumSlug,
+      museumId,
+      language,
+      artifactId,
+    })
+      .then((result) => {
+        if (cancelled) return
+        if (result.error || !result.context) {
+          setDetailContext(null)
+          setDetailContextError(result.error || tt('relatedError'))
+        } else {
+          setDetailContext(result.context)
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setDetailContext(null)
+        setDetailContextError(tt('relatedError'))
+      })
+      .finally(() => {
+        if (!cancelled) setIsDetailContextLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedArtifactResult?.artifactId])
 
   const mergeUniqueByKey = <T,>(
     currentValues: T[] | undefined,
@@ -286,6 +356,99 @@ function TourChatWidget({
       merged.push(item)
     }
     return merged
+  }
+
+  const relatedGroupKey = (kind: RelatedArtifactGroupKind, entityId: string) =>
+    `${kind}:${entityId}`
+
+  const loadMoreRelatedArtifacts = async (
+    kind: RelatedArtifactGroupKind,
+    entityId: string,
+  ) => {
+    if (!selectedArtifactResult || !detailContext) {
+      return
+    }
+    const groupKey = relatedGroupKey(kind, entityId)
+    if (relatedLoadingKeysRef.current.has(groupKey)) {
+      return
+    }
+    const group =
+      kind === 'conjunto'
+        ? detailContext.sets.find((item) => item.entityId === entityId)
+        : detailContext.exhibitions.find((item) => item.entityId === entityId)
+    if (!group) {
+      return
+    }
+    const currentCount = group.artifacts.length
+    const total = group.nObjetos ?? group.artifactsReturned ?? currentCount
+    if (currentCount >= total) {
+      return
+    }
+
+    relatedLoadingKeysRef.current.add(groupKey)
+    setRelatedLoadingKeys((current) => {
+      const next = new Set(current)
+      next.add(groupKey)
+      return next
+    })
+    setRelatedLoadErrors((current) => ({ ...current, [groupKey]: null }))
+
+    const result = await fetchRelatedArtifactsPage({
+      backendBaseUrl,
+      museumSlug,
+      museumId,
+      language,
+      artifactId: selectedArtifactResult.artifactId,
+      tipo: kind,
+      entityId,
+      offset: currentCount,
+      limit: RELATED_ARTIFACTS_PAGE_SIZE,
+    })
+
+    if (result.error) {
+      setRelatedLoadErrors((current) => ({ ...current, [groupKey]: result.error || tt('relatedError') }))
+    } else {
+      setDetailContext((current) => {
+        if (!current || current.artifactId !== selectedArtifactResult.artifactId) {
+          return current
+        }
+        const updateGroup = <T extends { entityId: string; artifacts: RelatedArtifact[]; artifactsReturned: number; nObjetos?: number }>(
+          item: T,
+        ): T => {
+          if (item.entityId !== entityId) {
+            return item
+          }
+          const artifacts = mergeUniqueByKey(
+            item.artifacts,
+            result.artifacts,
+            (artifact) => artifact.artifactId,
+          )
+          return {
+            ...item,
+            artifacts,
+            artifactsReturned: artifacts.length,
+            nObjetos: result.artifactsTotal || item.nObjetos,
+          }
+        }
+        if (kind === 'conjunto') {
+          return {
+            ...current,
+            sets: current.sets.map((item) => updateGroup(item)),
+          }
+        }
+        return {
+          ...current,
+          exhibitions: current.exhibitions.map((item) => updateGroup(item)),
+        }
+      })
+    }
+
+    relatedLoadingKeysRef.current.delete(groupKey)
+    setRelatedLoadingKeys((current) => {
+      const next = new Set(current)
+      next.delete(groupKey)
+      return next
+    })
   }
 
   const createObjectPreviewUrl = (file: File) => {
@@ -539,6 +702,7 @@ function TourChatWidget({
           resultsPageSize: chatResponse.resultsPageSize,
           resultsTotal: chatResponse.resultsTotal,
           resultsHasMore: chatResponse.resultsHasMore,
+          resultsRequestId: chatResponse.resultsRequestId,
           isLoadingMoreResults: false,
           loadMoreResultsError: null,
         },
@@ -557,6 +721,7 @@ function TourChatWidget({
           resultsPageSize: chatResponse.resultsPageSize,
           resultsTotal: chatResponse.resultsTotal,
           resultsHasMore: chatResponse.resultsHasMore,
+          resultsRequestId: chatResponse.resultsRequestId,
           isLoadingMoreResults: false,
           loadMoreResultsError: null,
         },
@@ -637,6 +802,7 @@ function TourChatWidget({
                 resultsPageSize: chatResponse.resultsPageSize,
                 resultsTotal: chatResponse.resultsTotal,
                 resultsHasMore: chatResponse.resultsHasMore,
+                resultsRequestId: chatResponse.resultsRequestId,
                 isLoadingMoreResults: false,
                 loadMoreResultsError: null,
               }
@@ -657,6 +823,7 @@ function TourChatWidget({
                 resultsPageSize: chatResponse.resultsPageSize,
                 resultsTotal: chatResponse.resultsTotal,
                 resultsHasMore: chatResponse.resultsHasMore,
+                resultsRequestId: chatResponse.resultsRequestId,
                 isLoadingMoreResults: false,
                 loadMoreResultsError: null,
               }
@@ -706,6 +873,7 @@ function TourChatWidget({
       conversationId,
       resultsPage: nextPage,
       resultsPageSize: pageSize,
+      resultsRequestId: targetMessage.resultsRequestId,
     })
 
     if (resultsPage?.conversationId) {
@@ -759,6 +927,7 @@ function TourChatWidget({
           resultsPageSize: resultsPage.resultsPageSize,
           resultsTotal: resultsPage.resultsTotal,
           resultsHasMore: resultsPage.resultsHasMore,
+          resultsRequestId: resultsPage.resultsRequestId || message.resultsRequestId,
           isLoadingMoreResults: false,
           loadMoreResultsError: null,
         }
@@ -1245,6 +1414,336 @@ function TourChatWidget({
           </div>
         ) : null}
       </div>
+    )
+  }
+
+  // ----- Modal: handler de click num artefacto relacionado ----- //
+  const handleRelatedArtifactClick = async (related: RelatedArtifact) => {
+    if (!related.artifactId) return
+    // Optimista: abre logo o modal com a info que ja temos (sem imagens),
+    // depois enriquece via fetch full.
+    const optimistic: ChatArtifactResult = {
+      artifactId: related.artifactId,
+      tipoInventario: undefined,
+      inventoryNumber: related.inventoryNumber,
+      title: related.title,
+      museumId: related.museumId,
+      museum: related.museum,
+      category: related.category,
+      superCategory: undefined,
+      creator: related.creators[0],
+      creators: related.creators,
+      creatorIds: [],
+      dateOrPeriod: related.dateOrPeriod,
+      detailType: related.detailType,
+      detailUrl: related.detailUrl,
+      inTour: related.inTour,
+      sets: [],
+      setIds: [],
+      setNumbers: [],
+      exhibitions: [],
+      exhibitionIds: [],
+      exhibitionTypes: [],
+      imageCount: related.imageCount,
+      images: related.images,
+    }
+    openArtifactModal(optimistic)
+    const { artifact, error } = await fetchArtifactFull({
+      backendBaseUrl,
+      museumSlug,
+      museumId,
+      language,
+      artifactId: related.artifactId,
+    })
+    if (!error && artifact) {
+      // So substitui se ainda for o mesmo artefacto (utilizador pode ter ja fechado / clicado em outro).
+      setSelectedArtifactResult((current) =>
+        current && current.artifactId === artifact.artifactId ? artifact : current,
+      )
+    }
+  }
+
+  // ----- Modal: render de uma lista de artefactos relacionados ----- //
+  const renderRelatedArtifactsList = (
+    artifacts: RelatedArtifact[],
+    total: number,
+    kind: RelatedArtifactGroupKind,
+    entityId: string,
+  ) => {
+    const groupKey = relatedGroupKey(kind, entityId)
+    const isLoading = relatedLoadingKeys.has(groupKey)
+    const hasMore = artifacts.length < total
+    if (!artifacts.length) {
+      return (
+        <p className="text-sm text-[#6b5b5f]">{tt('relatedArtifactsEmpty')}</p>
+      )
+    }
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.1em] text-[#6d0b1b]">
+          <span>{tt('relatedArtifactsHeader')}</span>
+          {total > artifacts.length ? (
+            <span className="text-[#6b5b5f]">
+              {tt('relatedArtifactsMoreCount', { shown: artifacts.length, total })}
+            </span>
+          ) : null}
+        </div>
+        <div className="-mx-1 flex gap-2 overflow-x-auto overscroll-x-contain px-1 pb-2">
+          {artifacts.map((art) => {
+            const thumbnail = art.images[0]
+            const thumbnailUrl = thumbnail ? resolveArtifactImageUrl(thumbnail) : null
+            const label =
+              art.title ||
+              art.inventoryNumber ||
+              art.artifactId
+            return (
+              <article
+                key={art.artifactId}
+                className="flex w-44 shrink-0 flex-col overflow-hidden rounded-lg border border-[#dfcbc6] bg-white/85 sm:w-48"
+              >
+                <button
+                  type="button"
+                  onClick={() => void handleRelatedArtifactClick(art)}
+                  className="block min-h-0 flex-1 text-left transition-colors hover:bg-[rgba(255,250,247,0.95)]"
+                >
+                  <div className="flex h-24 w-full items-center justify-center bg-[#f7efed]">
+                    {thumbnailUrl ? (
+                      <img
+                        src={thumbnailUrl}
+                        alt={label}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <span className="px-3 text-center text-[11px] font-medium text-[#7b686c]">
+                        {tt('imageUnavailable')}
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-1 px-2.5 py-2">
+                    <p className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5a2730]">
+                      {art.inventoryNumber || art.artifactId}
+                    </p>
+                    <p className="line-clamp-2 min-h-[2rem] text-xs leading-tight text-[#341d22]">
+                      {art.title || tt('artifactNoTitle')}
+                    </p>
+                    {art.creators.length ? (
+                      <p className="truncate text-[11px] text-[#6e5a5f]">
+                        {art.creators.join('; ')}
+                      </p>
+                    ) : null}
+                    {art.dateOrPeriod ? (
+                      <p className="truncate text-[11px] text-[#6e5a5f]">{art.dateOrPeriod}</p>
+                    ) : null}
+                  </div>
+                </button>
+                {art.navigationTarget ? (
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToTarget?.(art.navigationTarget!)}
+                    disabled={!onNavigateToTarget}
+                    className="block w-full border-t border-[#18304a] bg-[#13283f] px-2 py-1 text-[11px] font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {tt('viewInTour')}
+                  </button>
+                ) : null}
+              </article>
+            )
+          })}
+          {hasMore ? (
+            <button
+              type="button"
+              onClick={() => void loadMoreRelatedArtifacts(kind, entityId)}
+              disabled={isLoading}
+              aria-label={tt('viewMoreResults')}
+              title={tt('viewMoreResults')}
+              className="group flex w-28 shrink-0 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[#c7aaa4] bg-[rgba(255,255,255,0.78)] px-2 py-3 text-[#6d0b1b] transition-colors hover:border-[#6d0b1b] hover:bg-white disabled:cursor-wait disabled:opacity-70"
+            >
+              <span className="flex h-14 w-14 items-center justify-center rounded-full border border-[#d7bdb8] bg-[#6d0b1b] text-4xl font-light leading-none text-white shadow-sm transition-transform group-hover:scale-105">
+                {isLoading ? (
+                  <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/35 border-t-white" />
+                ) : (
+                  '+'
+                )}
+              </span>
+              <span className="text-[10px] font-bold uppercase tracking-[0.1em]">
+                {artifacts.length}/{total}
+              </span>
+            </button>
+          ) : null}
+        </div>
+        {relatedLoadErrors[groupKey] ? (
+          <p className="text-[11px] text-[#8a1f2e]">{relatedLoadErrors[groupKey]}</p>
+        ) : null}
+      </div>
+    )
+  }
+
+  // ----- Modal: render seccao autor ----- //
+  const renderAuthorSection = (context: ArtifactDetailContext) => {
+    if (!context.authors.length) return null
+    return (
+      <section className="rounded-xl border border-[#e2d0cc] bg-white/70 p-3">
+        <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
+          {tt('relatedAuthors')}
+        </p>
+        <div className="space-y-3">
+          {context.authors.map((author) => {
+            const birth = [author.dataNascimento, author.localNascimento].filter(Boolean).join(' — ')
+            const death = [author.dataObito, author.localObito].filter(Boolean).join(' — ')
+            return (
+              <div key={author.entityId} className="space-y-1">
+                <p className="text-sm font-semibold text-[#341d22] lg:text-base">{author.name || author.entityId}</p>
+                {author.atividade ? (
+                  <p className="text-xs text-[#5a2730]">
+                    <span className="font-semibold">{tt('authorActivity')}:</span> {author.atividade}
+                  </p>
+                ) : null}
+                {birth ? (
+                  <p className="text-xs text-[#5a2730]">
+                    <span className="font-semibold">{tt('authorBirth')}:</span> {birth}
+                  </p>
+                ) : null}
+                {death ? (
+                  <p className="text-xs text-[#5a2730]">
+                    <span className="font-semibold">{tt('authorDeath')}:</span> {death}
+                  </p>
+                ) : null}
+                {typeof author.nObjetos === 'number' ? (
+                  <p className="text-[11px] text-[#6e5a5f]">
+                    {tt('authorObjectsTotal', { n: author.nObjetos })}
+                  </p>
+                ) : null}
+                {author.biografia ? (
+                  <p className="text-xs leading-relaxed text-[#2f1c20]">{author.biografia}</p>
+                ) : null}
+                {author.url ? (
+                  <a
+                    href={author.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center text-[11px] font-semibold text-[#6d0b1b] underline"
+                  >
+                    {tt('openExternalLink')}
+                  </a>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      </section>
+    )
+  }
+
+  // ----- Modal: render seccao conjuntos ----- //
+  const renderSetsSection = (context: ArtifactDetailContext) => {
+    if (!context.sets.length) return null
+    return (
+      <section className="rounded-xl border border-[#e2d0cc] bg-white/70 p-3">
+        <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
+          {tt('relatedSets')}
+        </p>
+        <div className="space-y-4">
+          {context.sets.map((set) => (
+            <div key={set.entityId} className="space-y-2">
+              <div>
+                <p className="text-sm font-semibold text-[#341d22] lg:text-base">{set.name || set.entityId}</p>
+                {set.numConjunto ? (
+                  <p className="text-xs text-[#5a2730]">
+                    <span className="font-semibold">{tt('setNumberLabel')}:</span> {set.numConjunto}
+                  </p>
+                ) : null}
+                {set.historial ? (
+                  <p className="text-xs text-[#5a2730]">{set.historial}</p>
+                ) : null}
+                {set.descricao ? (
+                  <p className="text-xs leading-relaxed text-[#2f1c20]">{set.descricao}</p>
+                ) : null}
+                {typeof set.nObjetos === 'number' ? (
+                  <p className="text-[11px] text-[#6e5a5f]">
+                    {tt('setObjectsTotal', { n: set.nObjetos })}
+                  </p>
+                ) : null}
+              </div>
+              {renderRelatedArtifactsList(
+                set.artifacts,
+                set.nObjetos ?? set.artifactsReturned,
+                'conjunto',
+                set.entityId,
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
+  // ----- Modal: render seccao exposicoes ----- //
+  const renderExhibitionsSection = (context: ArtifactDetailContext) => {
+    if (!context.exhibitions.length) return null
+    return (
+      <section className="rounded-xl border border-[#e2d0cc] bg-white/70 p-3">
+        <p className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
+          {tt('relatedExhibitions')}
+        </p>
+        <div className="space-y-4">
+          {context.exhibitions.map((exh: ArtifactExhibitionContext) => {
+            const tipoLabel =
+              exh.tipoExposicao === 'online'
+                ? tt('exhibitionTypeOnline')
+                : exh.tipoExposicao === 'fisica'
+                  ? tt('exhibitionTypeFisica')
+                  : exh.tipoExposicao
+            const dates =
+              exh.anoInicial && exh.anoFinal && exh.anoFinal !== exh.anoInicial
+                ? `${exh.anoInicial}–${exh.anoFinal}`
+                : exh.anoInicial || exh.anoFinal || ''
+            return (
+              <div key={exh.entityId} className="space-y-2">
+                <div>
+                  <p className="text-sm font-semibold text-[#341d22] lg:text-base">{exh.name || exh.entityId}</p>
+                  {tipoLabel ? (
+                    <p className="text-xs text-[#5a2730]">
+                      <span className="font-semibold">{tt('exhibitionType')}:</span> {tipoLabel}
+                    </p>
+                  ) : null}
+                  {exh.local ? (
+                    <p className="text-xs text-[#5a2730]">
+                      <span className="font-semibold">{tt('exhibitionPlace')}:</span> {exh.local}
+                    </p>
+                  ) : null}
+                  {dates ? (
+                    <p className="text-xs text-[#5a2730]">
+                      <span className="font-semibold">{tt('exhibitionDates')}:</span> {dates}
+                    </p>
+                  ) : null}
+                  {typeof exh.nObjetos === 'number' ? (
+                    <p className="text-[11px] text-[#6e5a5f]">
+                      {tt('exhibitionObjectsTotal', { n: exh.nObjetos })}
+                    </p>
+                  ) : null}
+                  {exh.url ? (
+                    <a
+                      href={exh.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center text-[11px] font-semibold text-[#6d0b1b] underline"
+                    >
+                      {tt('openExternalLink')}
+                    </a>
+                  ) : null}
+                </div>
+                {renderRelatedArtifactsList(
+                  exh.artifacts,
+                  exh.nObjetos ?? exh.artifactsReturned,
+                  'exposicao',
+                  exh.entityId,
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </section>
     )
   }
 
@@ -1741,15 +2240,20 @@ function TourChatWidget({
                   </button>
                 </div>
 
-                <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 lg:grid-cols-[1.3fr_1fr]">
-                  <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.3fr_1fr]">
+                    <div className="min-w-0 space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
                     {([
                       //['artifactId', selectedArtifactResult.artifactId],
                       ['inventory', selectedArtifactResult.inventoryNumber],
                       ['museum', selectedArtifactResult.museum],
                       ['category', selectedArtifactResult.category],
                       ['superCategory', selectedArtifactResult.superCategory],
-                      ['creator', selectedArtifactResult.creator],
+                      // Mostra todos os autores (creators[]) ou o legado.
+                      ['creators',
+                        selectedArtifactResult.creators.length
+                          ? selectedArtifactResult.creators.join('; ')
+                          : selectedArtifactResult.creator],
                       ['dateOrPeriod', selectedArtifactResult.dateOrPeriod],
                       ['supportOrMaterial', selectedArtifactResult.supportOrMaterial],
                       ['technique', selectedArtifactResult.technique],
@@ -1777,7 +2281,7 @@ function TourChatWidget({
                     ) : null}
 
                     {selectedArtifactResult.description ? (
-                      <div className="mt-2 rounded-lg border border-[#ebdcda] bg-[rgba(255,255,255,0.85)] p-2.5">
+                      <div className="mt-2 rounded-lg bg-[rgba(255,255,255,0.55)] p-2.5">
                         <p className="mb-1 text-xs font-bold uppercase tracking-[0.1em] text-[#6d0b1b] lg:text-sm">
                           {tt('artifactDescription')}
                         </p>
@@ -1795,16 +2299,37 @@ function TourChatWidget({
                         </p>
                       </div>
                     ) : null}
+                    </div>
+
+                    <div className="min-w-0 space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
+                      <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
+                        {tt('artifactImages')} ({selectedArtifactResult.images.length})
+                      </p>
+                      {selectedArtifactResult.images.length === 0 ? (
+                        <p className="text-sm text-[#6b5b5f] lg:text-base">{tt('artifactNoImages')}</p>
+                      ) : (
+                        renderArtifactImageViewer(selectedArtifactResult.images)
+                      )}
+                    </div>
                   </div>
 
-                  <div className="space-y-2 rounded-xl border border-[#e2d0cc] bg-white/75 p-3">
-                    <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
-                      {tt('artifactImages')} ({selectedArtifactResult.images.length})
-                    </p>
-                    {selectedArtifactResult.images.length === 0 ? (
-                      <p className="text-sm text-[#6b5b5f] lg:text-base">{tt('artifactNoImages')}</p>
+                  {/* Seccoes relacionais (full-width sob o grid). Lazy-loaded por useEffect. */}
+                  <div className="mt-4 space-y-3 border-t border-[#e3ceca] bg-[rgba(252,246,244,0.6)] pt-4">
+                    {isDetailContextLoading ? (
+                      <p className="text-sm text-[#6b5b5f]">{tt('relatedLoading')}</p>
+                    ) : detailContextError ? (
+                      <p className="text-sm text-[#a04050]">{detailContextError}</p>
+                    ) : detailContext &&
+                      (detailContext.authors.length > 0 ||
+                        detailContext.sets.length > 0 ||
+                        detailContext.exhibitions.length > 0) ? (
+                      <>
+                        {renderAuthorSection(detailContext)}
+                        {renderSetsSection(detailContext)}
+                        {renderExhibitionsSection(detailContext)}
+                      </>
                     ) : (
-                      renderArtifactImageViewer(selectedArtifactResult.images)
+                      <p className="text-sm text-[#6b5b5f]">{tt('relatedEmptyAll')}</p>
                     )}
                   </div>
                 </div>
