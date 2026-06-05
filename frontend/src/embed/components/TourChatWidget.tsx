@@ -2290,7 +2290,7 @@ function TourChatWidget({
                     ) : null}
 
                     {selectedArtifactResult.originHistory ? (
-                      <div className="mt-2 rounded-lg border border-[#ebdcda] bg-[rgba(255,255,255,0.85)] p-2.5">
+                      <div className="mt-2 rounded-lg bg-[rgba(255,255,255,0.55)] p-2.5">
                         <p className="mb-1 text-xs font-bold uppercase tracking-[0.1em] text-[#6d0b1b] lg:text-sm">
                           {tt('artifactOriginHistory')}
                         </p>
