@@ -100,6 +100,8 @@ EVENT_LABELS: dict[str, str] = {
     "chat.reply_sanitized": "Resposta final sanitizada para remover IDs internos.",
     "chat.llm_error": "Erro ao chamar o LLM.",
     "chat.reply": "Resposta final gerada pelo LLM.",
+    "chat.results_page_reply": "Resposta da pagina de resultados gerada pelo LLM.",
+    "chat.results_page_reply_error": "Erro ao gerar resposta da pagina de resultados; fallback simples.",
     "chat.state_after_reply": "Estado da conversa apos resposta.",
     "chat.retrieve_not_implemented": "Retrieval ainda nao implementado neste ambiente.",
     "chat.retrieve_error": "Erro inesperado durante retrieval.",
@@ -600,6 +602,194 @@ class ChatService:
             top_k=max(top_k, 1),
         )
 
+    def _artifact_results_as_prompt_docs(
+        self,
+        artifact_results: list[ArtifactResult],
+    ) -> list[dict[str, object]]:
+        docs: list[dict[str, object]] = []
+        for artifact in artifact_results:
+            payload = artifact.model_dump(
+                mode="json",
+                exclude_none=True,
+                exclude={"images"},
+            )
+            if payload:
+                docs.append(payload)
+        return docs
+
+    def _build_visible_results_retrieval_context(
+        self,
+        *,
+        artifact_results: list[ArtifactResult],
+        image_matches: list[ImageMatchResult],
+        page: int,
+        page_size: int,
+        total: int,
+        match_section_label: str = "visible_image_matches",
+    ) -> str:
+        visible_count = len(artifact_results) if artifact_results else len(image_matches)
+        if visible_count <= 0:
+            return ""
+
+        sections = [
+            f"visible_results_page: {max(int(page), 1)}",
+            f"visible_results_page_size: {max(int(page_size), 1)}",
+            f"visible_results_count: {visible_count}",
+            f"visible_results_total: {max(int(total), 0)}",
+            "The frontend displays exactly visible_results_count result cards from current_visible_results for this answer.",
+        ]
+
+        docs_for_prompt = self._artifact_results_as_prompt_docs(artifact_results)
+        docs_context = self._format_docs_for_prompt(
+            docs=docs_for_prompt,
+            top_k=max(len(docs_for_prompt), 1),
+        )
+        if docs_context:
+            sections.append("current_visible_results:")
+            sections.append(docs_context)
+
+        if image_matches:
+            image_match_payload = [
+                match.model_dump(
+                    exclude_none=True,
+                    exclude={"artifact", "navigation_target"},
+                )
+                for match in image_matches
+            ]
+            if not docs_context:
+                sections.append("current_visible_results:")
+                sections.append(json.dumps(image_match_payload, ensure_ascii=True))
+            sections.append(f"{match_section_label}:")
+            sections.append(json.dumps(image_match_payload, ensure_ascii=True))
+
+        return "\n".join(sections).strip()
+
+    def _results_page_query_text(self, request: dict[str, Any]) -> str:
+        for key in ("query_text", "lexical_query", "original_query", "user_message"):
+            value = str(request.get(key) or "").strip()
+            if value:
+                return value
+        plan = request.get("plan")
+        if isinstance(plan, dict):
+            for key in ("query_text", "semantic_query"):
+                value = str(plan.get(key) or "").strip()
+                if value:
+                    return value
+        kind = str(request.get("kind") or "").strip()
+        return kind
+
+    def _build_results_page_reply_prompt(
+        self,
+        *,
+        museum_slug: str,
+        language: str | None,
+        query_text: str,
+        page: int,
+        total: int,
+        docs_context: str,
+    ) -> str:
+        resolved_language = normalize_language(language)
+        if resolved_language == "en":
+            return "\n".join(
+                [
+                    "You are a virtual assistant for a 360 museum tour.",
+                    "Final answer language: English.",
+                    "The user clicked a UI control to view the next page of search results.",
+                    "Write a concise answer about ONLY the artifacts in current_page_results.",
+                    "Do not summarize, reuse, or mention previous result pages.",
+                    "Do not use conversation history as a source of facts.",
+                    "Never expose artifact_id or internal doc markers such as [doc_1].",
+                    "When referring to an object, prefer its title and optionally inventory reference.",
+                    "If using an ordered list, use consecutive markers (1., 2., 3.) without blank lines between items.",
+                    f"museum_slug: {museum_slug}",
+                    f"search_query: {query_text or 'unknown'}",
+                    f"results_page: {page}",
+                    f"reported_total: {total}",
+                    "current_page_results:",
+                    docs_context,
+                ]
+            )
+
+        return "\n".join(
+            [
+                "Es um assistente virtual para uma visita 360 ao museu.",
+                "Idioma final da resposta: portugues.",
+                "O utilizador clicou num controlo de UI para ver a proxima pagina de resultados.",
+                "Escreve uma resposta curta sobre APENAS os artefactos em current_page_results.",
+                "Nao resumas, reutilizes ou menciones paginas de resultados anteriores.",
+                "Nao uses historico da conversa como fonte de factos.",
+                "Nunca exponhas artifact_id nem marcadores internos como [doc_1].",
+                "Ao referires um objeto, privilegia o titulo e opcionalmente a referencia de inventario.",
+                "Se usares lista numerada, usa marcadores consecutivos (1., 2., 3.) sem linhas em branco entre itens.",
+                f"museum_slug: {museum_slug}",
+                f"search_query: {query_text or 'desconhecida'}",
+                f"results_page: {page}",
+                f"reported_total: {total}",
+                "current_page_results:",
+                docs_context,
+            ]
+        )
+
+    async def _generate_results_page_reply(
+        self,
+        *,
+        payload: ChatResultsPageRequest,
+        request: dict[str, Any],
+        docs: list[dict[str, object]],
+        artifact_results: list[ArtifactResult],
+        page: int,
+        total: int,
+    ) -> str:
+        language = normalize_language(payload.language)
+        docs_for_prompt = docs or self._artifact_results_as_prompt_docs(artifact_results)
+        docs_context = self._format_docs_for_prompt(
+            docs=docs_for_prompt,
+            top_k=max(len(docs_for_prompt), 1),
+        )
+        if not docs_context:
+            return translate("message.results_page_fallback", language)
+
+        prompt = self._build_results_page_reply_prompt(
+            museum_slug=payload.museum_slug,
+            language=language,
+            query_text=self._results_page_query_text(request),
+            page=page,
+            total=total,
+            docs_context=docs_context,
+        )
+        try:
+            llm_response = await self.llm_service.generate(
+                message=prompt,
+                response_format=ResponseFormatObject(type="text"),
+                system_prompt=self._final_system_prompt(None, language),
+                model_override=None,
+            )
+            reply = self._sanitize_assistant_reply(
+                str(getattr(llm_response, "text", "") or ""),
+                docs=docs_for_prompt,
+                language=language,
+            )
+            if reply:
+                self._log(
+                    logging.INFO,
+                    "chat.results_page_reply",
+                    conversation_id=payload.conversation_id,
+                    museum_slug=payload.museum_slug,
+                    page=page,
+                    reply_chars=len(reply),
+                )
+                return reply
+        except Exception as exc:
+            self._log(
+                logging.WARNING,
+                "chat.results_page_reply_error",
+                conversation_id=payload.conversation_id,
+                museum_slug=payload.museum_slug,
+                page=page,
+                reason=str(exc),
+            )
+        return translate("message.results_page_fallback", language)
+
     async def _materialize_text_results_page(
         self,
         *,
@@ -675,6 +865,14 @@ class ChatService:
             navigation_targets=navigation_targets,
         )
         reported_total = self._reported_results_total(request, page_result.total)
+        reply = await self._generate_results_page_reply(
+            payload=payload,
+            request=request,
+            docs=docs,
+            artifact_results=artifact_results,
+            page=page,
+            total=reported_total,
+        )
         results_request_id = self._cache_last_retrieval_results(
             state=state,
             artifact_results=artifact_results,
@@ -685,6 +883,7 @@ class ChatService:
         )
         return ChatResultsPageResponse(
             conversation_id=payload.conversation_id,
+            reply=reply,
             artifact_results=artifact_results,
             image_matches=image_matches,
             navigation_targets=navigation_targets,
@@ -757,6 +956,14 @@ class ChatService:
             navigation_targets=navigation_targets,
         )
         reported_total = self._reported_results_total(request, page_result.total)
+        reply = await self._generate_results_page_reply(
+            payload=payload,
+            request=request,
+            docs=artifact_docs,
+            artifact_results=artifact_results,
+            page=page,
+            total=reported_total,
+        )
         results_request_id = self._cache_last_retrieval_results(
             state=state,
             artifact_results=artifact_results,
@@ -767,6 +974,7 @@ class ChatService:
         )
         return ChatResultsPageResponse(
             conversation_id=payload.conversation_id,
+            reply=reply,
             artifact_results=artifact_results,
             image_matches=image_matches,
             navigation_targets=navigation_targets,
@@ -814,6 +1022,14 @@ class ChatService:
             docs=result.items,
         )
         reported_total = self._reported_results_total(request, int(result.total or 0))
+        reply = await self._generate_results_page_reply(
+            payload=payload,
+            request=request,
+            docs=result.items,
+            artifact_results=artifact_results,
+            page=page,
+            total=reported_total,
+        )
         results_request_id = self._cache_last_retrieval_results(
             state=state,
             artifact_results=artifact_results,
@@ -824,6 +1040,7 @@ class ChatService:
         )
         return ChatResultsPageResponse(
             conversation_id=payload.conversation_id,
+            reply=reply,
             artifact_results=artifact_results,
             image_matches=[],
             navigation_targets=navigation_targets,
@@ -1025,8 +1242,17 @@ class ChatService:
             artifact_results=len(paged_artifacts),
             image_matches=len(paged_image_matches),
         )
+        reply = await self._generate_results_page_reply(
+            payload=payload,
+            request=retrieval_request,
+            docs=[],
+            artifact_results=paged_artifacts,
+            page=results_page,
+            total=results_total,
+        )
         return ChatResultsPageResponse(
             conversation_id=payload.conversation_id,
+            reply=reply,
             artifact_results=paged_artifacts,
             image_matches=paged_image_matches,
             navigation_targets=paged_navigation_targets,
@@ -1369,12 +1595,19 @@ class ChatService:
         results_request_id = str(
             state.last_paged_retrieval_request.get("results_request_id") or ""
         ).strip() or None
+        visible_retrieval_context = self._build_visible_results_retrieval_context(
+            artifact_results=paged_artifact_results,
+            image_matches=paged_image_matches,
+            page=results_page,
+            page_size=results_page_size,
+            total=results_total,
+        )
 
         final_message = self._build_final_prompt(
             payload=payload,
             state=state,
             router_decision=router_decision,
-            retrieval_context=retrieval_context,
+            retrieval_context=visible_retrieval_context or retrieval_context,
             effective_filters=effective_filters,
             effective_sort=effective_sort,
             use_history_for_answer=use_history_for_answer,
@@ -1414,6 +1647,7 @@ class ChatService:
                 results_request_id=results_request_id,
             )
 
+        reply_docs = self._artifact_results_as_prompt_docs(paged_artifact_results) or retrieved_docs
         self._log(
             logging.INFO,
             "chat.reply",
@@ -1423,7 +1657,7 @@ class ChatService:
         )
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
-            docs=retrieved_docs,
+            docs=reply_docs,
             language=language,
         )
         if final_reply_text != llm_response.text:
@@ -1435,7 +1669,7 @@ class ChatService:
             )
         selected_from_reply = self._infer_selected_artifact_from_reply(
             reply_text=final_reply_text,
-            docs=retrieved_docs,
+            docs=reply_docs,
         )
 
         if not carry_filters:
@@ -1772,29 +2006,14 @@ class ChatService:
             state.last_paged_retrieval_request.get("results_request_id") or ""
         ).strip() or None
 
-        retrieval_context_sections: list[str] = []
-        if image_matches:
-            retrieval_context_sections.append("image_retrieval_matches:")
-            retrieval_context_sections.append(
-                json.dumps(
-                    [
-                        match.model_dump(
-                            exclude_none=True,
-                            exclude={"artifact", "navigation_target"},
-                        )
-                        for match in image_matches
-                    ],
-                    ensure_ascii=True,
-                )
-            )
-        docs_context = self._format_docs_for_prompt(
-            docs=artifact_docs,
-            top_k=max(self.settings.CHAT_IMAGE_ARTIFACT_TOP_K, 1),
+        retrieval_context = self._build_visible_results_retrieval_context(
+            artifact_results=paged_artifact_results,
+            image_matches=paged_image_matches,
+            page=results_page,
+            page_size=results_page_size,
+            total=results_total,
+            match_section_label="visible_image_retrieval_matches",
         )
-        if docs_context:
-            retrieval_context_sections.append("artifact_docs_from_image_retrieval:")
-            retrieval_context_sections.append(docs_context)
-        retrieval_context = "\n".join(retrieval_context_sections).strip()
 
         router_decision: dict[str, object] = {
             "mode": "rag",
@@ -1856,6 +2075,7 @@ class ChatService:
                 results_request_id=results_request_id,
             )
 
+        reply_docs = self._artifact_results_as_prompt_docs(paged_artifact_results) or artifact_docs
         self._log(
             logging.INFO,
             "chat.reply",
@@ -1865,7 +2085,7 @@ class ChatService:
         )
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
-            docs=artifact_docs,
+            docs=reply_docs,
             language=language,
         )
         if final_reply_text != llm_response.text:
@@ -1877,7 +2097,7 @@ class ChatService:
             )
         selected_from_reply = self._infer_selected_artifact_from_reply(
             reply_text=final_reply_text,
-            docs=artifact_docs,
+            docs=reply_docs,
         )
 
         self._apply_router_decision_to_state(state=state, router_decision=router_decision)
@@ -2123,29 +2343,14 @@ class ChatService:
             state.last_paged_retrieval_request.get("results_request_id") or ""
         ).strip() or None
 
-        retrieval_context_sections: list[str] = []
-        if image_matches:
-            retrieval_context_sections.append("model_view_matches:")
-            retrieval_context_sections.append(
-                json.dumps(
-                    [
-                        match.model_dump(
-                            exclude_none=True,
-                            exclude={"artifact", "navigation_target"},
-                        )
-                        for match in image_matches
-                    ],
-                    ensure_ascii=True,
-                )
-            )
-        docs_context = self._format_docs_for_prompt(
-            docs=artifact_docs,
-            top_k=max(self.settings.CHAT_IMAGE_ARTIFACT_TOP_K, 1),
+        retrieval_context = self._build_visible_results_retrieval_context(
+            artifact_results=paged_artifact_results,
+            image_matches=paged_image_matches,
+            page=results_page,
+            page_size=results_page_size,
+            total=results_total,
+            match_section_label="visible_model_view_matches",
         )
-        if docs_context:
-            retrieval_context_sections.append("artifact_docs_from_model_retrieval:")
-            retrieval_context_sections.append(docs_context)
-        retrieval_context = "\n".join(retrieval_context_sections).strip()
 
         router_decision: dict[str, object] = {
             "mode": "rag",
@@ -2207,6 +2412,7 @@ class ChatService:
                 results_request_id=results_request_id,
             )
 
+        reply_docs = self._artifact_results_as_prompt_docs(paged_artifact_results) or artifact_docs
         self._log(
             logging.INFO,
             "chat.reply",
@@ -2216,7 +2422,7 @@ class ChatService:
         )
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
-            docs=artifact_docs,
+            docs=reply_docs,
             language=language,
         )
         if final_reply_text != llm_response.text:
@@ -2228,7 +2434,7 @@ class ChatService:
             )
         selected_from_reply = self._infer_selected_artifact_from_reply(
             reply_text=final_reply_text,
-            docs=artifact_docs,
+            docs=reply_docs,
         )
 
         self._apply_router_decision_to_state(state=state, router_decision=router_decision)
@@ -2764,7 +2970,25 @@ class ChatService:
         if not use_history_for_query:
             carry_filters = False
             carry_sort = False
-        if mode == "llm_only":
+        if intent in {"search", "refine"}:
+            if mode != "rag" or not needs_retrieval:
+                reason = self._append_reason_tag(
+                    reason,
+                    "guardrail_search_requires_retrieval",
+                )
+            mode = "rag"
+            needs_retrieval = True
+        elif needs_retrieval:
+            if mode != "rag":
+                reason = self._append_reason_tag(
+                    reason,
+                    "guardrail_needs_retrieval_requires_rag",
+                )
+            mode = "rag"
+            needs_retrieval = True
+        elif mode == "rag":
+            needs_retrieval = True
+        else:
             needs_retrieval = False
 
         return {
@@ -2781,6 +3005,18 @@ class ChatService:
             "filters_delta": filters_delta,
             "sort_delta": sort_delta,
         }
+
+    @staticmethod
+    def _append_reason_tag(reason: str, tag: str) -> str:
+        cleaned_reason = str(reason or "").strip()
+        cleaned_tag = str(tag or "").strip()
+        if not cleaned_tag:
+            return cleaned_reason
+        if not cleaned_reason:
+            return cleaned_tag
+        if cleaned_tag in cleaned_reason:
+            return cleaned_reason
+        return f"{cleaned_reason} | {cleaned_tag}"
 
     def _apply_context_policy_guardrails(
         self,
@@ -2807,12 +3043,10 @@ class ChatService:
             guarded["rewritten_query"] = user_message
 
         reason = str(guarded.get("reason", "")).strip()
-        guardrail_tag = "guardrail_context_policy_follow_up"
-        if reason:
-            if guardrail_tag not in reason:
-                guarded["reason"] = f"{reason} | {guardrail_tag}"
-        else:
-            guarded["reason"] = guardrail_tag
+        guarded["reason"] = self._append_reason_tag(
+            reason,
+            "guardrail_context_policy_follow_up",
+        )
         return guarded
 
     async def _retrieve_context(
@@ -3902,26 +4136,20 @@ class ChatService:
             return candidates
 
         creator_ids = _as_list(doc.get("creator_ids"))
-        creator_names = _as_list(doc.get("creators"))
-        legacy_creator = str(doc.get("creator") or "").strip()
-        if not creator_names and legacy_creator:
-            creator_names = _as_list(legacy_creator)
         set_ids = _as_list(doc.get("set_ids"))
         exhibition_ids = _as_list(doc.get("exhibition_ids"))
 
-        # Os entity_ids no indice das entidades vem prefixados (ex.: "autor:59837",
-        # "conjunto:389", "exposicao:fisica:8892"). O artifact guarda o ID puro
-        # (sem prefixo). Reconstruimos a chave para o indice.
-        prefixed_authors = _entity_lookup_ids("autor", creator_ids)
+        # Conjuntos/exposicoes usam entity_id prefixado no indice relacional. Autores
+        # sao mais simples: creator_ids ja contem o _id do indice cultural_heritage_authors.
         prefixed_sets = _entity_lookup_ids("conjunto", set_ids)
         prefixed_exhibitions = _entity_lookup_ids("exposicao", exhibition_ids)
 
         top_k_related = int(getattr(self.settings, "CHAT_RELATED_ARTIFACTS_PAGE_SIZE", 10) or 10)
 
         # 2) Buscar metainfo de cada entidade em paralelo.
-        authors_task = self.opensearch_gateway.fetch_entities_by_ids(
-            tipo="autor", entity_ids=prefixed_authors,
-        ) if prefixed_authors else asyncio.sleep(0, result=[])
+        authors_task = self.opensearch_gateway.fetch_authors_by_ids(
+            author_ids=creator_ids,
+        ) if creator_ids else asyncio.sleep(0, result=[])
         sets_task = self.opensearch_gateway.fetch_entities_by_ids(
             tipo="conjunto", entity_ids=prefixed_sets,
         ) if prefixed_sets else asyncio.sleep(0, result=[])
@@ -3933,11 +4161,6 @@ class ChatService:
             authors_task, sets_task, exhibitions_task,
             return_exceptions=False,
         )
-        if not authors_docs and creator_names:
-            authors_docs = await self.opensearch_gateway.fetch_authors_by_names(
-                names=creator_names,
-                top_k=max(len(creator_names) * 2, 1),
-            )
 
         # 3) Para cada conjunto/exposicao, buscar artefactos relacionados em paralelo.
         set_related_tasks = [
@@ -4612,7 +4835,7 @@ class ChatService:
             flags=re.IGNORECASE,
         )
         cleaned = re.sub(
-            r"\b(?:retrieval_context|current_message|explicit_state|recent_history_aux|rolling_summary_aux)\b",
+            r"\b(?:retrieval_context|current_message|explicit_state|recent_history_aux|rolling_summary_aux|current_page_results|current_visible_results|visible_results_count|visible_results_page|visible_results_page_size|visible_results_total|search_query|reported_total|results_page)\b",
             context_label,
             cleaned,
             flags=re.IGNORECASE,
@@ -4641,7 +4864,38 @@ class ChatService:
         )
         cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
         cleaned = re.sub(r" +([,.;:!?])", r"\1", cleaned)
+        cleaned = self._renumber_ordered_list_markers(cleaned)
         return cleaned.strip()
+
+    def _renumber_ordered_list_markers(self, text: str) -> str:
+        item_pattern = re.compile(r"^(\s*)(\d{1,2})([.)])(\s+)(.+)$")
+        lines = text.splitlines()
+        item_indexes: list[int] = []
+
+        def flush_item_indexes() -> None:
+            if len(item_indexes) < 2:
+                item_indexes.clear()
+                return
+            for list_number, line_index in enumerate(item_indexes, start=1):
+                match = item_pattern.match(lines[line_index])
+                if not match:
+                    continue
+                lines[line_index] = (
+                    f"{match.group(1)}{list_number}{match.group(3)}"
+                    f"{match.group(4)}{match.group(5)}"
+                )
+            item_indexes.clear()
+
+        for index, line in enumerate(lines):
+            if item_pattern.match(line):
+                item_indexes.append(index)
+                continue
+            if not line.strip():
+                continue
+            flush_item_indexes()
+
+        flush_item_indexes()
+        return "\n".join(lines)
 
     def _build_doc_label_map(
         self,

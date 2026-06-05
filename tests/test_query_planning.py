@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from app.query_planning import (
@@ -7,6 +8,7 @@ from app.query_planning import (
     classify_query,
     compile_query,
     execute_query,
+    plan_query,
 )
 from app.query_planning.models import ListSpec, TermFilter
 
@@ -42,6 +44,19 @@ class FakeOpenSearchClient:
                 ],
             }
         }
+
+
+class FakePlannerResponse:
+    def __init__(self, parsed_json: dict) -> None:
+        self.parsed_json = parsed_json
+
+
+class FakePlannerLLM:
+    def __init__(self, parsed_json: dict) -> None:
+        self.parsed_json = parsed_json
+
+    async def generate(self, **_: object) -> FakePlannerResponse:
+        return FakePlannerResponse(self.parsed_json)
 
 
 def _build_schema() -> QuerySchema:
@@ -120,6 +135,69 @@ class QueryPlanningTests(unittest.TestCase):
         result = execute_query(plan, dsl, FakeOpenSearchClient())
         self.assertEqual(result.operation, "list")
         self.assertEqual(len(result.items), 2)
+
+    def test_structured_multi_match_requires_all_query_terms(self) -> None:
+        schema = _build_schema()
+        plan = QueryPlan(
+            operation="exists",
+            confidence=0.9,
+            query_text="fatos de banho",
+        )
+
+        dsl = compile_query(plan, schema)
+        multi_match = dsl.body["query"]["bool"]["must"][0]["multi_match"]
+
+        self.assertEqual(multi_match["operator"], "and")
+
+    def test_planner_normalizes_field_syntax_query_text_from_original_question(self) -> None:
+        schema = _build_schema()
+        planner = FakePlannerLLM(
+            {
+                "mode": "structured",
+                "operation": "exists",
+                "confidence": 0.9,
+                "query_text": "support_or_material.text:fato de banho",
+                "semantic_query": None,
+                "filters": [],
+                "list_spec": None,
+                "group_by": None,
+            }
+        )
+
+        plan = asyncio.run(
+            plan_query(
+                "existem fatos de banho?",
+                schema,
+                llm_service=planner,
+            )
+        )
+
+        self.assertEqual(plan.query_text, "fatos de banho")
+
+    def test_planner_prefers_original_terms_when_candidate_contains_generic_context(self) -> None:
+        schema = _build_schema()
+        planner = FakePlannerLLM(
+            {
+                "mode": "structured",
+                "operation": "exists",
+                "confidence": 0.9,
+                "query_text": "banhos museu acervo",
+                "semantic_query": None,
+                "filters": [],
+                "list_spec": None,
+                "group_by": None,
+            }
+        )
+
+        plan = asyncio.run(
+            plan_query(
+                "existem fatos de banho no acervo do museu?",
+                schema,
+                llm_service=planner,
+            )
+        )
+
+        self.assertEqual(plan.query_text, "fatos de banho")
 
 
 if __name__ == "__main__":

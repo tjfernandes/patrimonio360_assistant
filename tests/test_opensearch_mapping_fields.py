@@ -297,6 +297,7 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertEqual(len(nested_bool["should"]), 2)
         first_knn = nested_bool["should"][0]["knn"]
         self.assertIn("visual_embedding", first_knn)
+        self.assertEqual(first_knn["visual_embedding"]["boost"], 1.75)
 
     def test_artifact_fetch_by_inventory_requires_museum_id_filter(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -345,10 +346,29 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertIn("biografia", body["_source"])
         self.assertIn("biography", body["_source"])
         bool_query = body["query"]["bool"]
+        phrase_clause = next(clause for clause in bool_query["should"] if "match_phrase" in clause)
+        self.assertEqual(phrase_clause["match_phrase"]["name"]["boost"], 1.75)
         self.assertEqual(bool_query["minimum_should_match"], 1)
         self.assertTrue(
             any("match_phrase" in clause and "name" in clause["match_phrase"] for clause in bool_query["should"])
         )
+
+    def test_author_id_fetch_uses_authors_index_document_ids(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _DummyClient()
+        gateway._client = dummy
+
+        gateway._fetch_authors_by_ids_sync(
+            author_ids=["59837", "59838", "59837"],
+        )
+
+        assert dummy.last_search is not None
+        self.assertEqual(dummy.last_search["index"], "cultural_heritage_authors")
+        body = dummy.last_search["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["size"], 2)
+        self.assertIn("biografia", body["_source"])
+        self.assertEqual(body["query"], {"ids": {"values": ["59837", "59838"]}})
 
     def test_text_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -576,6 +596,7 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         nested_bool = body["query"]["bool"]["must"][0]["bool"]
         first_knn = nested_bool["should"][0]["knn"]
         self.assertEqual(first_knn["visual_embedding"]["k"], 150)
+        self.assertEqual(first_knn["visual_embedding"]["boost"], 1.75)
 
     def test_multiview_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())

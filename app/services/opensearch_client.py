@@ -296,10 +296,13 @@ class OpenSearchGateway:
         return []
 
     def _build_in_tour_boost_clause(self) -> dict[str, Any] | None:
-        boost = float(getattr(self.settings, "CHAT_IN_TOUR_BOOST", 0) or 0)
+        boost = self._configured_query_boost()
         if boost <= 0:
             return None
         return {"term": {"in_tour": {"value": True, "boost": boost}}}
+
+    def _configured_query_boost(self) -> float:
+        return float(getattr(self.settings, "CHAT_IN_TOUR_BOOST", 0) or 0)
 
     def _is_in_tour(self, value: Any) -> bool:
         if isinstance(value, bool):
@@ -312,7 +315,7 @@ class OpenSearchGateway:
 
     def _artifact_candidate_size(self, top_k: int) -> int:
         base = max(top_k, 1)
-        boost = float(getattr(self.settings, "CHAT_IN_TOUR_BOOST", 0) or 0)
+        boost = self._configured_query_boost()
         if boost <= 0:
             return base
         return min(150, max(base * 4, base + 20))
@@ -1143,7 +1146,7 @@ class OpenSearchGateway:
                         "visual_embedding": {
                             "vector": embedding,
                             "k": max(30, size * 3),
-                            "boost": 3.0,
+                            "boost": self._configured_query_boost(),
                         }
                     }
                 }
@@ -1252,7 +1255,7 @@ class OpenSearchGateway:
                         "visual_embedding": {
                             "vector": embedding,
                             "k": knn_k,
-                            "boost": 3.0,
+                            "boost": self._configured_query_boost(),
                         }
                     }
                 }
@@ -1960,6 +1963,70 @@ class OpenSearchGateway:
             entity_ids=entity_ids,
         )
 
+    def _fetch_authors_by_ids_sync(
+        self,
+        *,
+        author_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Devolve autores pelo _id do indice cultural_heritage_authors."""
+        unique_ids: list[str] = []
+        seen: set[str] = set()
+        for value in author_ids:
+            cleaned = str(value or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            unique_ids.append(cleaned)
+        if not unique_ids:
+            return []
+
+        client = self._ensure_client()
+        index_name = self._entity_index("autor")
+        body: dict[str, Any] = {
+            "size": len(unique_ids),
+            "_source": self._ENTITY_SOURCE_FIELDS["autor"],
+            "query": {"ids": {"values": unique_ids}},
+        }
+        self._log(logging.INFO, "opensearch.author_fetch_by_id.body", index=index_name, body=body)
+        response = client.search(index=index_name, body=body)
+        hits = response.get("hits", {}).get("hits", []) or []
+        self._log(
+            logging.INFO,
+            "opensearch.author_fetch_by_id.response",
+            index=index_name,
+            took_ms=response.get("took"),
+            hits_returned=len(hits),
+        )
+
+        by_id: dict[str, dict[str, Any]] = {}
+        for hit in hits:
+            source = dict(hit.get("_source", {}) or {})
+            doc_id = str(hit.get("_id") or "").strip()
+            entity_id = str(source.get("entity_id") or "").strip()
+            if not source.get("entity_id") and doc_id:
+                source["entity_id"] = doc_id
+            if doc_id:
+                by_id[doc_id] = source
+            if entity_id:
+                by_id[entity_id] = source
+
+        ordered: list[dict[str, Any]] = []
+        for author_id in unique_ids:
+            entry = by_id.get(author_id)
+            if entry is not None:
+                ordered.append(entry)
+        return ordered
+
+    async def fetch_authors_by_ids(
+        self,
+        *,
+        author_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._fetch_authors_by_ids_sync,
+            author_ids=author_ids,
+        )
+
     def _fetch_authors_by_names_sync(
         self,
         *,
@@ -1986,7 +2053,7 @@ class OpenSearchGateway:
                         "match_phrase": {
                             "name": {
                                 "query": name,
-                                "boost": 5,
+                                "boost": self._configured_query_boost(),
                             }
                         }
                     },

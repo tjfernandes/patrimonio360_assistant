@@ -23,6 +23,7 @@ from app.prompts.query_planner_prompts import build_retrieval_query_rewrite_prom
 from app.query_planning import QueryExecutionResult, QueryPlan
 from app.schemas.chat import (
     ArtifactResult,
+    ChatMessageRequest,
     ChatResultsPageRequest,
     ImageMatchResult,
     TourNavigationTarget,
@@ -164,6 +165,26 @@ class _LLMRewriteHeadgearLeak:
         )
 
 
+class _LLMRouterSearchAsLlmOnly:
+    async def generate(self, **_: object):
+        return types.SimpleNamespace(
+            parsed_json={
+                "mode": "llm_only",
+                "intent": "search",
+                "is_follow_up": False,
+                "use_history_for_query": False,
+                "use_history_for_answer": False,
+                "carry_filters": False,
+                "carry_sort": False,
+                "rewritten_query": "sapatos dos anos 20",
+                "needs_retrieval": False,
+                "reason": "router_claimed_general_advice",
+                "filters_delta": {},
+                "sort_delta": {},
+            }
+        )
+
+
 class _EmbeddingOk:
     async def embed_text(self, text: str) -> list[float]:
         return [0.1, 0.2, 0.3]
@@ -289,6 +310,7 @@ class _AuthorDetailGateway:
     def __init__(self, *, with_creator_ids: bool) -> None:
         self.with_creator_ids = with_creator_ids
         self.entity_fetch_calls: list[dict[str, object]] = []
+        self.author_id_fetch_calls: list[dict[str, object]] = []
         self.author_name_fetch_calls: list[dict[str, object]] = []
 
     async def fetch_artifacts_by_ids(self, **_: object) -> list[dict[str, object]]:
@@ -304,10 +326,14 @@ class _AuthorDetailGateway:
 
     async def fetch_entities_by_ids(self, **kwargs: object) -> list[dict[str, object]]:
         self.entity_fetch_calls.append(dict(kwargs))
-        if kwargs.get("tipo") == "autor" and "autor:59837" in (kwargs.get("entity_ids") or []):
+        return []
+
+    async def fetch_authors_by_ids(self, **kwargs: object) -> list[dict[str, object]]:
+        self.author_id_fetch_calls.append(dict(kwargs))
+        if "59837" in (kwargs.get("author_ids") or []):
             return [
                 {
-                    "entity_id": "autor:59837",
+                    "entity_id": "59837",
                     "name": "Fernando Pessoa",
                     "atividade": "Escritor",
                     "biography": "Biografia enriquecida do indice de autores.",
@@ -469,6 +495,26 @@ class ContextUsagePolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(reply, 'see the artifact "Tile Panel" (MNAZ 1).')
+
+    def test_sanitizer_renumbers_repeated_ordered_list_markers(self) -> None:
+        service = _build_service()
+        reply = service._sanitize_assistant_reply(
+            "Resultados:\n\n"
+            "1. Vestido (1950-1960)\n\n"
+            "1. Vestido (1970)\n\n"
+            "1. Conjunto (1944)\n\n"
+            "Nota final.",
+            language="pt",
+        )
+
+        self.assertEqual(
+            reply,
+            "Resultados:\n\n"
+            "1. Vestido (1950-1960)\n\n"
+            "2. Vestido (1970)\n\n"
+            "3. Conjunto (1944)\n\n"
+            "Nota final.",
+        )
 
     def test_case_d_greeting_should_not_use_history_for_query(self) -> None:
         service = _build_service()
@@ -672,6 +718,46 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertTrue(bool(guarded.get("carry_filters")))
         self.assertTrue(bool(guarded.get("carry_sort")))
         self.assertTrue(bool(guarded.get("needs_retrieval")))
+
+    def test_router_search_intent_cannot_be_llm_only(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRouterSearchAsLlmOnly(),
+            session_store=ChatSessionStore(settings),
+        )
+        state = ChatSessionState(conversation_id="conv_router", museum_slug="mnt")
+
+        decision = asyncio.run(
+            service._route_message(
+                payload=ChatMessageRequest(
+                    museum_slug="mnt",
+                    museum_id="mnt",
+                    message=(
+                        "Olá, eu sou um estudante de design e quero ideias para o meu novo "
+                        "projeto, para isso queria que me encontrasses sapatos dos anos 20"
+                    ),
+                ),
+                state=state,
+                context_policy={
+                    "is_follow_up": False,
+                    "use_history_for_query": False,
+                    "use_history_for_answer": False,
+                    "carry_filters": False,
+                    "carry_sort": False,
+                    "reason": "no_previous_context",
+                },
+            )
+        )
+
+        self.assertEqual(decision["intent"], "search")
+        self.assertEqual(decision["mode"], "rag")
+        self.assertTrue(bool(decision["needs_retrieval"]))
+        self.assertIn("guardrail_search_requires_retrieval", str(decision["reason"]))
 
     def test_lexical_query_strips_conversational_filler(self) -> None:
         service = _build_service()
@@ -924,6 +1010,40 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertIn("[doc_10]", context)
         self.assertIn("Resultado 9", context)
 
+    def test_visible_results_context_only_includes_visible_artifact_cards(self) -> None:
+        service = _build_service()
+        visible_artifacts = [
+            ArtifactResult(
+                artifact_id="artifact_1",
+                inventory_number="31711",
+                title="Touca Feminina",
+                description="Touca bordada.",
+            ),
+            ArtifactResult(
+                artifact_id="artifact_2",
+                inventory_number="35306",
+                title="Touca Crianca",
+                description="Touca infantil.",
+            ),
+        ]
+
+        context = service._build_visible_results_retrieval_context(
+            artifact_results=visible_artifacts,
+            image_matches=[],
+            page=1,
+            page_size=2,
+            total=5,
+        )
+
+        self.assertIn("visible_results_count: 2", context)
+        self.assertIn("visible_results_total: 5", context)
+        self.assertIn("current_visible_results:", context)
+        self.assertIn("[doc_1]", context)
+        self.assertIn("Touca Feminina", context)
+        self.assertIn("[doc_2]", context)
+        self.assertIn("Touca Crianca", context)
+        self.assertNotIn("[doc_3]", context)
+
     def test_navigation_targets_cover_full_visible_result_set(self) -> None:
         settings = get_settings()
         navigation = _EchoTourNavigation()
@@ -1084,13 +1204,13 @@ class ContextUsagePolicyTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(context.authors[0].entity_id, "autor:59837")
         self.assertEqual(context.authors[0].atividade, "Escritor")
         self.assertEqual(context.authors[0].biografia, "Biografia enriquecida do indice de autores.")
-        author_calls = [call for call in gateway.entity_fetch_calls if call.get("tipo") == "autor"]
-        self.assertEqual(author_calls[0]["entity_ids"], ["autor:59837", "59837"])
+        self.assertEqual(context.authors[0].entity_id, "59837")
+        self.assertEqual(gateway.author_id_fetch_calls[0]["author_ids"], ["59837"])
+        self.assertFalse([call for call in gateway.entity_fetch_calls if call.get("tipo") == "autor"])
 
-    def test_detail_context_fetches_author_details_from_author_index_by_name_without_ids(self) -> None:
+    def test_detail_context_does_not_fetch_author_details_by_name_without_ids(self) -> None:
         settings = get_settings()
         gateway = _AuthorDetailGateway(with_creator_ids=False)
         service = ChatService(
@@ -1111,9 +1231,9 @@ class ContextUsagePolicyTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(context.authors[0].entity_id, "autor:fernando-pessoa")
-        self.assertEqual(context.authors[0].biografia, "Biografia encontrada por nome.")
-        self.assertEqual(gateway.author_name_fetch_calls[0]["names"], ["Fernando Pessoa"])
+        self.assertEqual(context.authors, [])
+        self.assertEqual(gateway.author_id_fetch_calls, [])
+        self.assertEqual(gateway.author_name_fetch_calls, [])
 
     def test_docs_llm_filter_is_skipped_for_search_intent(self) -> None:
         settings = get_settings()

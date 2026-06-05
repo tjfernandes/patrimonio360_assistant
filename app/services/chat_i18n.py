@@ -99,6 +99,10 @@ _TRANSLATIONS: dict[str, dict[ChatLanguage, TranslationValue]] = {
         "pt": "Analisa este modelo 3D e identifica a peca mais provavel no museu.",
         "en": "Analyze this 3D model and identify the most likely object in the museum.",
     },
+    "message.results_page_fallback": {
+        "pt": "Aqui estao mais resultados encontrados para esta pesquisa.",
+        "en": "Here are more results found for this search.",
+    },
     "llm.final_language_guard": {
         "pt": "A resposta final ao utilizador deve estar integralmente em portugues.",
         "en": "The final user-facing answer must be entirely in English.",

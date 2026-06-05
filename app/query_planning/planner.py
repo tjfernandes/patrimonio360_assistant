@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Protocol
 
 from app.prompts.query_planner_prompts import (
@@ -122,8 +123,10 @@ async def plan_query(
     except Exception as exc:
         raise QueryPlanningError(f"Planner JSON is invalid: {exc}") from exc
 
-    if plan.query_text is None:
-        plan.query_text = _extract_core_terms(question)
+    plan.query_text = _normalize_planner_query_text(
+        question=question,
+        candidate=plan.query_text,
+    )
     return plan
 
 
@@ -309,7 +312,7 @@ def _compile_bool_query(plan: QueryPlan, schema: QuerySchema) -> dict[str, Any]:
                     "query": text_query,
                     "fields": text_fields,
                     "type": "best_fields",
-                    "operator": "or",
+                    "operator": "and",
                 }
             }
         )
@@ -321,7 +324,7 @@ def _compile_bool_query(plan: QueryPlan, schema: QuerySchema) -> dict[str, Any]:
                     "query": semantic_query,
                     "fields": text_fields,
                     "type": "best_fields",
-                    "operator": "or",
+                    "operator": "and",
                 }
             }
         )
@@ -463,24 +466,112 @@ def _normalize_text(value: str) -> str:
     lowered = (value or "").strip().lower()
     return re.sub(r"\s+", " ", lowered)
 
+_FIELD_QUERY_SYNTAX_RE = re.compile(r"\b[a-zA-Z_][\w.]*\s*:\s*")
+
+_GENERIC_QUERY_TOKENS = {
+    "museu",
+    "acervo",
+    "colecao",
+    "coleção",
+    "peca",
+    "pecas",
+    "peça",
+    "peças",
+    "objeto",
+    "objetos",
+    "obra",
+    "obras",
+    "artefacto",
+    "artefactos",
+}
+
+_EDGE_CONNECTORS = {
+    "de",
+    "do",
+    "da",
+    "dos",
+    "das",
+    "em",
+    "no",
+    "na",
+    "nos",
+    "nas",
+    "por",
+    "sobre",
+}
+
+
+def _fold_token(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _folded_tokens(value: str) -> list[str]:
+    cleaned = re.sub(r"[^\w\sÀ-ÿ]", " ", value or "", flags=re.UNICODE)
+    return [_fold_token(token) for token in cleaned.split() if token]
+
+
+def _normalize_planner_query_text(
+    *,
+    question: str,
+    candidate: str | None,
+) -> str | None:
+    core_terms = _extract_core_terms(question)
+    raw_candidate = (candidate or "").strip()
+    if not raw_candidate:
+        return core_terms or None
+
+    has_field_syntax = bool(_FIELD_QUERY_SYNTAX_RE.search(raw_candidate))
+    cleaned_candidate = _FIELD_QUERY_SYNTAX_RE.sub("", raw_candidate)
+    cleaned_candidate = re.sub(r"\s+", " ", cleaned_candidate).strip()
+
+    # If the LLM tried to write mini-DSL (field:value), prefer the literal
+    # searchable phrase from the user's question.
+    if has_field_syntax and core_terms:
+        return core_terms
+
+    candidate_tokens = set(_folded_tokens(cleaned_candidate))
+    core_tokens = set(_folded_tokens(core_terms))
+    generic_tokens = {_fold_token(token) for token in _GENERIC_QUERY_TOKENS}
+    if (
+        core_terms
+        and candidate_tokens
+        and candidate_tokens & generic_tokens
+        and not core_tokens.issubset(candidate_tokens)
+    ):
+        return core_terms
+
+    return cleaned_candidate or core_terms or None
+
 
 def _extract_core_terms(question: str) -> str:
     text = _normalize_text(question)
     if not text:
         return ""
+
     cleaned = re.sub(
-        r"\b(quant[oa]s?|numero|n[uú]mero|total|lista|listar|quais|exist[ea]m?|ha|h[aá]|tem)\b",
+        r"\b(quant[oa]s?|numero|n[uú]mero|total|contagem|contar|lista|listar|quais|mostra|mostre|encontra|encontrar|consegues?|podes?|exist[ea]m?|ha|h[aá]|tem|quero|procuro|procuras?)\b",
         " ",
         text,
         flags=re.IGNORECASE,
     )
+    cleaned = re.sub(
+        r"\b(no|na|nos|nas|do|da|dos|das|em)\s+(museu|acervo|cole[cç][aã]o|pecas|peças|objetos?|artefactos?)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(museu|acervo|cole[cç][aã]o|pecas|peças|objetos?|artefactos?|obras?)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"[^\w\sÀ-ÿ]", " ", cleaned, flags=re.UNICODE)
-    tokens = [token for token in cleaned.split() if len(token) > 2]
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for token in tokens:
-        if token in seen:
-            continue
-        seen.add(token)
-        deduped.append(token)
-    return " ".join(deduped[:10]).strip()
+    tokens = [token for token in cleaned.split() if token]
+    folded_edge_connectors = {_fold_token(token) for token in _EDGE_CONNECTORS}
+    while tokens and _fold_token(tokens[0]) in folded_edge_connectors:
+        tokens.pop(0)
+    while tokens and _fold_token(tokens[-1]) in folded_edge_connectors:
+        tokens.pop()
+    return " ".join(tokens[:12]).strip()

@@ -415,6 +415,7 @@ class ChatMessageResponse(BaseModel):
 class ChatResultsPageResponse(BaseModel):
     status: Literal["ok"] = "ok"
     conversation_id: str
+    reply: str | None = None
     image_matches: list[ImageMatchResult] = Field(default_factory=list)
     artifact_results: list[ArtifactResult] = Field(default_factory=list)
     navigation_targets: list[TourNavigationTarget] = Field(default_factory=list)
