@@ -270,6 +270,7 @@ def build_final_answer_prompt(
                 [
                     "No image file or 3D model was sent in this turn.",
                     "Do not assume an image/model attachment when this turn is text-only.",
+                    "If retrieval_context contains an artifact that directly matches the requested object, treat it as found even if it has no image or is not the first result.",
                 ]
             )
 
@@ -332,6 +333,7 @@ def build_final_answer_prompt(
             [
                 "Neste turno nao foi enviado ficheiro de imagem nem modelo 3D.",
                 "Nao assumes imagem/modelo anexado quando apenas existe texto.",
+                "Se retrieval_context contem um artefacto que corresponde diretamente ao objeto pedido, trata-o como encontrado mesmo que nao tenha imagem ou nao seja o primeiro resultado.",
             ]
         )
 

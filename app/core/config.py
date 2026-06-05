@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     OPENSEARCH_INDEX_ARTIFACT: str = "cultural_heritage_artifacts_v1"
     OPENSEARCH_INDEX_IMAGE: str = "cultural_heritage_images"
     OPENSEARCH_INDEX_MUSEUM: str = "cultural_heritage_museums"
+    # Indices das entidades relacionais (autores, conjuntos, exposicoes).
+    # Geridos pelo patrimonio360_indexer; usados para enriquecer o modal de
+    # artefacto com a info da entidade + lista de outros objetos relacionados.
+    OPENSEARCH_INDEX_AUTOR: str = "cultural_heritage_authors"
+    OPENSEARCH_INDEX_CONJUNTO: str = "cultural_heritage_sets"
+    OPENSEARCH_INDEX_EXPOSICAO: str = "cultural_heritage_exhibitions"
+    # Top N de artefactos por conjunto / exposicao a mostrar no modal.
+    CHAT_RELATED_ARTIFACTS_TOP_K: int = 24
 
     ARTIFACT_TEXT_EMBEDDING_DIMENSION: int = 1024
     ARTIFACT_MULTIMODAL_EMBEDDING_DIMENSION: int = 2048
@@ -95,6 +103,7 @@ class Settings(BaseSettings):
     CHAT_RETRIEVAL_CANDIDATES: int = 15
     CHAT_RETRIEVAL_TOP_K: int = 5
     CHAT_RETRIEVAL_RESULTS_PAGE_SIZE: int = 10
+    CHAT_RELATED_ARTIFACTS_PAGE_SIZE: int = 10
     CHAT_RETRIEVAL_PAGINATION_WINDOW: int = 150
     CHAT_IN_TOUR_BOOST: float = 5
     CHAT_IMAGE_RETRIEVAL_TOP_K: int = 6

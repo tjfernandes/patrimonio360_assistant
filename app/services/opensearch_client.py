@@ -40,6 +40,10 @@ EVENT_LABELS: dict[str, str] = {
     "opensearch.artifact_fetch.response": "Resposta de fetch por artifact_id recebida do OpenSearch.",
     "opensearch.structured.body": "Body completo enviado ao OpenSearch para query estruturada.",
     "opensearch.structured.response": "Resposta de query estruturada recebida do OpenSearch.",
+    "opensearch.entity_fetch.body": "Body completo enviado ao OpenSearch para fetch de entidade(s).",
+    "opensearch.entity_fetch.response": "Resposta de fetch de entidade(s) recebida do OpenSearch.",
+    "opensearch.artifact_fetch_by_entity.body": "Body completo enviado ao OpenSearch para fetch de artefactos por entidade.",
+    "opensearch.artifact_fetch_by_entity.response": "Resposta de fetch de artefactos por entidade recebida do OpenSearch.",
 }
 
 
@@ -176,6 +180,14 @@ class OpenSearchGateway:
             "category",
             "super_category",
             "creator",
+            "creators",
+            "creator_ids",
+            "sets",
+            "set_ids",
+            "set_numbers",
+            "exhibitions",
+            "exhibition_ids",
+            "exhibition_types",
             "date_or_period",
             "support_or_material",
             "technique",
@@ -184,6 +196,7 @@ class OpenSearchGateway:
             "production_center",
             "inventory_number",
             "detail_type",
+            "tipo_inventario",
             "source_system",
         }
         numeric_fields = {
@@ -191,6 +204,10 @@ class OpenSearchGateway:
             "image_order",
             "width",
             "height",
+            "exhibition_count",
+            "bibliography_count",
+            "date_year_start",
+            "date_year_end",
         }
         legacy_keyword_aliases = {
             "inventory": "inventory_number",
@@ -347,6 +364,29 @@ class OpenSearchGateway:
     def _resolve_production_center(self, source: dict[str, Any]) -> str:
         return str(source.get("production_center") or source.get("manufacturer_location") or "").strip()
 
+    def _as_list_of_strings(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+
+    def _coerce_int(self, value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(value.strip())
+        return None
+
     def _artifact_payload_from_source(
         self,
         *,
@@ -361,9 +401,16 @@ class OpenSearchGateway:
         origin_history = self._resolve_origin_history(source)
         production_center = self._resolve_production_center(source)
 
+        creators = self._as_list_of_strings(source.get("creators"))
+        # creator (string legada) -> popular creators se vier sem o array novo.
+        legacy_creator = str(source.get("creator") or "").strip()
+        if not creators and legacy_creator:
+            creators = [legacy_creator]
+
         payload: dict[str, Any] = {
             "score": score,
             "artifact_id": source.get("artifact_id"),
+            "tipo_inventario": str(source.get("tipo_inventario") or "").strip() or None,
             "in_tour": self._is_in_tour(source.get("in_tour")),
             "inventory_number": inventory_number or None,
             "title": source.get("title"),
@@ -371,10 +418,27 @@ class OpenSearchGateway:
             "museum": museum_name or None,
             "category": source.get("category"),
             "super_category": source.get("super_category"),
-            "creator": source.get("creator"),
+            # Autores (novo array) + string legada para back-compat.
+            "creators": creators,
+            "creator_ids": self._as_list_of_strings(source.get("creator_ids")),
+            "creator": legacy_creator or (creators[0] if creators else None),
             "date_or_period": source.get("date_or_period"),
+            "date_year_start": self._coerce_int(source.get("date_year_start")),
+            "date_year_end": self._coerce_int(source.get("date_year_end")),
             "support_or_material": support_or_material or None,
             "technique": source.get("technique"),
+            # Conjuntos.
+            "sets": self._as_list_of_strings(source.get("sets")),
+            "set_ids": self._as_list_of_strings(source.get("set_ids")),
+            "set_numbers": self._as_list_of_strings(source.get("set_numbers")),
+            # Exposicoes (fisica + online no mesmo array com tipo).
+            "exhibitions": self._as_list_of_strings(source.get("exhibitions")),
+            "exhibition_ids": self._as_list_of_strings(source.get("exhibition_ids")),
+            "exhibition_types": self._as_list_of_strings(source.get("exhibition_types")),
+            "exhibition_count": self._coerce_int(source.get("exhibition_count")),
+            # Bibliografia (so como texto pesquisavel).
+            "bibliography": str(source.get("bibliography") or "").strip() or None,
+            "bibliography_count": self._coerce_int(source.get("bibliography_count")),
             "origin_history": origin_history or None,
             "incorporation": source.get("incorporation"),
             "production_center": production_center or None,
@@ -430,6 +494,7 @@ class OpenSearchGateway:
             "score": score,
             "id": image_id or None,
             "image_id": image_id or None,
+            "image_order": self._coerce_int(source.get("image_order")),
             "artifact_id": str(source.get("artifact_id") or "").strip() or None,
             "in_tour": self._is_in_tour(source.get("in_tour")),
             "museum_id": source.get("museum_id"),
@@ -530,6 +595,11 @@ class OpenSearchGateway:
                         "inventory_number.text^1.8",
                         "category.text^1.5",
                         "super_category.text^1.3",
+                        # Relacoes textuais (export relacional do RAIZ).
+                        "creators.text^1.5",
+                        "sets.text^1.2",
+                        "exhibitions.text^1.1",
+                        "bibliography^0.6",
                         "support_or_material.text^1.2",
                         "technique.text^1.2",
                         "origin_history^1.1",
@@ -568,6 +638,7 @@ class OpenSearchGateway:
             "track_total_hits": True,
             "_source": [
                 "artifact_id",
+                "tipo_inventario",
                 "inventory_number",
                 "title",
                 "museum_id",
@@ -575,7 +646,20 @@ class OpenSearchGateway:
                 "category",
                 "super_category",
                 "creator",
+                "creators",
+                "creator_ids",
+                "sets",
+                "set_ids",
+                "set_numbers",
+                "exhibitions",
+                "exhibition_ids",
+                "exhibition_types",
+                "exhibition_count",
+                "bibliography",
+                "bibliography_count",
                 "date_or_period",
+                "date_year_start",
+                "date_year_end",
                 "support_or_material",
                 "technique",
                 "origin_history",
@@ -894,6 +978,7 @@ class OpenSearchGateway:
             "_source": [
                 "image_id",
                 "artifact_id",
+                "image_order",
                 "museum_id",
                 "local_path",
                 "source_url",
@@ -992,6 +1077,7 @@ class OpenSearchGateway:
             "_source": [
                 "image_id",
                 "artifact_id",
+                "image_order",
                 "museum_id",
                 "local_path",
                 "source_url",
@@ -1075,6 +1161,7 @@ class OpenSearchGateway:
             "_source": [
                 "image_id",
                 "artifact_id",
+                "image_order",
                 "museum_id",
                 "local_path",
                 "source_url",
@@ -1185,6 +1272,7 @@ class OpenSearchGateway:
             "_source": [
                 "image_id",
                 "artifact_id",
+                "image_order",
                 "museum_id",
                 "local_path",
                 "source_url",
@@ -1341,6 +1429,7 @@ class OpenSearchGateway:
             "_source": [
                 "image_id",
                 "artifact_id",
+                "image_order",
                 "museum_id",
                 "local_path",
                 "source_url",
@@ -1355,6 +1444,15 @@ class OpenSearchGateway:
                     "filter": filter_clauses,
                 }
             },
+            "sort": [
+                {
+                    "image_order": {
+                        "order": "asc",
+                        "missing": "_last",
+                        "unmapped_type": "long",
+                    }
+                }
+            ],
         }
         if per_artifact_value == 1:
             body["collapse"] = {"field": "artifact_id"}
@@ -1410,9 +1508,18 @@ class OpenSearchGateway:
             seen_keys_by_artifact[artifact_id].add(dedupe_key)
             by_artifact[artifact_id].append(payload)
 
+        def _image_order_sort_key(payload: dict[str, Any]) -> tuple[int, int]:
+            image_order = payload.get("image_order")
+            if isinstance(image_order, int):
+                return (0, image_order)
+            return (1, 0)
+
         ordered: list[dict[str, Any]] = []
         for artifact_id in unique_ids:
-            for image_payload in by_artifact.get(artifact_id, []):
+            for image_payload in sorted(
+                by_artifact.get(artifact_id, []),
+                key=_image_order_sort_key,
+            ):
                 ordered.append(image_payload)
                 if len(ordered) >= max_total_value:
                     return ordered
@@ -1470,6 +1577,7 @@ class OpenSearchGateway:
             "size": size,
             "_source": [
                 "artifact_id",
+                "tipo_inventario",
                 "inventory_number",
                 "title",
                 "museum_id",
@@ -1477,7 +1585,20 @@ class OpenSearchGateway:
                 "category",
                 "super_category",
                 "creator",
+                "creators",
+                "creator_ids",
+                "sets",
+                "set_ids",
+                "set_numbers",
+                "exhibitions",
+                "exhibition_ids",
+                "exhibition_types",
+                "exhibition_count",
+                "bibliography",
+                "bibliography_count",
                 "date_or_period",
+                "date_year_start",
+                "date_year_end",
                 "support_or_material",
                 "technique",
                 "origin_history",
@@ -1487,6 +1608,7 @@ class OpenSearchGateway:
                 "search_text",
                 "detail_type",
                 "detail_url",
+                "in_tour",
                 "image_ids",
                 "image_file_ids",
                 "image_paths",
@@ -1600,6 +1722,7 @@ class OpenSearchGateway:
             "size": size,
             "_source": [
                 "artifact_id",
+                "tipo_inventario",
                 "inventory_number",
                 "title",
                 "museum_id",
@@ -1607,7 +1730,20 @@ class OpenSearchGateway:
                 "category",
                 "super_category",
                 "creator",
+                "creators",
+                "creator_ids",
+                "sets",
+                "set_ids",
+                "set_numbers",
+                "exhibitions",
+                "exhibition_ids",
+                "exhibition_types",
+                "exhibition_count",
+                "bibliography",
+                "bibliography_count",
                 "date_or_period",
+                "date_year_start",
+                "date_year_end",
                 "support_or_material",
                 "technique",
                 "origin_history",
@@ -1617,6 +1753,7 @@ class OpenSearchGateway:
                 "search_text",
                 "detail_type",
                 "detail_url",
+                "in_tour",
                 "image_ids",
                 "image_file_ids",
                 "image_paths",
@@ -1721,6 +1858,297 @@ class OpenSearchGateway:
             museum_id=museum_id,
             inventory_numbers=inventory_numbers,
             top_k=top_k,
+        )
+
+    # --------------------------------------------------------------------- #
+    # Entidades relacionais (autores / conjuntos / exposicoes).
+    # --------------------------------------------------------------------- #
+    _ENTITY_INDEX_ATTR = {
+        "autor": "OPENSEARCH_INDEX_AUTOR",
+        "conjunto": "OPENSEARCH_INDEX_CONJUNTO",
+        "exposicao": "OPENSEARCH_INDEX_EXPOSICAO",
+    }
+    # Campo do artifact_doc que liga ao indice da entidade, por tipo.
+    _ENTITY_ARTIFACT_REF_FIELD = {
+        "autor": "creator_ids",
+        "conjunto": "set_ids",
+        "exposicao": "exhibition_ids",
+    }
+    _ENTITY_SOURCE_FIELDS = {
+        "autor": [
+            "entity_id", "tipo_entidade", "name", "atividade",
+            "data_nascimento", "data_obito", "local_nascimento", "local_obito",
+            "biografia", "biography", "url", "museums", "n_objetos", "objetos",
+        ],
+        "conjunto": [
+            "entity_id", "tipo_entidade", "name", "num_conjunto",
+            "historial", "descricao", "url", "museums", "n_objetos", "objetos",
+        ],
+        "exposicao": [
+            "entity_id", "tipo_entidade", "name", "tipo_exposicao",
+            "local", "ano_inicial", "ano_final", "texto", "ficha_tecnica",
+            "url", "museums", "n_objetos", "objetos",
+        ],
+    }
+
+    def _entity_index(self, tipo: str) -> str:
+        attr = self._ENTITY_INDEX_ATTR.get(tipo)
+        if not attr:
+            raise RuntimeError(f"Tipo de entidade desconhecido: {tipo}")
+        return getattr(self.settings, attr)
+
+    def _fetch_entities_by_ids_sync(
+        self,
+        *,
+        tipo: str,
+        entity_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Devolve docs do indice da entidade pelos entity_ids dados, na mesma ordem."""
+        unique_ids: list[str] = []
+        seen: set[str] = set()
+        for value in entity_ids:
+            cleaned = str(value or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            unique_ids.append(cleaned)
+        if not unique_ids:
+            return []
+
+        client = self._ensure_client()
+        index_name = self._entity_index(tipo)
+        source_fields = self._ENTITY_SOURCE_FIELDS.get(tipo, ["entity_id", "name"])
+        body: dict[str, Any] = {
+            "size": len(unique_ids),
+            "_source": source_fields,
+            "query": {"terms": {"entity_id": unique_ids}},
+        }
+        self._log(logging.INFO, "opensearch.entity_fetch.body", index=index_name, body=body)
+        response = client.search(index=index_name, body=body)
+        hits = response.get("hits", {}).get("hits", []) or []
+        self._log(
+            logging.INFO,
+            "opensearch.entity_fetch.response",
+            index=index_name,
+            took_ms=response.get("took"),
+            hits_returned=len(hits),
+        )
+
+        by_id: dict[str, dict[str, Any]] = {}
+        for hit in hits:
+            source = hit.get("_source", {}) or {}
+            eid = str(source.get("entity_id") or "").strip()
+            if eid:
+                by_id[eid] = source
+
+        ordered: list[dict[str, Any]] = []
+        for eid in unique_ids:
+            entry = by_id.get(eid)
+            if entry is not None:
+                ordered.append(entry)
+        return ordered
+
+    async def fetch_entities_by_ids(
+        self,
+        *,
+        tipo: str,
+        entity_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._fetch_entities_by_ids_sync,
+            tipo=tipo,
+            entity_ids=entity_ids,
+        )
+
+    def _fetch_authors_by_names_sync(
+        self,
+        *,
+        names: list[str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        unique_names: list[str] = []
+        seen: set[str] = set()
+        for value in names:
+            cleaned = str(value or "").strip()
+            key = cleaned.casefold()
+            if not cleaned or key in seen:
+                continue
+            seen.add(key)
+            unique_names.append(cleaned)
+        if not unique_names:
+            return []
+
+        should_clauses: list[dict[str, Any]] = []
+        for name in unique_names:
+            should_clauses.extend(
+                [
+                    {
+                        "match_phrase": {
+                            "name": {
+                                "query": name,
+                                "boost": 5,
+                            }
+                        }
+                    },
+                    {
+                        "multi_match": {
+                            "query": name,
+                            "fields": ["name^4", "biografia^0.8", "biography^0.8", "atividade^0.5"],
+                            "operator": "and",
+                        }
+                    },
+                ]
+            )
+
+        client = self._ensure_client()
+        index_name = self._entity_index("autor")
+        size = max(min(int(top_k), 50), 1)
+        body: dict[str, Any] = {
+            "size": size,
+            "_source": self._ENTITY_SOURCE_FIELDS["autor"],
+            "query": {
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1,
+                }
+            },
+        }
+        self._log(logging.INFO, "opensearch.entity_fetch.body", index=index_name, body=body)
+        response = client.search(index=index_name, body=body)
+        hits = response.get("hits", {}).get("hits", []) or []
+        self._log(
+            logging.INFO,
+            "opensearch.entity_fetch.response",
+            index=index_name,
+            took_ms=response.get("took"),
+            hits_returned=len(hits),
+        )
+
+        results: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for hit in hits:
+            source = hit.get("_source", {}) or {}
+            entity_id = str(source.get("entity_id") or "").strip()
+            key = entity_id or str(source.get("name") or "").strip().casefold()
+            if key and key in seen_ids:
+                continue
+            if key:
+                seen_ids.add(key)
+            results.append(source)
+        return results
+
+    async def fetch_authors_by_names(
+        self,
+        *,
+        names: list[str],
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._fetch_authors_by_names_sync,
+            names=names,
+            top_k=top_k,
+        )
+
+    def _fetch_artifacts_by_entity_sync(
+        self,
+        *,
+        tipo: str,
+        entity_id: str,
+        museum_slug: str,
+        museum_id: str | None,
+        top_k: int,
+        from_offset: int = 0,
+        exclude_artifact_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Artefactos ligados a uma entidade. Devolve (resultados, total)."""
+        ref_field = self._ENTITY_ARTIFACT_REF_FIELD.get(tipo)
+        if not ref_field:
+            raise RuntimeError(f"Tipo de entidade desconhecido: {tipo}")
+        eid = str(entity_id or "").strip()
+        if not eid:
+            return [], 0
+        # Para entidade=conjunto/exposicao, set_ids guarda o id NAO prefixado
+        # (ex.: "389"), porque vem direto do build_raiz_index. O entity_id da
+        # entidade no indexer e "conjunto:389". Tentamos ambos.
+        prefix_to_strip = f"{tipo}:"
+        bare_id = eid[len(prefix_to_strip):] if eid.startswith(prefix_to_strip) else eid
+        # Exposicoes vem como "exposicao:fisica:8892" ou "exposicao:online:12"
+        # e o artifact guarda em exhibition_ids "fisica:8892"/"online:12" -- a
+        # diferenca da chave compoe-se ao retirar "exposicao:".
+        ref_values = [bare_id]
+        if eid != bare_id:
+            ref_values.append(eid)
+
+        client = self._ensure_client()
+        size = max(int(top_k), 1)
+        from_value = max(int(from_offset), 0)
+        filter_clauses: list[dict[str, Any]] = [{"terms": {ref_field: ref_values}}]
+        filter_clauses.extend(
+            self._build_image_filter_clauses(museum_slug=museum_slug, museum_id=museum_id)
+        )
+        must_not: list[dict[str, Any]] = []
+        if exclude_artifact_id:
+            must_not.append({"term": {"artifact_id": exclude_artifact_id}})
+
+        body: dict[str, Any] = {
+            "from": from_value,
+            "size": size,
+            "track_total_hits": True,
+            "_source": [
+                "artifact_id", "tipo_inventario", "inventory_number", "title",
+                "museum_id", "museum", "category", "super_category",
+                "creators", "creator_ids", "date_or_period",
+                "description", "search_text", "detail_type", "detail_url",
+                "in_tour",
+                "image_ids", "image_file_ids", "image_paths", "image_urls", "image_count",
+            ],
+            "query": {
+                "bool": {
+                    "filter": filter_clauses,
+                    **({"must_not": must_not} if must_not else {}),
+                }
+            },
+            "sort": [
+                # Prioriza objetos in_tour, depois ordem natural.
+                {"in_tour": {"order": "desc", "missing": "_last"}},
+                {"_score": {"order": "desc"}},
+            ],
+        }
+        self._log(logging.INFO, "opensearch.artifact_fetch_by_entity.body",
+                  index=self.settings.OPENSEARCH_INDEX_ARTIFACT, body=body)
+        response = client.search(index=self.settings.OPENSEARCH_INDEX_ARTIFACT, body=body)
+        hits = response.get("hits", {}).get("hits", []) or []
+        total_value = self._total_hits_value(response)
+        self._log(
+            logging.INFO,
+            "opensearch.artifact_fetch_by_entity.response",
+            tipo=tipo, entity_id=eid,
+            from_offset=from_value,
+            hits_returned=len(hits), hits_total=total_value,
+        )
+        results = self._artifact_results_from_hits(hits)
+        return results, total_value
+
+    async def fetch_artifacts_by_entity(
+        self,
+        *,
+        tipo: str,
+        entity_id: str,
+        museum_slug: str,
+        museum_id: str | None,
+        top_k: int,
+        from_offset: int = 0,
+        exclude_artifact_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        return await asyncio.to_thread(
+            self._fetch_artifacts_by_entity_sync,
+            tipo=tipo,
+            entity_id=entity_id,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            top_k=top_k,
+            from_offset=from_offset,
+            exclude_artifact_id=exclude_artifact_id,
         )
 
     def _execute_structured_query_sync(

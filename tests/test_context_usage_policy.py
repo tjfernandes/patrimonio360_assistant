@@ -19,6 +19,7 @@ if "pydantic_settings" not in sys.modules:
 
 from app.core.config import get_settings
 from app.prompts.chat_prompts import build_final_answer_prompt
+from app.prompts.query_planner_prompts import build_retrieval_query_rewrite_prompt
 from app.query_planning import QueryExecutionResult, QueryPlan
 from app.schemas.chat import (
     ArtifactResult,
@@ -37,6 +38,26 @@ class _Dummy:
 class _NoTourNavigation:
     def resolve_targets(self, **_: object) -> list[dict[str, object]]:
         return []
+
+
+class _EchoTourNavigation:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def resolve_targets(self, **kwargs: object) -> list[dict[str, object]]:
+        self.calls.append(dict(kwargs))
+        inventories = [str(value) for value in kwargs.get("inventories") or []]
+        limit = int(kwargs.get("limit") or len(inventories) or 1)
+        return [
+            {
+                "overlay_id": f"ov_{inventory}",
+                "panorama_key": f"pano_{inventory}",
+                "inventory_id": inventory,
+                "location": "Sala",
+                "title": f"Target {inventory}",
+            }
+            for inventory in inventories[:limit]
+        ]
 
 
 class _PagedOpenSearchGateway:
@@ -133,6 +154,16 @@ class _LLMRewriteEnglishLeak:
         )
 
 
+class _LLMRewriteHeadgearLeak:
+    async def generate(self, **_: object):
+        return types.SimpleNamespace(
+            parsed_json={
+                "lexical_query": "chapeus",
+                "embedding_query": "headgear",
+            }
+        )
+
+
 class _EmbeddingOk:
     async def embed_text(self, text: str) -> list[float]:
         return [0.1, 0.2, 0.3]
@@ -180,6 +211,125 @@ class _ArtifactImagesGateway:
                 ]
             )
         return image_hits
+
+
+class _RelatedArtifactsImageGateway:
+    def __init__(self) -> None:
+        self.image_fetch_calls: list[dict[str, object]] = []
+        self.fetch_by_entity_calls: list[dict[str, object]] = []
+
+    async def fetch_artifacts_by_ids(self, **_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "artifact_id": "artifact_current",
+                "inventory_number": "CURRENT",
+                "set_ids": ["conjunto:1"],
+                "exhibition_ids": ["exposicao:fisica:2"],
+            }
+        ]
+
+    async def fetch_entities_by_ids(self, **kwargs: object) -> list[dict[str, object]]:
+        tipo = kwargs.get("tipo")
+        if tipo == "conjunto":
+            return [{"entity_id": "conjunto:1", "name": "Conjunto 1"}]
+        if tipo == "exposicao":
+            return [{"entity_id": "exposicao:fisica:2", "name": "Exposicao 2"}]
+        return []
+
+    async def fetch_artifacts_by_entity(self, **kwargs: object) -> tuple[list[dict[str, object]], int]:
+        self.fetch_by_entity_calls.append(dict(kwargs))
+        tipo = kwargs.get("tipo")
+        if tipo == "exposicao":
+            return (
+                [
+                    {
+                        "artifact_id": "artifact_exhibition_1",
+                        "inventory_number": "EXH1",
+                        "title": "Relacionado exposicao",
+                        "museum_id": "mnt",
+                        "image_paths": ["fallback/exhibition.jpg"],
+                    }
+                ],
+                1,
+            )
+        return (
+            [
+                {
+                    "artifact_id": "artifact_related_1",
+                    "inventory_number": "REL1",
+                    "title": "Relacionado 1",
+                    "museum_id": "mnt",
+                    "image_paths": ["fallback/related_1.jpg"],
+                },
+                {
+                    "artifact_id": "artifact_related_2",
+                    "inventory_number": "REL2",
+                    "title": "Relacionado 2",
+                    "museum_id": "mnt",
+                    "image_paths": ["fallback/related_2.jpg"],
+                },
+            ],
+            2,
+        )
+
+    async def fetch_images_by_artifact_ids(self, **kwargs: object) -> list[dict[str, object]]:
+        self.image_fetch_calls.append(dict(kwargs))
+        return [
+            {
+                "artifact_id": artifact_id,
+                "image_id": f"{artifact_id}_ordered",
+                "image_order": 1,
+                "local_path": f"ordered/{artifact_id}.jpg",
+            }
+            for artifact_id in kwargs.get("artifact_ids") or []
+        ]
+
+
+class _AuthorDetailGateway:
+    def __init__(self, *, with_creator_ids: bool) -> None:
+        self.with_creator_ids = with_creator_ids
+        self.entity_fetch_calls: list[dict[str, object]] = []
+        self.author_name_fetch_calls: list[dict[str, object]] = []
+
+    async def fetch_artifacts_by_ids(self, **_: object) -> list[dict[str, object]]:
+        doc: dict[str, object] = {
+            "artifact_id": "artifact_author",
+            "inventory_number": "AUTH1",
+            "title": "Artefacto com autor",
+            "creators": ["Fernando Pessoa"],
+        }
+        if self.with_creator_ids:
+            doc["creator_ids"] = ["59837"]
+        return [doc]
+
+    async def fetch_entities_by_ids(self, **kwargs: object) -> list[dict[str, object]]:
+        self.entity_fetch_calls.append(dict(kwargs))
+        if kwargs.get("tipo") == "autor" and "autor:59837" in (kwargs.get("entity_ids") or []):
+            return [
+                {
+                    "entity_id": "autor:59837",
+                    "name": "Fernando Pessoa",
+                    "atividade": "Escritor",
+                    "biography": "Biografia enriquecida do indice de autores.",
+                    "url": "https://example.test/autor/59837",
+                    "n_objetos": 3,
+                }
+            ]
+        return []
+
+    async def fetch_authors_by_names(self, **kwargs: object) -> list[dict[str, object]]:
+        self.author_name_fetch_calls.append(dict(kwargs))
+        if "Fernando Pessoa" in (kwargs.get("names") or []):
+            return [
+                {
+                    "entity_id": "autor:fernando-pessoa",
+                    "name": "Fernando Pessoa",
+                    "atividade": "Escritor",
+                    "biography": "Biografia encontrada por nome.",
+                    "n_objetos": 2,
+                }
+            ]
+        return []
 
 
 def _build_service() -> ChatService:
@@ -580,7 +730,7 @@ class ContextUsagePolicyTests(unittest.TestCase):
             )
         )
         self.assertEqual(lexical, "vista lisboa castelo")
-        self.assertEqual(embedding, "vista lisboa castelo")
+        self.assertEqual(embedding, "")
 
     def test_retrieval_query_rewrite_falls_back_when_llm_fails(self) -> None:
         settings = get_settings()
@@ -630,6 +780,78 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(lexical, "vestidos crianca")
         self.assertEqual(embedding, "")
 
+    def test_text_retrieval_ignores_llm_embedding_query_translation(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteEnglishLeak(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra vestidos de crianca",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos crianca")
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "vestidos crianca")
+
+    def test_retrieval_query_rewrite_prompt_does_not_expose_museum_context_terms(self) -> None:
+        prompt = build_retrieval_query_rewrite_prompt(
+            user_query="e o tumulo de fernando pessoa",
+            filters={},
+            sort={},
+        )
+
+        self.assertNotIn("museum_slug", prompt)
+        self.assertNotIn("museum_id", prompt)
+        self.assertNotIn("mj", prompt)
+
+    def test_retrieval_query_rewrite_rejects_headgear_translation(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteHeadgearLeak(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        lexical, embedding = asyncio.run(
+            service._rewrite_retrieval_query_with_llm(
+                query="Encontra chapéus",
+                museum_slug="mnt",
+                museum_id="mnt",
+                filters={},
+                sort={},
+            )
+        )
+        self.assertEqual(lexical, "chapeus")
+        self.assertEqual(embedding, "")
+
+    def test_retrieval_query_rewrite_rejects_translation_with_only_single_letter_overlap(self) -> None:
+        service = _build_service()
+
+        self.assertTrue(
+            service._has_query_language_mismatch(
+                "encontra o tumulo de d sebastiao",
+                "mj tomb d sebastian",
+            )
+        )
+
     def test_text_retrieval_window_uses_results_page_size_not_candidate_count(self) -> None:
         settings = get_settings()
         previous_candidates = settings.CHAT_RETRIEVAL_CANDIDATES
@@ -666,6 +888,72 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(len(docs), 10)
         self.assertEqual(gateway.search_page_calls[0]["page_size"], 10)
         self.assertEqual(gateway.search_page_calls[0]["retrieval_window_size"], 150)
+
+    def test_text_retrieval_context_includes_visible_results_page(self) -> None:
+        settings = get_settings()
+        previous_top_k = settings.CHAT_RETRIEVAL_TOP_K
+        previous_window = settings.CHAT_RETRIEVAL_PAGINATION_WINDOW
+        try:
+            settings.CHAT_RETRIEVAL_TOP_K = 5
+            settings.CHAT_RETRIEVAL_PAGINATION_WINDOW = 150
+            service = ChatService(
+                settings=settings,
+                opensearch_gateway=_WindowOpenSearchGateway(),
+                embedding_provider=_EmbeddingOk(),
+                model_retrieval_service=_Dummy(),
+                tour_navigation_service=_Dummy(),
+                llm_service=_LLMRewriteFail(),
+                session_store=ChatSessionStore(settings),
+            )
+
+            context, _, docs, _ = asyncio.run(
+                service._retrieve_context(
+                    museum_slug="mnt",
+                    museum_id="mnt",
+                    query="encontra o tumulo de d sebastiao",
+                    filters={},
+                    sort={},
+                    result_window_size=10,
+                )
+            )
+        finally:
+            settings.CHAT_RETRIEVAL_TOP_K = previous_top_k
+            settings.CHAT_RETRIEVAL_PAGINATION_WINDOW = previous_window
+
+        self.assertEqual(len(docs), 10)
+        self.assertIn("[doc_10]", context)
+        self.assertIn("Resultado 9", context)
+
+    def test_navigation_targets_cover_full_visible_result_set(self) -> None:
+        settings = get_settings()
+        navigation = _EchoTourNavigation()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=navigation,
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+        )
+        docs = [
+            {
+                "artifact_id": f"artifact_{index}",
+                "inventory_number": f"I{index}",
+                "title": f"Resultado {index}",
+            }
+            for index in range(1, 11)
+        ]
+
+        targets = service._resolve_navigation_targets(
+            museum_slug="mnt",
+            museum_id="mnt",
+            docs=docs,
+        )
+
+        self.assertEqual(len(targets), 10)
+        self.assertEqual(navigation.calls[0]["limit"], 10)
+        self.assertEqual(targets[-1].inventory_id, "I10")
 
     def test_text_artifact_hydration_limits_images_to_visible_page(self) -> None:
         settings = get_settings()
@@ -704,6 +992,128 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(gateway.image_fetch_calls[0]["per_artifact"], 1)
         self.assertEqual(gateway.image_fetch_calls[0]["max_total"], 10)
         self.assertTrue(all(len(artifact.images) <= 1 for artifact in artifacts))
+
+    def test_related_artifacts_page_uses_image_order_fetch_for_thumbnails(self) -> None:
+        settings = get_settings()
+        gateway = _RelatedArtifactsImageGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_NoTourNavigation(),
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        page = asyncio.run(
+            service.get_related_artifacts_page(
+                museum_slug="mnt",
+                museum_id="mnt",
+                artifact_id="artifact_current",
+                tipo="conjunto",
+                entity_id="conjunto:1",
+                offset=0,
+                limit=2,
+            )
+        )
+
+        self.assertEqual(len(gateway.image_fetch_calls), 1)
+        self.assertEqual(
+            gateway.image_fetch_calls[0]["artifact_ids"],
+            ["artifact_related_1", "artifact_related_2"],
+        )
+        self.assertEqual(gateway.image_fetch_calls[0]["per_artifact"], 1)
+        self.assertEqual(page.artifacts[0].images[0].image_id, "artifact_related_1_ordered")
+        self.assertEqual(page.artifacts[0].images[0].image_order, 1)
+        self.assertEqual(page.artifacts[0].images[0].local_path, "ordered/artifact_related_1.jpg")
+
+    def test_detail_context_related_sections_use_image_order_fetch_for_thumbnails(self) -> None:
+        settings = get_settings()
+        gateway = _RelatedArtifactsImageGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_NoTourNavigation(),
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        context = asyncio.run(
+            service.get_artifact_detail_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                artifact_id="artifact_current",
+            )
+        )
+
+        self.assertEqual(len(gateway.image_fetch_calls), 1)
+        self.assertEqual(
+            gateway.image_fetch_calls[0]["artifact_ids"],
+            ["artifact_related_1", "artifact_related_2", "artifact_exhibition_1"],
+        )
+        self.assertEqual(
+            context.sets[0].artifacts[0].images[0].local_path,
+            "ordered/artifact_related_1.jpg",
+        )
+        self.assertEqual(
+            context.exhibitions[0].artifacts[0].images[0].local_path,
+            "ordered/artifact_exhibition_1.jpg",
+        )
+
+    def test_detail_context_fetches_author_details_from_author_index_by_id(self) -> None:
+        settings = get_settings()
+        gateway = _AuthorDetailGateway(with_creator_ids=True)
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_NoTourNavigation(),
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        context = asyncio.run(
+            service.get_artifact_detail_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                artifact_id="artifact_author",
+            )
+        )
+
+        self.assertEqual(context.authors[0].entity_id, "autor:59837")
+        self.assertEqual(context.authors[0].atividade, "Escritor")
+        self.assertEqual(context.authors[0].biografia, "Biografia enriquecida do indice de autores.")
+        author_calls = [call for call in gateway.entity_fetch_calls if call.get("tipo") == "autor"]
+        self.assertEqual(author_calls[0]["entity_ids"], ["autor:59837", "59837"])
+
+    def test_detail_context_fetches_author_details_from_author_index_by_name_without_ids(self) -> None:
+        settings = get_settings()
+        gateway = _AuthorDetailGateway(with_creator_ids=False)
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_NoTourNavigation(),
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        context = asyncio.run(
+            service.get_artifact_detail_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                artifact_id="artifact_author",
+            )
+        )
+
+        self.assertEqual(context.authors[0].entity_id, "autor:fernando-pessoa")
+        self.assertEqual(context.authors[0].biografia, "Biografia encontrada por nome.")
+        self.assertEqual(gateway.author_name_fetch_calls[0]["names"], ["Fernando Pessoa"])
 
     def test_docs_llm_filter_is_skipped_for_search_intent(self) -> None:
         settings = get_settings()
@@ -902,7 +1312,126 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(len(gateway.search_page_calls), 1)
         self.assertEqual(gateway.search_page_calls[0]["from_offset"], 2)
         self.assertEqual(gateway.search_page_calls[0]["page_size"], 2)
-        self.assertEqual(len(gateway.image_fetch_calls), 1)
+        self.assertEqual(len(gateway.image_fetch_calls), 2)
+
+    def test_get_results_page_uses_requested_results_request_id(self) -> None:
+        settings = get_settings()
+        session_store = ChatSessionStore(settings)
+        gateway = _PagedOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_NoTourNavigation(),
+            llm_service=_Dummy(),
+            session_store=session_store,
+        )
+        state = ChatSessionState(conversation_id="conv_two_pages", museum_slug="mnt")
+        old_request = {
+            "kind": "text",
+            "museum_id": "mnt",
+            "query_text": "pesquisa antiga",
+            "lexical_query": "pesquisa antiga",
+            "query_embedding": [0.1],
+            "filters": {},
+            "sort": {},
+            "results_total": 12,
+            "results_request_id": "old-page",
+        }
+        new_request = {
+            "kind": "text",
+            "museum_id": "mnt",
+            "query_text": "pesquisa nova",
+            "lexical_query": "pesquisa nova",
+            "query_embedding": [0.2],
+            "filters": {},
+            "sort": {},
+            "results_total": 12,
+            "results_request_id": "new-page",
+        }
+        state.last_paged_results_default_page_size = 2
+        state.last_paged_retrieval_request = new_request
+        state.paged_results_by_request_id = {
+            "old-page": {
+                "artifact_results": [],
+                "image_matches": [],
+                "navigation_targets": [],
+                "default_page_size": 2,
+                "retrieval_request": old_request,
+            },
+            "new-page": {
+                "artifact_results": [],
+                "image_matches": [],
+                "navigation_targets": [],
+                "default_page_size": 2,
+                "retrieval_request": new_request,
+            },
+        }
+        session_store.save(state)
+
+        response = asyncio.run(
+            service.get_results_page(
+                ChatResultsPageRequest(
+                    museum_slug="mnt",
+                    museum_id="mnt",
+                    conversation_id="conv_two_pages",
+                    results_page=2,
+                    results_page_size=2,
+                    results_request_id="old-page",
+                )
+            )
+        )
+
+        self.assertEqual(response.results_request_id, "old-page")
+        self.assertEqual(len(gateway.search_page_calls), 1)
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "pesquisa antiga")
+
+    def test_get_results_page_does_not_fallback_when_requested_id_is_missing(self) -> None:
+        settings = get_settings()
+        session_store = ChatSessionStore(settings)
+        gateway = _PagedOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_NoTourNavigation(),
+            llm_service=_Dummy(),
+            session_store=session_store,
+        )
+        state = ChatSessionState(conversation_id="conv_missing_page", museum_slug="mnt")
+        state.last_paged_results_default_page_size = 2
+        state.last_paged_retrieval_request = {
+            "kind": "text",
+            "museum_id": "mnt",
+            "query_text": "pesquisa nova",
+            "lexical_query": "pesquisa nova",
+            "query_embedding": [0.2],
+            "filters": {},
+            "sort": {},
+            "results_total": 12,
+            "results_request_id": "new-page",
+        }
+        session_store.save(state)
+
+        response = asyncio.run(
+            service.get_results_page(
+                ChatResultsPageRequest(
+                    museum_slug="mnt",
+                    museum_id="mnt",
+                    conversation_id="conv_missing_page",
+                    results_page=2,
+                    results_page_size=2,
+                    results_request_id="missing-page",
+                )
+            )
+        )
+
+        self.assertEqual(response.results_request_id, "missing-page")
+        self.assertEqual(response.artifact_results, [])
+        self.assertFalse(response.results_has_more)
+        self.assertEqual(gateway.search_page_calls, [])
 
     def test_get_results_page_materializes_structured_list_page_from_opensearch(self) -> None:
         settings = get_settings()

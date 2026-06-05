@@ -29,6 +29,7 @@ class ChatSessionState:
     last_paged_navigation_targets: list[dict[str, Any]] = field(default_factory=list)
     last_paged_results_default_page_size: int = 0
     last_paged_retrieval_request: dict[str, Any] = field(default_factory=dict)
+    paged_results_by_request_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     rolling_summary: str = ""
     history: list[ChatTurn] = field(default_factory=list)
     updated_at: float = field(default_factory=time)
@@ -63,6 +64,7 @@ class ChatSessionStore:
             existing.last_paged_navigation_targets = []
             existing.last_paged_results_default_page_size = 0
             existing.last_paged_retrieval_request = {}
+            existing.paged_results_by_request_id = {}
             existing.rolling_summary = ""
             existing.history = []
 

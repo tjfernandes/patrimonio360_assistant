@@ -29,6 +29,9 @@ def _settings() -> SimpleNamespace:
         CHAT_RETRIEVAL_EMBEDDING_ONLY=False,
         OPENSEARCH_INDEX_ARTIFACT="cultural_heritage_artifacts",
         OPENSEARCH_INDEX_IMAGE="cultural_heritage_images",
+        OPENSEARCH_INDEX_AUTOR="cultural_heritage_authors",
+        OPENSEARCH_INDEX_CONJUNTO="cultural_heritage_sets",
+        OPENSEARCH_INDEX_EXPOSICAO="cultural_heritage_exhibitions",
     )
 
 
@@ -158,6 +161,62 @@ class _ImageFetchDummyClient:
         }
 
 
+class _ImageFetchOutOfOrderDummyClient:
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, object] | None = None
+
+    def search(self, **kwargs: object) -> dict[str, object]:
+        self.last_kwargs = dict(kwargs)
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_score": 1.0,
+                        "_source": {
+                            "artifact_id": "artifact_1",
+                            "image_id": "image_3",
+                            "image_order": 3,
+                            "museum_id": "museum_1",
+                            "local_path": "Images/artifact_1/image_3.jpg",
+                        },
+                    },
+                    {
+                        "_score": 1.0,
+                        "_source": {
+                            "artifact_id": "artifact_1",
+                            "image_id": "image_1",
+                            "image_order": 1,
+                            "museum_id": "museum_1",
+                            "local_path": "Images/artifact_1/image_1.jpg",
+                        },
+                    },
+                    {
+                        "_score": 1.0,
+                        "_source": {
+                            "artifact_id": "artifact_1",
+                            "image_id": "image_missing",
+                            "museum_id": "museum_1",
+                            "local_path": "Images/artifact_1/image_missing.jpg",
+                        },
+                    },
+                    {
+                        "_score": 1.0,
+                        "_source": {
+                            "artifact_id": "artifact_1",
+                            "image_id": "image_2",
+                            "image_order": 2,
+                            "museum_id": "museum_1",
+                            "local_path": "Images/artifact_1/image_2.jpg",
+                        },
+                    },
+                ],
+                "total": {"value": 4},
+            },
+            "took": 3,
+            "timed_out": False,
+        }
+
+
 class OpenSearchFieldMappingTests(unittest.TestCase):
     def test_lexical_multi_match_uses_text_subfields(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -267,6 +326,29 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertEqual(bool_query["filter"], [{"term": {"museum_id": "8"}}])
         should = bool_query["should"]
         self.assertIn({"terms": {"inventory_number": ["967"]}}, should)
+
+    def test_author_name_fetch_uses_authors_index(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _DummyClient()
+        gateway._client = dummy
+
+        gateway._fetch_authors_by_names_sync(
+            names=["Fernando Pessoa"],
+            top_k=3,
+        )
+
+        assert dummy.last_search is not None
+        self.assertEqual(dummy.last_search["index"], "cultural_heritage_authors")
+        body = dummy.last_search["body"]
+        assert isinstance(body, dict)
+        self.assertEqual(body["size"], 3)
+        self.assertIn("biografia", body["_source"])
+        self.assertIn("biography", body["_source"])
+        bool_query = body["query"]["bool"]
+        self.assertEqual(bool_query["minimum_should_match"], 1)
+        self.assertTrue(
+            any("match_phrase" in clause and "name" in clause["match_phrase"] for clause in bool_query["should"])
+        )
 
     def test_text_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -397,6 +479,38 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         assert isinstance(body, dict)
         self.assertEqual(body["size"], 3)
         self.assertEqual(body["collapse"], {"field": "artifact_id"})
+        self.assertIn("image_order", body["_source"])
+        self.assertEqual(
+            body["sort"],
+            [
+                {
+                    "image_order": {
+                        "order": "asc",
+                        "missing": "_last",
+                        "unmapped_type": "long",
+                    }
+                }
+            ],
+        )
+
+    def test_image_fetch_by_artifact_orders_images_by_image_order(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _ImageFetchOutOfOrderDummyClient()
+        gateway._client = dummy
+
+        results = gateway._fetch_images_by_artifact_ids_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            artifact_ids=["artifact_1"],
+            per_artifact=4,
+            max_total=4,
+        )
+
+        self.assertEqual(
+            [result["image_id"] for result in results],
+            ["image_1", "image_2", "image_3", "image_missing"],
+        )
+        self.assertEqual([result.get("image_order") for result in results[:3]], [1, 2, 3])
 
     def test_image_retrieval_page_uses_opensearch_from_size_and_total(self) -> None:
         gateway = OpenSearchGateway(_settings())
