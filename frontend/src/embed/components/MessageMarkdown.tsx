@@ -47,8 +47,6 @@ function parseMarkdownBlocks(raw: string): MarkdownBlock[] {
     const trimmed = line.trim()
     if (!trimmed) {
       flushParagraph()
-      flushUnordered()
-      flushOrdered()
       continue
     }
 

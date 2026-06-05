@@ -245,6 +245,36 @@ body {
   animation: p360ChatModalCardOut 260ms cubic-bezier(0.7, 0, 0.84, 0) both;
 }
 
+.p360-chat-text-scale {
+  font-size: 1.125rem;
+  line-height: 1.75rem;
+}
+
+.p360-chat-text-scale :where(.text-\[10px\]) {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.p360-chat-text-scale :where(.text-\[11px\]) {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+.p360-chat-text-scale :where(.text-xs) {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.p360-chat-text-scale :where(.text-sm) {
+  font-size: 1rem;
+  line-height: 1.5rem;
+}
+
+.p360-chat-text-scale :where(.text-base, .text-md) {
+  font-size: 1.125rem;
+  line-height: 1.75rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .p360-chat-panel-enter,
   .p360-chat-panel-exit,

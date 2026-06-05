@@ -3,6 +3,11 @@ export interface Museum {
   slug: string
   name: string
   description: string
+  image?: {
+    src: string
+    alt?: string
+    credit?: string
+  }
   address: string
   inaguration_year: number
   tourAvailable?: boolean

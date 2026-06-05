@@ -61,6 +61,7 @@ export interface SendChatMessageResult {
 
 export interface ChatResultsPageResult {
   conversationId?: string
+  reply?: string
   imageMatches?: ChatImageMatch[]
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
@@ -417,6 +418,7 @@ function buildResultsPageFromPayload(payload: RawChatPayload): ChatResultsPageRe
   )
   return {
     conversationId: payload.conversation_id,
+    reply: typeof payload.reply === 'string' ? payload.reply.trim() || undefined : undefined,
     imageMatches,
     artifactResults,
     navigationTargets,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { isMuseumTourAvailable } from '../../services/museumService'
 import type { Museum } from '../../types/museum'
 import MuseumCard from './MuseumCard'
@@ -28,6 +28,8 @@ function MuseumList({
 }: MuseumListProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<TourFilter>('all')
+  const listViewportRef = useRef<HTMLDivElement | null>(null)
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   const filteredMuseums = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -53,6 +55,31 @@ function MuseumList({
     })
   }, [filter, museums, query])
 
+  useEffect(() => {
+    if (!selectedMuseumSlug) {
+      return
+    }
+
+    const container = listViewportRef.current
+    const card = cardRefs.current[selectedMuseumSlug]
+    if (!container || !card) {
+      return
+    }
+
+    const containerRect = container.getBoundingClientRect()
+    const cardRect = card.getBoundingClientRect()
+    const targetTop =
+      container.scrollTop +
+      (cardRect.top - containerRect.top) -
+      container.clientHeight / 2 +
+      card.clientHeight / 2
+
+    container.scrollTo({
+      top: Math.max(targetTop, 0),
+      behavior: 'smooth',
+    })
+  }, [filteredMuseums, selectedMuseumSlug])
+
   if (museums.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-[#cdaeb1] bg-[rgba(255,250,247,0.74)] p-5 text-sm text-[#6d5c58]">
@@ -67,9 +94,9 @@ function MuseumList({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#7b6863]">
-              Catálogo
+              Pesquisa
             </p>
-            <h2 className="font-[Fraunces] text-3xl leading-tight text-[#231815]">Museus</h2>
+            <h2 className="font-[Fraunces] text-3xl leading-tight text-[#231815]">Museus e Monumentos</h2>
           </div>
           <span className="rounded-full border border-[#d6c0bc] bg-[#fff7f4] px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-[#6d0b1b]">
             {filteredMuseums.length} locais
@@ -105,11 +132,17 @@ function MuseumList({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 py-1">
+      <div
+        ref={listViewportRef}
+        className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto py-1 pr-1 md:grid-cols-2"
+      >
         {filteredMuseums.length > 0 ? (
           filteredMuseums.map((museum, index) => (
             <div
               key={museum.slug}
+              ref={(element) => {
+                cardRefs.current[museum.slug] = element
+              }}
               className="card-enter"
               style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
             >

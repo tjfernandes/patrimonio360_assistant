@@ -11,7 +11,6 @@ function TourAssistantEmbed({
   tourUrl,
   backendBaseUrl,
   initialLanguage = 'pt',
-  fullscreenButtonClassName = 'right-3 top-3',
 }: TourAssistantEmbedProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
@@ -64,14 +63,6 @@ function TourAssistantEmbed({
       ref={containerRef}
       className="relative h-full overflow-hidden rounded-2xl border border-[#d4b2b6] bg-white"
     >
-      <button
-        type="button"
-        onClick={handleToggleFullscreen}
-        className={`absolute z-[500] min-w-[180px] min-h-[48px] text-lg rounded-lg border border-[#d4b2b6] bg-white/92 px-3 py-2 font-semibold text-[#4f0814] transition-colors hover:bg-white ${fullscreenButtonClassName}`}
-      >
-        {isFullscreen ? t(language, 'assistantEmbed.exitFullscreen') : t(language, 'assistantEmbed.enterFullscreen')}
-      </button>
-
       <iframe
         ref={iframeRef}
         key={`tour-${museumSlug}`}
@@ -92,6 +83,8 @@ function TourAssistantEmbed({
         backendBaseUrl={backendBaseUrl}
         initialLanguage={initialLanguage}
         onNavigateToTarget={handleNavigateToTarget}
+        isFullscreen={isFullscreen}
+        onToggleFullscreen={handleToggleFullscreen}
       />
     </div>
   )

@@ -1,6 +1,70 @@
 import type { Museum } from '../types/museum'
+import abadeImage from '../assets/museums/abade.jpeg'
+import albertoSampaioImage from '../assets/museums/alberto_sampaio.jpeg'
+import anastacioImage from '../assets/museums/anastacio.jpeg'
+import arteContemporaneaImage from '../assets/museums/arte_contemporanea.jpeg'
+import arteDancaImage from '../assets/museums/arte_dnaca.jpeg'
+import artePopularImage from '../assets/museums/arte_popular.jpeg'
+import azulejoImage from '../assets/museums/azulejo.jpeg'
+import biscainhosImage from '../assets/museums/biscainhos].jpeg'
+import ceramicaImage from '../assets/museums/ceramica.jpeg'
+import cochesImage from '../assets/museums/coches.jpeg'
+import diogoSousaImage from '../assets/museums/diogo_sousa.webp'
+import freiCenaculoImage from '../assets/museums/frei_cenaculo.webp'
+import jeronimosImage from '../assets/museums/jeronimos.jpeg'
+import joaquimMansoImage from '../assets/museums/joaquim_manso.jpeg'
+import joseMalhoaImage from '../assets/museums/jose_malhoa.jpeg'
+import machadoCastroImage from '../assets/museums/machado_castro.jpeg'
+import mafraImage from '../assets/museums/mafra.jpeg'
+import museuArqueologiaImage from '../assets/museums/museu_arqueologia.jpeg'
+import museuArteAntigaImage from '../assets/museums/museu_arte_antiga.avif'
+import museuConimbrigaImage from '../assets/museums/museu_conimbriga.jpeg'
+import museuEtnologiaImage from '../assets/museums/museu_etnologia.jpeg'
+import museuGraoVascoImage from '../assets/museums/museu_grao_vasco.jpeg'
+import museuTrajeImage from '../assets/museums/museu_traje.jpeg'
+import musicaImage from '../assets/museums/musica.jpeg'
+import palacioAjudaImage from '../assets/museums/palacio_ajuda.jpeg'
+import soaresReisImage from '../assets/museums/soares_reis.jpeg'
 
-export const museumsMock: Museum[] = [
+type MuseumSeed = Omit<Museum, 'image'> & { image?: Museum['image'] }
+
+const museumImages: Record<string, NonNullable<Museum['image']>> = {
+  mnt: { src: museuTrajeImage, alt: 'Museu Nacional do Traje' },
+  mnaz: { src: azulejoImage, alt: 'Museu Nacional do Azulejo' },
+  mj: { src: jeronimosImage, alt: 'Mosteiro dos Jeronimos' },
+  mnsr: { src: soaresReisImage, alt: 'Museu Nacional Soares dos Reis' },
+  mne: { src: museuEtnologiaImage, alt: 'Museu Nacional de Etnologia' },
+  mdjm: { src: joaquimMansoImage, alt: 'Museu Dr. Joaquim Manso' },
+  mnc: { src: museuConimbrigaImage, alt: 'Museu Nacional de Conimbriga' },
+  mngv: { src: museuGraoVascoImage, alt: 'Museu Nacional Grao Vasco' },
+  pna: { src: palacioAjudaImage, alt: 'Palacio Nacional da Ajuda' },
+  mna: { src: museuArqueologiaImage, alt: 'Museu Nacional de Arqueologia' },
+  mnaa: { src: museuArteAntigaImage, alt: 'Museu Nacional de Arte Antiga' },
+  mntd: { src: arteDancaImage, alt: 'Museu Nacional do Teatro e da Danca' },
+  mnfmc: { src: freiCenaculoImage, alt: 'Museu Nacional Frei Manuel do Cenaculo' },
+  mc: { src: ceramicaImage, alt: 'Museu da Ceramica' },
+  mdds: { src: diogoSousaImage, alt: 'Museu D. Diogo de Sousa' },
+  pnm: { src: mafraImage, alt: 'Palacio Nacional de Mafra' },
+  mnmc: { src: machadoCastroImage, alt: 'Museu Nacional de Machado de Castro' },
+  mab: { src: abadeImage, alt: 'Museu do Abade de Bacal' },
+  mdb: { src: biscainhosImage, alt: 'Museu dos Biscainhos' },
+  mnac: { src: arteContemporaneaImage, alt: 'Museu Nacional de Arte Contemporanea - Museu do Chiado' },
+  cmag: { src: anastacioImage, alt: 'Casa-Museu Dr. Anastacio Goncalves' },
+  mndc: { src: cochesImage, alt: 'Museu Nacional dos Coches' },
+  mjm: { src: joseMalhoaImage, alt: 'Museu Jose Malhoa' },
+  map: { src: artePopularImage, alt: 'Museu de Arte Popular' },
+  mnm: { src: musicaImage, alt: 'Museu Nacional da Musica' },
+  mas: { src: albertoSampaioImage, alt: 'Museu de Alberto Sampaio' },
+}
+
+function createMuseumImage(name: string): NonNullable<Museum['image']> {
+  return {
+    src: '',
+    alt: `Imagem de ${name}`,
+  }
+}
+
+const museumData: MuseumSeed[] = [
   {
     museum_id: 'mnt',
     slug: 'mnt',
@@ -10,6 +74,16 @@ export const museumsMock: Museum[] = [
     address: 'Largo Júlio Castilho, Lumiar, 1600-483 Lisboa, Portugal',
     inaguration_year: 1977,
     coordinates: { lat: 38.775163, lon: -9.164985 },
+  },
+  {
+    museum_id: 'mnaz',
+    slug: 'mnaz',
+    name: 'Museu Nacional do Azulejo',
+    description:
+      'Situado no antigo Convento da Madre de Deus, o Museu Nacional do Azulejo apresenta a história do azulejo em Portugal, do século XV à contemporaneidade, incluindo o célebre painel panorâmico de Lisboa pré-terremoto de 1755.',
+    address: 'Rua da Madre de Deus, 4, 1900-312 Lisboa, Portugal',
+    inaguration_year: 1980,
+    coordinates: { lat: 38.7244, lon: -9.11389 },
   },
   {
     museum_id: 'mj',
@@ -22,14 +96,14 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 38.697846, lon: -9.205601 },
   },
   {
-    museum_id: 'mnaz',
-    slug: 'mnaz',
-    name: 'Museu Nacional do Azulejo',
+    museum_id: 'mnsr',
+    slug: 'mnsr',
+    name: 'Museu Nacional Soares dos Reis',
     description:
-      'Situado no antigo Convento da Madre de Deus, o Museu Nacional do Azulejo apresenta a história do azulejo em Portugal, do século XV à contemporaneidade, incluindo o célebre painel panorâmico de Lisboa pré-terremoto de 1755.',
-    address: 'Rua da Madre de Deus, 4, 1900-312 Lisboa, Portugal',
-    inaguration_year: 1980,
-    coordinates: { lat: 38.7244, lon: -9.11389 },
+      'O mais antigo museu público de arte em Portugal, fundado em 1833, reúne obras de pintura, escultura, gravura, cerâmica, ourivesaria, têxteis e joalharia dos séculos XIX e XX, destacando-se o núcleo dedicado ao escultor Soares dos Reis.',
+    address: 'Rua D. Manuel II, 44, 4050-522 Porto, Portugal',
+    inaguration_year: 1833,
+    coordinates: { lat: 41.147778, lon: -8.621667 },
   },
   {
     museum_id: 'mne',
@@ -202,16 +276,6 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 38.732552, lon: -9.146449 },
   },
   {
-    museum_id: 'mnsr',
-    slug: 'mnsr',
-    name: 'Museu Nacional Soares dos Reis',
-    description:
-      'O mais antigo museu público de arte em Portugal, fundado em 1833, reúne obras de pintura, escultura, gravura, cerâmica, ourivesaria, têxteis e joalharia dos séculos XIX e XX, destacando-se o núcleo dedicado ao escultor Soares dos Reis.',
-    address: 'Rua D. Manuel II, 44, 4050-522 Porto, Portugal',
-    inaguration_year: 1833,
-    coordinates: { lat: 41.147778, lon: -8.621667 },
-  },
-  {
     museum_id: 'mndc',
     slug: 'mndc',
     name: 'Museu Nacional dos Coches',
@@ -262,3 +326,8 @@ export const museumsMock: Museum[] = [
     coordinates: { lat: 41.442639, lon: -8.292278 },
   },
 ]
+
+export const museumsMock: Museum[] = museumData.map((museum) => ({
+  ...museum,
+  image: museum.image ?? museumImages[museum.slug] ?? createMuseumImage(museum.name),
+}))

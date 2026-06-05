@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactNode, SyntheticEvent } from 'react'
 import { createPortal } from 'react-dom'
+import amaliaLogoText from '../../assets/amalia_logo_text.png'
 import { resolveEmbedLanguage, t } from '../i18n'
 import {
   fetchArtifactDetailContext,
@@ -33,6 +34,8 @@ interface TourChatWidgetProps {
   backendBaseUrl?: string
   initialLanguage?: ChatLanguage
   onNavigateToTarget?: (target: ChatNavigationTarget) => void
+  isFullscreen?: boolean
+  onToggleFullscreen?: () => void
 }
 
 const DEFAULT_PANEL_SIZE = { width: 650, height: 800 }
@@ -155,6 +158,8 @@ function TourChatWidget({
   backendBaseUrl,
   initialLanguage = 'pt',
   onNavigateToTarget,
+  isFullscreen = false,
+  onToggleFullscreen,
 }: TourChatWidgetProps) {
   const [language, setLanguage] = useState<ChatLanguage>(resolveEmbedLanguage(initialLanguage))
   const [isOpen, setIsOpen] = useState(false)
@@ -174,6 +179,7 @@ function TourChatWidget({
   const [statusMessages, setStatusMessages] = useState<string[]>([])
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
+  const [selectedArtifactNavigationTarget, setSelectedArtifactNavigationTarget] = useState<ChatNavigationTarget | null>(null)
   const [selectedArtifactImageIndex, setSelectedArtifactImageIndex] = useState(0)
   const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
   // Contexto relacional do artefacto aberto no modal (autores/conjuntos/exposicoes).
@@ -198,6 +204,13 @@ function TourChatWidget({
   const normalizedBackendBaseUrl = normalizeBaseUrl(backendBaseUrl)
   const tt = (key: string, params?: Record<string, string | number>) =>
     t(language, `chatWidget.${key}`, params)
+  const formatDetailType = (value?: string) => {
+    const normalized = String(value || '').trim().toUpperCase()
+    if (normalized === 'OBJ' || normalized === 'DOC') {
+      return tt(`artifactDetailType.${normalized}`)
+    }
+    return String(value || '').trim() || undefined
+  }
   const latestAssistantMessageId = [...messages]
     .reverse()
     .find((message) => message.role === 'assistant' && !message.isCenteredNotice)?.id
@@ -251,7 +264,10 @@ function TourChatWidget({
     }, CHAT_PANEL_CLOSE_ANIMATION_MS)
   }
 
-  const openArtifactModal = (artifact: ChatArtifactResult) => {
+  const openArtifactModal = (
+    artifact: ChatArtifactResult,
+    navigationTarget: ChatNavigationTarget | null = null,
+  ) => {
     if (artifactModalCloseTimerRef.current !== null) {
       window.clearTimeout(artifactModalCloseTimerRef.current)
       artifactModalCloseTimerRef.current = null
@@ -259,6 +275,7 @@ function TourChatWidget({
     setIsArtifactModalClosing(false)
     setSelectedArtifactImageIndex(0)
     setSelectedArtifactResult(artifact)
+    setSelectedArtifactNavigationTarget(navigationTarget)
     // Reset do contexto relacional; o useEffect carrega o novo.
     setDetailContext(null)
     setDetailContextError(null)
@@ -276,6 +293,7 @@ function TourChatWidget({
     }
     artifactModalCloseTimerRef.current = window.setTimeout(() => {
       setSelectedArtifactResult(null)
+      setSelectedArtifactNavigationTarget(null)
       setSelectedArtifactImageIndex(0)
       setIsArtifactModalClosing(false)
       setDetailContext(null)
@@ -284,6 +302,14 @@ function TourChatWidget({
       artifactModalCloseTimerRef.current = null
     }, ARTIFACT_MODAL_CLOSE_ANIMATION_MS)
   }, [isArtifactModalClosing, selectedArtifactResult])
+
+  const handleViewSelectedArtifactInTour = () => {
+    if (!selectedArtifactNavigationTarget || !onNavigateToTarget) {
+      return
+    }
+    onNavigateToTarget(selectedArtifactNavigationTarget)
+    closeArtifactModal()
+  }
 
   // Carrega contexto relacional quando o modal abre (lazy).
   useEffect(() => {
@@ -357,6 +383,34 @@ function TourChatWidget({
     }
     return merged
   }
+
+  const compactResultKey = (value: string | null | undefined) =>
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+
+  const artifactResultKey = (artifact: ChatArtifactResult) => {
+    const inventory = compactResultKey(artifact.inventoryNumber)
+    if (inventory) return `inventory:${inventory}`
+    const artifactId = compactResultKey(artifact.artifactId)
+    if (artifactId) return `artifact:${artifactId}`
+    return compactResultKey(artifact.title)
+  }
+
+  const imageMatchResultKey = (match: ChatImageMatch) => {
+    const inventory = compactResultKey(match.inventory || match.artifact?.inventoryNumber)
+    if (inventory) return `inventory:${inventory}`
+    const artifactId = compactResultKey(match.artifactId || match.artifact?.artifactId)
+    if (artifactId) return `artifact:${artifactId}`
+    return `image:${compactResultKey(match.originalImageName)}`
+  }
+
+  const dedupeArtifactResults = (artifacts: ChatArtifactResult[] | undefined) =>
+    mergeUniqueByKey([], artifacts, artifactResultKey)
+
+  const dedupeImageMatches = (matches: ChatImageMatch[] | undefined) =>
+    mergeUniqueByKey([], matches, imageMatchResultKey)
 
   const relatedGroupKey = (kind: RelatedArtifactGroupKind, entityId: string) =>
     `${kind}:${entityId}`
@@ -695,8 +749,8 @@ function TourChatWidget({
           id: createId(),
           role: 'assistant',
           text: chatResponse.reply,
-          imageMatches: chatResponse.imageMatches,
-          artifactResults: chatResponse.artifactResults,
+          imageMatches: dedupeImageMatches(chatResponse.imageMatches),
+          artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
           navigationTargets: chatResponse.navigationTargets,
           resultsPage: chatResponse.resultsPage,
           resultsPageSize: chatResponse.resultsPageSize,
@@ -714,8 +768,8 @@ function TourChatWidget({
           id: createId(),
           role: 'assistant',
           text: `${tt('errorPrefix')}: ${chatResponse.error}`,
-          imageMatches: chatResponse.imageMatches,
-          artifactResults: chatResponse.artifactResults,
+          imageMatches: dedupeImageMatches(chatResponse.imageMatches),
+          artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
           navigationTargets: chatResponse.navigationTargets,
           resultsPage: chatResponse.resultsPage,
           resultsPageSize: chatResponse.resultsPageSize,
@@ -795,8 +849,8 @@ function TourChatWidget({
             ? {
                 ...message,
                 text: chatResponse.reply,
-                imageMatches: chatResponse.imageMatches,
-                artifactResults: chatResponse.artifactResults,
+                imageMatches: dedupeImageMatches(chatResponse.imageMatches),
+                artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
                 navigationTargets: chatResponse.navigationTargets,
                 resultsPage: chatResponse.resultsPage,
                 resultsPageSize: chatResponse.resultsPageSize,
@@ -816,8 +870,8 @@ function TourChatWidget({
             ? {
                 ...message,
                 text: `${tt('errorPrefix')}: ${chatResponse.error}`,
-                imageMatches: chatResponse.imageMatches,
-                artifactResults: chatResponse.artifactResults,
+                imageMatches: dedupeImageMatches(chatResponse.imageMatches),
+                artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
                 navigationTargets: chatResponse.navigationTargets ?? [],
                 resultsPage: chatResponse.resultsPage,
                 resultsPageSize: chatResponse.resultsPageSize,
@@ -896,43 +950,39 @@ function TourChatWidget({
       return
     }
 
-    setMessages((previous) =>
-      previous.map((message) => {
-        if (message.id !== messageId) {
-          return message
-        }
-        return {
-          ...message,
-          artifactResults: mergeUniqueByKey(
-            message.artifactResults,
-            resultsPage.artifactResults,
-            (artifact) => artifact.artifactId,
-          ),
-          imageMatches: mergeUniqueByKey(
-            message.imageMatches,
-            resultsPage.imageMatches,
-            (match) =>
-              [
-                match.artifactId || '',
-                match.inventory || '',
-                match.originalImageName || '',
-              ].join('|'),
-          ),
-          navigationTargets: mergeUniqueByKey(
-            message.navigationTargets,
-            resultsPage.navigationTargets,
-            (target) => [target.overlayId, target.panoramaKey, target.inventoryId].join('|'),
-          ),
-          resultsPage: resultsPage.resultsPage,
-          resultsPageSize: resultsPage.resultsPageSize,
-          resultsTotal: resultsPage.resultsTotal,
-          resultsHasMore: resultsPage.resultsHasMore,
-          resultsRequestId: resultsPage.resultsRequestId || message.resultsRequestId,
-          isLoadingMoreResults: false,
-          loadMoreResultsError: null,
-        }
-      }),
+    const navigationTargets = mergeUniqueByKey(
+      [],
+      resultsPage.navigationTargets,
+      (target) => [target.overlayId, target.panoramaKey, target.inventoryId].join('|'),
     )
+    const nextAssistantMessage: ChatMessage = {
+      id: createId(),
+      role: 'assistant',
+      text: resultsPage.reply || tt('moreResultsFallback'),
+      imageMatches: dedupeImageMatches(resultsPage.imageMatches),
+      artifactResults: dedupeArtifactResults(resultsPage.artifactResults),
+      navigationTargets,
+      resultsPage: resultsPage.resultsPage,
+      resultsPageSize: resultsPage.resultsPageSize,
+      resultsTotal: resultsPage.resultsTotal,
+      resultsHasMore: resultsPage.resultsHasMore,
+      resultsRequestId: resultsPage.resultsRequestId || targetMessage.resultsRequestId,
+      isLoadingMoreResults: false,
+      loadMoreResultsError: null,
+    }
+
+    setMessages((previous) => [
+      ...previous.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              isLoadingMoreResults: false,
+              loadMoreResultsError: null,
+            }
+          : message,
+      ),
+      nextAssistantMessage,
+    ])
   }
 
   const handlePickImage = () => {
@@ -1154,13 +1204,14 @@ function TourChatWidget({
     artifactResults: ChatArtifactResult[] | undefined,
     navigationTargets: ChatNavigationTarget[] | undefined,
   ) => {
-    if (!imageMatches || imageMatches.length === 0) {
+    const visibleImageMatches = dedupeImageMatches(imageMatches)
+    if (visibleImageMatches.length === 0) {
       return null
     }
 
     return (
       <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2`}>
-        {imageMatches.map((match, index) => {
+        {visibleImageMatches.map((match, index) => {
           const imageUrl = buildImageAssetUrl(normalizedBackendBaseUrl, match.originalImageName)
           const linkedArtifact = resolveArtifactResultForImageMatch(match, artifactResults)
           const matchInventoryKey = normalizeLookupKey(match.inventory)
@@ -1219,7 +1270,7 @@ function TourChatWidget({
               className={`${isChatClosing ? 'p360-chat-result-card-exit' : 'p360-chat-result-card'} overflow-hidden rounded-xl border border-[#d9c0bc] bg-white/80`}
               style={{
                 animationDelay: isChatClosing
-                  ? `${Math.min((imageMatches.length - index - 1) * 30, 180)}ms`
+                  ? `${Math.min((visibleImageMatches.length - index - 1) * 30, 180)}ms`
                   : `${Math.min(index * 45, 240)}ms`,
               }}
             >
@@ -1238,7 +1289,7 @@ function TourChatWidget({
                       resolvedNavigationInventory: linkedTarget?.inventoryId,
                     })
                     if (linkedArtifact) {
-                      openArtifactModal(linkedArtifact)
+                      openArtifactModal(linkedArtifact, linkedTarget)
                       return
                     }
                     setLightboxImage({
@@ -1447,7 +1498,7 @@ function TourChatWidget({
       imageCount: related.imageCount,
       images: related.images,
     }
-    openArtifactModal(optimistic)
+    openArtifactModal(optimistic, related.navigationTarget ?? null)
     const { artifact, error } = await fetchArtifactFull({
       backendBaseUrl,
       museumSlug,
@@ -1807,18 +1858,10 @@ function TourChatWidget({
       <button
         type="button"
         onClick={openChat}
-        className="absolute bottom-4 left-4 z-[2] inline-flex max-w-[30px] items-center justify-center gap-3 rounded-4xl border border-[#5c0a17] bg-[#6d0b1b] px-6 py-3.5 text-base font-semibold text-white shadow-[0_18px_42px_-20px_rgba(63,13,24,1)] transition-colors hover:bg-[#4f0814] sm:min-w-[250px] sm:min-h-[48px] sm:px-6 sm:py-3.5 sm:text-lg sm:font-bold lg:px-8 lg:py-4 lg:text-xl"
+        aria-label={tt('assistant')}
+        className="absolute bottom-4 left-4  inline-flex max-w-[30px] items-center justify-center gap-3 rounded-4xl border border-[#5c0a17] bg-[#6d0b1b] text-base font-semibold text-white shadow-[0_18px_42px_-20px_rgba(63,13,24,1)] transition-colors hover:bg-[#4f0814] sm:min-w-[250px] sm:px-10 sm:py-3 sm:text-sm"
       >
-        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-          <path
-            d="M8 10h8M8 14h5M6.6 19.4L4 21l.8-2.8a8 8 0 118.2 1.8"
-            stroke="currentColor"
-            strokeWidth="1.7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        {tt('assistant')}
+        <img src={amaliaLogoText} alt="" className="h-full w-full object-cover object-center" />
       </button>
     )
   }
@@ -1837,7 +1880,7 @@ function TourChatWidget({
         maxHeight: 'calc(100% - 1.5rem)',
       }}
     >
-      <div className="flex items-start justify-between border-b border-[#d7beb8] bg-[rgba(252,246,244,0.95)] px-3 py-2.5">
+      <div className="p360-chat-text-scale flex items-start justify-between border-b border-[#d7beb8] bg-[rgba(252,246,244,0.95)] px-3 py-2.5">
         <div>
           <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#57222c]">
             {tt('assistant')}
@@ -1845,6 +1888,37 @@ function TourChatWidget({
           <p className="text-sm font-semibold text-[#1f1215]">{museumName}</p>
         </div>
         <div className="flex items-center gap-2">
+          {onToggleFullscreen ? (
+            <button
+              type="button"
+              onClick={onToggleFullscreen}
+              aria-label={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+              title={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-[#6d0b1b] bg-[#6d0b1b] text-white shadow-[0_12px_28px_-18px_rgba(109,11,27,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_18px_34px_-20px_rgba(109,11,27,1)]"
+            >
+              {isFullscreen ? (
+                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" aria-hidden="true">
+                  <path
+                    d="M9 4v5H4m16 0h-5V4M4 15h5v5m6 0v-5h5"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" aria-hidden="true">
+                  <path
+                    d="M4 9V4h5m11 5V4h-5M9 20H4v-5m16 0v5h-5"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              )}
+            </button>
+          ) : null}
           <div className="inline-flex overflow-hidden rounded-lg border border-[#ccb1ab] bg-white/90">
             {(['pt', 'en'] as const).map((option) => (
               <button
@@ -1893,7 +1967,7 @@ function TourChatWidget({
                 </div>
               </div>
             ) : message.role === 'assistant' ? (
-              <article key={message.id} className="p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
+              <article key={message.id} className="p360-chat-text-scale p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
                 <div className="mb-2 flex items-center gap-2">
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#6d0b1b]/12 text-[#6d0b1b]">
                     <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
@@ -1914,13 +1988,33 @@ function TourChatWidget({
                   {renderNavigationTargets(message.navigationTargets, message.imageMatches)}
                 </div>
                 {message.id === latestAssistantMessageId && message.resultsHasMore ? (
-                  <div className="p360-chat-results-enter mt-2">
+                  <div className="p360-chat-results-enter mt-3">
                     <button
                       type="button"
                       onClick={() => void handleLoadMoreResults(message.id)}
                       disabled={isSending || !conversationId || message.isLoadingMoreResults}
-                      className="inline-flex items-center justify-center rounded-md border border-[#cfb3ad] bg-[rgba(250,244,242,0.95)] px-2.5 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                      className="group inline-flex w-full max-w-sm items-center justify-center gap-2 rounded-xl border border-[#6d0b1b]/20 bg-[#6d0b1b] px-4 py-2.5 text-sm font-bold text-white shadow-[0_12px_28px_-20px_rgba(109,11,27,0.85)] transition-[background-color,box-shadow,transform] hover:-translate-y-0.5 hover:bg-[#7e1125] hover:shadow-[0_18px_34px_-22px_rgba(109,11,27,0.95)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0"
                     >
+                      {message.isLoadingMoreResults ? (
+                        <svg viewBox="0 0 24 24" className="h-4 w-4 animate-spin" fill="none" aria-hidden="true">
+                          <path
+                            d="M12 3a9 9 0 109 9"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      ) : (
+                        <svg viewBox="0 0 24 24" className="h-4 w-4 transition-transform group-hover:translate-y-0.5" fill="none" aria-hidden="true">
+                          <path
+                            d="M12 5v14m0 0l-5-5m5 5l5-5"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      )}
                       {message.isLoadingMoreResults ? tt('loadingMoreResults') : tt('viewMoreResults')}
                     </button>
                     {message.loadMoreResultsError ? (
@@ -1970,7 +2064,7 @@ function TourChatWidget({
               <div
                 key={message.id}
                 ref={(element) => registerMessageElement(message.id, element)}
-                className="p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
+                className="p360-chat-text-scale p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
               >
                 <p>{message.text}</p>
                 {message.uploadedImageUrl ? (
@@ -2041,7 +2135,7 @@ function TourChatWidget({
             ),
           )}
           {isAssistantLoading ? (
-            <article className="p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] rounded-xl border border-[#ddc6c2] bg-white/70 px-3 py-2 text-[#341d22]">
+            <article className="p360-chat-text-scale p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] rounded-xl border border-[#ddc6c2] bg-white/70 px-3 py-2 text-[#341d22]">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-[#6d0b1b]/25 border-t-[#6d0b1b]" />
                 <span className="text-xs font-semibold text-[#5a2730]">
@@ -2063,7 +2157,7 @@ function TourChatWidget({
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="border-t border-[#f1dfdb99] p-2.5">
+      <form onSubmit={handleSubmit} className="p360-chat-text-scale border-t border-[#f1dfdb99] p-2.5">
         <input
           ref={fileInputRef}
           type="file"
@@ -2187,7 +2281,7 @@ function TourChatWidget({
       </form>
 
       {isDragOverChat ? (
-        <div className="pointer-events-none absolute inset-0 z-[1100] flex items-center justify-center bg-[rgba(18,8,12,0.46)] p-4">
+        <div className="p360-chat-text-scale pointer-events-none absolute inset-0 z-[1100] flex items-center justify-center bg-[rgba(18,8,12,0.46)] p-4">
           <div className="w-full max-w-[420px] rounded-2xl border border-white/35 bg-[linear-gradient(145deg,rgba(255,255,255,0.95),rgba(252,242,238,0.9))] px-5 py-6 text-center shadow-[0_22px_48px_-24px_rgba(0,0,0,0.8)]">
             <span className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-[#6d0b1b]/12 text-[#6d0b1b]">
               <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" aria-hidden="true">
@@ -2259,7 +2353,7 @@ function TourChatWidget({
                       ['technique', selectedArtifactResult.technique],
                       ['productionCenter', selectedArtifactResult.productionCenter],
                       ['incorporation', selectedArtifactResult.incorporation],
-                      ['detailType', selectedArtifactResult.detailType],
+                      ['detailType', formatDetailType(selectedArtifactResult.detailType)],
                     ] as Array<[string, string | undefined]>)
                       .filter(([, value]) => Boolean(value))
                       .map(([labelKey, value]) => (
@@ -2269,15 +2363,44 @@ function TourChatWidget({
                         </div>
                       ))}
 
-                    {selectedArtifactResult.detailUrl ? (
-                      <a
-                        href={selectedArtifactResult.detailUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center rounded-md border border-[#cfb3ad] bg-white px-3 py-1.5 text-sm font-semibold text-[#6d0b1b] transition-colors hover:bg-[rgba(250,244,242,0.95)] lg:text-base"
-                      >
-                        {tt('openDetailUrl')}
-                      </a>
+                    {(selectedArtifactNavigationTarget && onNavigateToTarget) || selectedArtifactResult.detailUrl ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {selectedArtifactNavigationTarget && onNavigateToTarget ? (
+                          <button
+                            type="button"
+                            onClick={handleViewSelectedArtifactInTour}
+                            className="inline-flex items-center gap-2 rounded-md border border-[#13283f] bg-[#13283f] px-3 py-1.5 text-sm font-semibold text-[#e7f4ff] shadow-[0_10px_24px_-20px_rgba(19,40,63,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#183657] hover:shadow-[0_16px_28px_-22px_rgba(19,40,63,1)] lg:text-base"
+                          >
+                            <svg viewBox="0 0 24 24" className="h-4.5 w-4.5" fill="none" aria-hidden="true">
+                              <path
+                                d="M12 21s6-4.6 6-10a6 6 0 10-12 0c0 5.4 6 10 6 10z"
+                                stroke="currentColor"
+                                strokeWidth="1.9"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                              <path
+                                d="M12 13a2 2 0 100-4 2 2 0 000 4zM4 20c2.1-1.2 4.6-1.8 8-1.8s5.9.6 8 1.8"
+                                stroke="currentColor"
+                                strokeWidth="1.9"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                            {tt('viewInTour')}
+                          </button>
+                        ) : null}
+                        {selectedArtifactResult.detailUrl ? (
+                          <a
+                            href={selectedArtifactResult.detailUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center rounded-md border border-[#cfb3ad] bg-white px-3 py-1.5 text-sm font-semibold text-[#6d0b1b] transition-colors hover:bg-[rgba(250,244,242,0.95)] lg:text-base"
+                          >
+                            {tt('openDetailUrl')}
+                          </a>
+                        ) : null}
+                      </div>
                     ) : null}
 
                     {selectedArtifactResult.description ? (

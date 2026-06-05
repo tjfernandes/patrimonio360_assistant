@@ -7,7 +7,11 @@ import {
   useMap,
 } from 'react-leaflet'
 import { divIcon } from 'leaflet'
-import type { Popup as LeafletPopup } from 'leaflet'
+import type {
+  LatLngBoundsExpression,
+  Marker as LeafletMarker,
+  Popup as LeafletPopup,
+} from 'leaflet'
 import { isMuseumTourAvailable } from '../../services/museumService'
 import type { Museum } from '../../types/museum'
 
@@ -23,8 +27,12 @@ interface MapViewportControllerProps {
   selectedMuseum: Museum | undefined
 }
 
-const PORTUGAL_CENTER: [number, number] = [39.5, -8.0]
-const PORTUGAL_ZOOM = 7
+const PORTUGAL_MAINLAND_BOUNDS: LatLngBoundsExpression = [
+  [36.85, -9.75],
+  [42.16, -6.15],
+]
+const PORTUGAL_FIT_PADDING: [number, number] = [18, 18]
+const SELECTED_MUSEUM_ZOOM = 12
 
 function getMuseumMarkerIcon(isSelected: boolean) {
   const size = isSelected
@@ -50,17 +58,27 @@ function getMuseumMarkerIcon(isSelected: boolean) {
 
 function MapViewportController({ selectedMuseum }: MapViewportControllerProps) {
   const map = useMap()
+  const selectedMuseumSlug = selectedMuseum?.slug
 
   useEffect(() => {
-    if (!selectedMuseum) {
+    map.invalidateSize()
+    if (selectedMuseum) {
+      map.flyTo(
+        [selectedMuseum.coordinates.lat, selectedMuseum.coordinates.lon],
+        SELECTED_MUSEUM_ZOOM,
+        {
+          animate: true,
+          duration: 0.65,
+        },
+      )
       return
     }
 
-    map.flyTo([selectedMuseum.coordinates.lat, selectedMuseum.coordinates.lon], 11, {
+    map.fitBounds(PORTUGAL_MAINLAND_BOUNDS, {
       animate: true,
-      duration: 0.8,
+      padding: PORTUGAL_FIT_PADDING,
     })
-  }, [map, selectedMuseum])
+  }, [map, selectedMuseum, selectedMuseumSlug])
 
   return null
 }
@@ -72,6 +90,7 @@ function MuseumMap({
   onVisitMuseum,
   closePopupSignal,
 }: MuseumMapProps) {
+  const markerRefs = useRef<Record<string, LeafletMarker | null>>({})
   const popupRefs = useRef<Record<string, LeafletPopup | null>>({})
   const selectedMuseum = useMemo(
     () => museums.find((museum) => museum.slug === selectedMuseumSlug),
@@ -92,10 +111,24 @@ function MuseumMap({
     })
   }, [closePopupSignal, museums, selectedMuseumSlug])
 
+  useEffect(() => {
+    if (!selectedMuseum) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      markerRefs.current[selectedMuseum.museum_id]?.openPopup()
+    }, 680)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [selectedMuseum])
+
   return (
     <MapContainer
-      center={PORTUGAL_CENTER}
-      zoom={PORTUGAL_ZOOM}
+      bounds={PORTUGAL_MAINLAND_BOUNDS}
+      boundsOptions={{ padding: PORTUGAL_FIT_PADDING }}
       scrollWheelZoom
       attributionControl={false}
       className="h-full w-full rounded-3xl"
@@ -108,6 +141,8 @@ function MuseumMap({
       {museums.map((museum) => {
         const isSelected = museum.slug === selectedMuseumSlug
         const hasTour = isMuseumTourAvailable(museum)
+        const imageSrc = museum.image?.src?.trim()
+        const imageAlt = museum.image?.alt?.trim() || museum.name
 
         return (
           <Marker
@@ -115,20 +150,35 @@ function MuseumMap({
             position={[museum.coordinates.lat, museum.coordinates.lon]}
             icon={getMuseumMarkerIcon(isSelected)}
             eventHandlers={{ click: () => onSelectMuseum(museum.slug) }}
+            ref={(instance) => {
+              markerRefs.current[museum.museum_id] = instance
+            }}
           >
             <Popup
               ref={(instance) => {
                 popupRefs.current[museum.museum_id] = instance
               }}
             >
-              <div className="min-w-64 max-w-80 p-1">
-                <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#8a7670]">
-                  {museum.slug}
-                </p>
-                <p className="mt-1 text-base font-semibold leading-tight text-[#231815]">
+              <div className="min-w-72 max-w-80 p-1">
+                <div className="aspect-[16/9] overflow-hidden rounded-xl border border-[#dfcbc7] bg-[#efe2df]">
+                  {imageSrc ? (
+                    <img
+                      src={imageSrc}
+                      alt={imageAlt}
+                      className="h-full w-full object-cover"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div
+                      className="h-full w-full bg-[linear-gradient(135deg,#f8f1ee,#e6d4cf)]"
+                      role="img"
+                      aria-label={imageAlt}
+                    />
+                  )}
+                </div>
+                <p className="mt-3 text-base font-semibold leading-tight text-[#231815]">
                   {museum.name}
                 </p>
-                <p className="mt-2 text-xs leading-relaxed text-[#6d5c58]">{museum.description}</p>
                 <p className="mt-2 text-[11px] leading-relaxed text-[#6d5c58]">{museum.address}</p>
                 <div className="mt-3 flex justify-end">
                   <button
