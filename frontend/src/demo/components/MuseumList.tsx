@@ -30,6 +30,7 @@ function MuseumList({
   const [filter, setFilter] = useState<TourFilter>('all')
   const listViewportRef = useRef<HTMLDivElement | null>(null)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const isTourOpen = Boolean(visitingMuseumSlug)
 
   const filteredMuseums = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -134,7 +135,12 @@ function MuseumList({
 
       <div
         ref={listViewportRef}
-        className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto py-1 pr-1 md:grid-cols-2"
+        className={[
+          'grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto py-1 pr-1',
+          isTourOpen
+            ? 'md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'
+            : 'md:grid-cols-2',
+        ].join(' ')}
       >
         {filteredMuseums.length > 0 ? (
           filteredMuseums.map((museum, index) => (
@@ -150,6 +156,7 @@ function MuseumList({
                 museum={museum}
                 isSelected={selectedMuseumSlug === museum.slug}
                 isVisiting={visitingMuseumSlug === museum.slug}
+                isCompact={isTourOpen}
                 onSelect={onSelectMuseum}
                 onVisit={onVisitMuseum}
               />

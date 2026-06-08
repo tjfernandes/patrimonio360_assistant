@@ -46,6 +46,7 @@ function DemoPage() {
     () => museums.find((museum) => museum.slug === activeTourSlug),
     [museums, activeTourSlug],
   )
+  const isTourOpen = Boolean(activeTourMuseum)
 
   const availableTourCount = useMemo(
     () => museums.filter((museum) => isMuseumTourAvailable(museum)).length,
@@ -70,6 +71,10 @@ function DemoPage() {
 
   const handleSelectMuseumFromMap = (museumSlug: string) => {
     setSelectedMuseumSlug(museumSlug)
+    setActiveTourSlug(null)
+  }
+
+  const handleReturnToMap = () => {
     setActiveTourSlug(null)
   }
 
@@ -143,9 +148,19 @@ function DemoPage() {
 
         <section
           id="catalogo"
-          className="grid gap-4 rounded-[30px] border border-[#dbc7c2] bg-[rgba(255,250,247,0.74)] p-3 shadow-[0_22px_56px_-44px_rgba(59,14,24,0.56)] sm:p-4 lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]"
+          className={[
+            'grid gap-4 rounded-[30px] border border-[#dbc7c2] bg-[rgba(255,250,247,0.74)] p-3 shadow-[0_22px_56px_-44px_rgba(59,14,24,0.56)] sm:p-4',
+            isTourOpen ? '' : 'lg:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]',
+          ].join(' ')}
         >
-          <aside className="h-[78vh] min-h-[640px] rounded-2xl border border-[#e2d0cb] bg-[rgba(255,250,247,0.82)] p-3">
+          <aside
+            className={[
+              'rounded-2xl border border-[#e2d0cb] bg-[rgba(255,250,247,0.82)] p-3',
+              isTourOpen
+                ? 'order-2 h-[58vh] min-h-[520px]'
+                : 'order-1 h-[78vh] min-h-[640px]',
+            ].join(' ')}
+          >
             <MuseumList
               museums={museums}
               selectedMuseumSlug={selectedMuseumSlug}
@@ -155,7 +170,31 @@ function DemoPage() {
             />
           </aside>
 
-          <section className="flex h-[78vh] min-h-[640px] flex-col overflow-hidden rounded-2xl border border-[#e2d0cb] bg-[rgba(255,250,247,0.82)] p-3">
+          <section
+            className={[
+              'flex h-[78vh] min-h-[640px] flex-col overflow-hidden rounded-2xl border border-[#e2d0cb] bg-[rgba(255,250,247,0.82)] p-3',
+              isTourOpen ? 'order-1' : 'order-2',
+            ].join(' ')}
+          >
+            {activeTourMuseum ? (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#d8c3be] bg-white/78 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#7b6863]">
+                    Visita aberta
+                  </p>
+                  <p className="truncate text-sm font-semibold text-[#231815]">
+                    {activeTourMuseum.name}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleReturnToMap}
+                  className="h-9 rounded-lg border border-[#d4bdb8] bg-white px-3 text-xs font-semibold text-[#6d0b1b] transition-colors hover:bg-[#fff7f4]"
+                >
+                  Voltar ao mapa
+                </button>
+              </div>
+            ) : null}
             <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-[#d8c3be] bg-white">
               {activeTourMuseum ? (
                 <div className="relative h-full">
