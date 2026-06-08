@@ -617,6 +617,54 @@ class ChatService:
                 docs.append(payload)
         return docs
 
+    def _image_matches_as_visible_prompt_docs(
+        self,
+        image_matches: list[ImageMatchResult],
+    ) -> list[dict[str, object]]:
+        docs: list[dict[str, object]] = []
+        artifact_fields = (
+            "inventory_number",
+            "title",
+            "museum",
+            "category",
+            "super_category",
+            "creator",
+            "creators",
+            "date_or_period",
+            "support_or_material",
+            "technique",
+            "origin_history",
+            "production_center",
+            "description",
+            "detail_type",
+            "sets",
+            "exhibitions",
+            "image_count",
+        )
+        for match in image_matches:
+            artifact = match.artifact if isinstance(match.artifact, dict) else {}
+            inventory = (
+                str(match.inventory or "").strip()
+                or str(artifact.get("inventory_number") or artifact.get("inventory") or "").strip()
+            )
+            title = str(match.title or "").strip() or str(artifact.get("title") or "").strip()
+            payload: dict[str, object] = {"result_card_type": "image_match"}
+            if title:
+                payload["title"] = title
+            if inventory:
+                payload["inventory"] = inventory
+            for field in artifact_fields:
+                value = artifact.get(field)
+                if value in (None, "", [], {}):
+                    continue
+                if field == "inventory_number" and inventory:
+                    continue
+                if field == "title" and title:
+                    continue
+                payload[field] = value
+            docs.append(payload)
+        return docs
+
     def _build_visible_results_retrieval_context(
         self,
         *,
@@ -627,7 +675,12 @@ class ChatService:
         total: int,
         match_section_label: str = "visible_image_matches",
     ) -> str:
-        visible_count = len(artifact_results) if artifact_results else len(image_matches)
+        docs_for_prompt = (
+            self._image_matches_as_visible_prompt_docs(image_matches)
+            if image_matches
+            else self._artifact_results_as_prompt_docs(artifact_results)
+        )
+        visible_count = len(docs_for_prompt)
         if visible_count <= 0:
             return ""
 
@@ -639,7 +692,6 @@ class ChatService:
             "The frontend displays exactly visible_results_count result cards from current_visible_results for this answer.",
         ]
 
-        docs_for_prompt = self._artifact_results_as_prompt_docs(artifact_results)
         docs_context = self._format_docs_for_prompt(
             docs=docs_for_prompt,
             top_k=max(len(docs_for_prompt), 1),
@@ -695,7 +747,7 @@ class ChatService:
                     "You are a virtual assistant for a 360 museum tour.",
                     "Final answer language: English.",
                     "The user clicked a UI control to view the next page of search results.",
-                    "Write a concise answer about ONLY the artifacts in current_page_results.",
+                    "Write a concise answer about ONLY the visible results in current_page_results.",
                     "Do not summarize, reuse, or mention previous result pages.",
                     "Do not use conversation history as a source of facts.",
                     "Never expose artifact_id or internal doc markers such as [doc_1].",
@@ -715,7 +767,7 @@ class ChatService:
                 "Es um assistente virtual para uma visita 360 ao museu.",
                 "Idioma final da resposta: portugues.",
                 "O utilizador clicou num controlo de UI para ver a proxima pagina de resultados.",
-                "Escreve uma resposta curta sobre APENAS os artefactos em current_page_results.",
+                "Escreve uma resposta curta sobre APENAS os resultados visiveis em current_page_results.",
                 "Nao resumas, reutilizes ou menciones paginas de resultados anteriores.",
                 "Nao uses historico da conversa como fonte de factos.",
                 "Nunca exponhas artifact_id nem marcadores internos como [doc_1].",
@@ -737,11 +789,16 @@ class ChatService:
         request: dict[str, Any],
         docs: list[dict[str, object]],
         artifact_results: list[ArtifactResult],
+        image_matches: list[ImageMatchResult] | None = None,
         page: int,
         total: int,
     ) -> str:
         language = normalize_language(payload.language)
-        docs_for_prompt = docs or self._artifact_results_as_prompt_docs(artifact_results)
+        docs_for_prompt = (
+            self._image_matches_as_visible_prompt_docs(image_matches or [])
+            if image_matches
+            else docs or self._artifact_results_as_prompt_docs(artifact_results)
+        )
         docs_context = self._format_docs_for_prompt(
             docs=docs_for_prompt,
             top_k=max(len(docs_for_prompt), 1),
@@ -870,6 +927,7 @@ class ChatService:
             request=request,
             docs=docs,
             artifact_results=artifact_results,
+            image_matches=image_matches,
             page=page,
             total=reported_total,
         )
@@ -961,6 +1019,7 @@ class ChatService:
             request=request,
             docs=artifact_docs,
             artifact_results=artifact_results,
+            image_matches=image_matches,
             page=page,
             total=reported_total,
         )
@@ -1027,6 +1086,7 @@ class ChatService:
             request=request,
             docs=result.items,
             artifact_results=artifact_results,
+            image_matches=[],
             page=page,
             total=reported_total,
         )
@@ -1247,6 +1307,7 @@ class ChatService:
             request=retrieval_request,
             docs=[],
             artifact_results=paged_artifacts,
+            image_matches=paged_image_matches,
             page=results_page,
             total=results_total,
         )
@@ -3081,6 +3142,8 @@ class ChatService:
             embedding_query = (lexical_query or raw_query).strip()
         if llm_lexical_query:
             query_rewrite_source = "llm"
+        lexical_query = self._append_missing_temporal_query_terms(raw_query, lexical_query)
+        embedding_query = self._append_missing_temporal_query_terms(raw_query, embedding_query)
 
         self._log(
             logging.INFO,
@@ -3231,6 +3294,63 @@ class ChatService:
             return False
         return any(token in source_tokens for token in candidate_tokens)
 
+    def _fold_query_text(self, text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", (text or "").casefold())
+        folded = "".join(
+            char for char in normalized if not unicodedata.combining(char)
+        )
+        return re.sub(r"[^a-z0-9]+", " ", folded, flags=re.UNICODE).strip()
+
+    def _extract_temporal_query_terms(self, text: str) -> list[str]:
+        folded = self._fold_query_text(text)
+        if not folded:
+            return []
+
+        terms: list[str] = []
+        seen: set[str] = set()
+
+        def _add(term: str) -> None:
+            normalized = self._fold_query_text(term)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                terms.append(normalized)
+
+        for pattern in (
+            r"\b(?:anos?|decadas?)\s+(?:de\s+)?[0-9]{2,4}\b",
+            r"\b(?:seculo|sec)\s+(?:[ivxlcdm]+|[0-9]{1,2})\b",
+        ):
+            for match in re.finditer(pattern, folded):
+                _add(match.group(0))
+
+        existing_tokens = {
+            token
+            for term in terms
+            for token in self._fold_query_text(term).split()
+        }
+        for match in re.finditer(r"\b(?:1[0-9]{3}|20[0-9]{2}|21[0-9]{2})\b", folded):
+            year = match.group(0)
+            if year not in existing_tokens:
+                _add(year)
+
+        return terms
+
+    def _append_missing_temporal_query_terms(self, source: str, candidate: str) -> str:
+        cleaned_candidate = (candidate or "").strip()
+        if not cleaned_candidate:
+            return cleaned_candidate
+
+        candidate_tokens = set(self._fold_query_text(cleaned_candidate).split())
+        missing_terms: list[str] = []
+        for term in self._extract_temporal_query_terms(source):
+            term_tokens = self._fold_query_text(term).split()
+            if term_tokens and not all(token in candidate_tokens for token in term_tokens):
+                missing_terms.append(term)
+                candidate_tokens.update(term_tokens)
+
+        if not missing_terms:
+            return cleaned_candidate
+        return f"{cleaned_candidate} {' '.join(missing_terms)}".strip()
+
     def _has_query_language_mismatch(self, source: str, candidate: str) -> bool:
         source_pt = self._is_probably_portuguese_query(source)
         source_en = self._is_probably_english_query(source)
@@ -3291,6 +3411,7 @@ class ChatService:
                 reason="language_mismatch",
             )
             lexical_query = ""
+        lexical_query = self._append_missing_temporal_query_terms(raw_query, lexical_query)
         return lexical_query, ""
 
     def _build_lexical_query(

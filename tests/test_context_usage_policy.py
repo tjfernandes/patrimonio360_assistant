@@ -165,6 +165,15 @@ class _LLMRewriteHeadgearLeak:
         )
 
 
+class _LLMRewriteDropsDates:
+    async def generate(self, **_: object):
+        return types.SimpleNamespace(
+            parsed_json={
+                "lexical_query": "transformacoes do traje cerimonial portugues",
+            }
+        )
+
+
 class _LLMRouterSearchAsLlmOnly:
     async def generate(self, **_: object):
         return types.SimpleNamespace(
@@ -818,6 +827,37 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(lexical, "vista lisboa castelo")
         self.assertEqual(embedding, "")
 
+    def test_retrieval_query_rewrite_preserves_explicit_years(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteDropsDates(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        lexical, embedding = asyncio.run(
+            service._rewrite_retrieval_query_with_llm(
+                query=(
+                    "Podes gerar uma cronologia das principais transformacoes "
+                    "do traje cerimonial portugues entre 1750 e 1910?"
+                ),
+                museum_slug="mnt",
+                museum_id="mnt",
+                filters={},
+                sort={},
+            )
+        )
+
+        self.assertEqual(
+            lexical,
+            "transformacoes do traje cerimonial portugues 1750 1910",
+        )
+        self.assertEqual(embedding, "")
+
     def test_retrieval_query_rewrite_falls_back_when_llm_fails(self) -> None:
         settings = get_settings()
         service = ChatService(
@@ -892,6 +932,42 @@ class ContextUsagePolicyTests(unittest.TestCase):
 
         self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos crianca")
         self.assertEqual(gateway.search_page_calls[0]["query_text"], "vestidos crianca")
+
+    def test_text_retrieval_sends_explicit_years_to_opensearch(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteDropsDates(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query=(
+                    "Podes gerar uma cronologia das principais transformacoes "
+                    "do traje cerimonial portugues entre 1750 e 1910?"
+                ),
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(
+            gateway.search_page_calls[0]["lexical_query"],
+            "transformacoes do traje cerimonial portugues 1750 1910",
+        )
+        self.assertEqual(
+            gateway.search_page_calls[0]["query_text"],
+            "transformacoes do traje cerimonial portugues 1750 1910",
+        )
 
     def test_retrieval_query_rewrite_prompt_does_not_expose_museum_context_terms(self) -> None:
         prompt = build_retrieval_query_rewrite_prompt(
@@ -1043,6 +1119,72 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertIn("[doc_2]", context)
         self.assertIn("Touca Crianca", context)
         self.assertNotIn("[doc_3]", context)
+
+    def test_visible_results_context_uses_image_cards_when_present(self) -> None:
+        service = _build_service()
+        visible_artifacts = [
+            ArtifactResult(
+                artifact_id="artifact_1",
+                inventory_number="5532",
+                title="Vestido de noiva",
+                description="Vestido de tafeta de seda creme.",
+            ),
+            ArtifactResult(
+                artifact_id="artifact_2",
+                inventory_number="35342",
+                title="Conjunto de noiva",
+                description="Conjunto de noiva com cauda.",
+            ),
+        ]
+        visible_image_matches = [
+            ImageMatchResult(
+                original_image_name="5532.jpg",
+                artifact_id="artifact_1",
+                inventory="5532",
+                title="Vestido de noiva/Feminino",
+                artifact={"artifact_id": "artifact_1", "title": "Vestido de noiva"},
+            ),
+            ImageMatchResult(
+                original_image_name="mnt_cf_30.jpg",
+                artifact_id="artifact_3",
+                inventory="MNT CF 30",
+                title="[Retrato de Noivos]",
+                artifact={"artifact_id": "artifact_3", "title": "[Retrato de Noivos]"},
+            ),
+            ImageMatchResult(
+                original_image_name="35342.jpg",
+                artifact_id="artifact_2",
+                inventory="35342",
+                title="Conjunto de noiva",
+                artifact={"artifact_id": "artifact_2", "title": "Conjunto de noiva"},
+            ),
+            ImageMatchResult(
+                original_image_name="mnt_cf_678.jpg",
+                artifact_id="artifact_4",
+                inventory="MNT CF 678",
+                title="[Fotografia de Casamento]",
+                artifact={"artifact_id": "artifact_4", "title": "[Fotografia de Casamento]"},
+            ),
+        ]
+
+        context = service._build_visible_results_retrieval_context(
+            artifact_results=visible_artifacts,
+            image_matches=visible_image_matches,
+            page=1,
+            page_size=4,
+            total=8,
+        )
+
+        current_visible_block = context.split("current_visible_results:", 1)[1].split(
+            "visible_image_matches:",
+            1,
+        )[0]
+        self.assertIn("visible_results_count: 4", context)
+        self.assertIn("[doc_4]", current_visible_block)
+        self.assertIn("Vestido de noiva/Feminino", current_visible_block)
+        self.assertIn("[Retrato de Noivos]", current_visible_block)
+        self.assertIn("[Fotografia de Casamento]", current_visible_block)
+        self.assertNotIn('"artifact_id"', current_visible_block)
 
     def test_navigation_targets_cover_full_visible_result_set(self) -> None:
         settings = get_settings()

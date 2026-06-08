@@ -63,6 +63,7 @@ def build_retrieval_query_rewrite_prompt(
         "- Nunca substituas por sinónimos.\n"
         "- Nunca mudes singular/plural.\n"
         "- Nunca removas palavras internas de expressões compostas: \"de\", \"do\", \"da\", \"dos\", \"das\" devem ficar quando fazem parte do nome.\n"
+        "- Preserva sempre anos, datas, séculos, décadas e intervalos temporais mencionados pelo utilizador.\n"
         "- Remove apenas intenção/conversa: \"consegues\", \"podes\", \"encontra\", \"existem\", \"há\", \"quero\", \"procuro\".\n"
         "- Remove termos genéricos de enquadramento: \"museu\", \"acervo\", \"coleção\", \"peças\", \"objetos\", exceto se forem a única coisa pesquisável.\n"
         "- Se existir uma expressão específica de objeto, material, tema, autor ou título, usa essa expressão.\n"
