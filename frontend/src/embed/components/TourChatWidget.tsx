@@ -2318,10 +2318,10 @@ function TourChatWidget({
                     <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#6d0b1b] lg:text-sm">
                       {tt('artifactDetails')}
                     </p>
-                    <h3 className="truncate text-lg font-semibold text-[#2f1c20] lg:text-2xl">
+                    <h3 className="break-words text-lg font-semibold text-[#2f1c20] lg:text-2xl">
                       {selectedArtifactResult.title || selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
                     </h3>
-                    <p className="truncate text-sm text-[#6b5b5f] lg:text-base">
+                    <p className="break-words text-sm text-[#6b5b5f] lg:text-base">
                       {selectedArtifactResult.inventoryNumber || selectedArtifactResult.artifactId}
                     </p>
                   </div>

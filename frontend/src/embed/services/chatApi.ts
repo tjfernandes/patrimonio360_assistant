@@ -109,8 +109,8 @@ interface RawArtifactResult {
   creators?: string[]
   creator_ids?: string[]
   date_or_period?: string
-  date_year_start?: number
-  date_year_end?: number
+  start_year?: number
+  end_year?: number
   support_or_material?: string
   technique?: string
   origin_history?: string
@@ -254,8 +254,8 @@ function normalizeArtifactResultEntry(entry: RawArtifactResult | undefined): Cha
     creators,
     creatorIds: stringArray(entry.creator_ids),
     dateOrPeriod: String(entry.date_or_period || '').trim() || undefined,
-    dateYearStart: intOrUndef(entry.date_year_start),
-    dateYearEnd: intOrUndef(entry.date_year_end),
+    dateYearStart: intOrUndef(entry.start_year),
+    dateYearEnd: intOrUndef(entry.end_year),
     supportOrMaterial: String(entry.support_or_material || '').trim() || undefined,
     technique: String(entry.technique || '').trim() || undefined,
     originHistory: String(entry.origin_history || entry.historical_origin || '').trim() || undefined,
@@ -299,6 +299,85 @@ function normalizeImageMatches(payload: RawChatPayload): ChatImageMatch[] {
     })
   }
   return imageMatches
+}
+
+function resultLookupKey(value: string | undefined): string {
+  return String(value || '').trim().toLowerCase()
+}
+
+function imageMatchKeys(match: ChatImageMatch): string[] {
+  const keys = [
+    match.artifactId ? `artifact:${resultLookupKey(match.artifactId)}` : '',
+    match.inventory ? `inventory:${resultLookupKey(match.inventory)}` : '',
+    match.artifact?.artifactId ? `artifact:${resultLookupKey(match.artifact.artifactId)}` : '',
+    match.artifact?.inventoryNumber ? `inventory:${resultLookupKey(match.artifact.inventoryNumber)}` : '',
+  ]
+  return keys.filter(Boolean)
+}
+
+function artifactKeys(artifact: ChatArtifactResult): string[] {
+  const keys = [
+    artifact.artifactId ? `artifact:${resultLookupKey(artifact.artifactId)}` : '',
+    artifact.inventoryNumber ? `inventory:${resultLookupKey(artifact.inventoryNumber)}` : '',
+  ]
+  return keys.filter(Boolean)
+}
+
+function buildImageMatchForArtifact(artifact: ChatArtifactResult): ChatImageMatch {
+  const firstImage = artifact.images[0]
+  return {
+    originalImageName: firstImage?.originalImageName || firstImage?.localPath || '',
+    artifactId: artifact.artifactId,
+    title: artifact.title,
+    inventory: artifact.inventoryNumber,
+    artifact,
+  }
+}
+
+function completeImageMatchesForArtifacts(
+  imageMatches: ChatImageMatch[],
+  artifactResults: ChatArtifactResult[],
+): ChatImageMatch[] {
+  if (artifactResults.length === 0) {
+    return imageMatches
+  }
+
+  const matchesByKey = new Map<string, ChatImageMatch>()
+  for (const match of imageMatches) {
+    for (const key of imageMatchKeys(match)) {
+      if (!matchesByKey.has(key)) {
+        matchesByKey.set(key, match)
+      }
+    }
+  }
+
+  const usedMatches = new Set<ChatImageMatch>()
+  const completed = artifactResults.map((artifact) => {
+    const existingMatch = artifactKeys(artifact)
+      .map((key) => matchesByKey.get(key))
+      .find((match): match is ChatImageMatch => Boolean(match))
+
+    if (!existingMatch) {
+      return buildImageMatchForArtifact(artifact)
+    }
+
+    usedMatches.add(existingMatch)
+    return {
+      ...existingMatch,
+      artifact: existingMatch.artifact ?? artifact,
+      artifactId: existingMatch.artifactId || artifact.artifactId,
+      title: existingMatch.title || artifact.title,
+      inventory: existingMatch.inventory || artifact.inventoryNumber,
+    }
+  })
+
+  for (const match of imageMatches) {
+    if (!usedMatches.has(match)) {
+      completed.push(match)
+    }
+  }
+
+  return completed
 }
 
 function normalizeNavigationTargets(payload: RawChatPayload): ChatNavigationTarget[] {
@@ -375,8 +454,11 @@ function buildResultFromPayload(
   payload: RawChatPayload,
   language: ChatLanguage,
 ): SendChatMessageResult {
-  const imageMatches = normalizeImageMatches(payload)
   const artifactResults = normalizeArtifactResults(payload)
+  const imageMatches = completeImageMatchesForArtifacts(
+    normalizeImageMatches(payload),
+    artifactResults,
+  )
   const navigationTargets = normalizeNavigationTargets(payload)
   const meta = normalizeResultsMeta(
     payload,
@@ -409,8 +491,11 @@ function buildResultFromPayload(
 }
 
 function buildResultsPageFromPayload(payload: RawChatPayload): ChatResultsPageResult {
-  const imageMatches = normalizeImageMatches(payload)
   const artifactResults = normalizeArtifactResults(payload)
+  const imageMatches = completeImageMatchesForArtifacts(
+    normalizeImageMatches(payload),
+    artifactResults,
+  )
   const navigationTargets = normalizeNavigationTargets(payload)
   const meta = normalizeResultsMeta(
     payload,
