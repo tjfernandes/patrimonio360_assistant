@@ -1,3 +1,5 @@
+import json
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -6,6 +8,14 @@ from openai import APIError, APITimeoutError, AsyncOpenAI
 
 from app.core.config import Settings, get_settings
 from app.schemas.chat import ResponseFormatObject
+
+
+logger = logging.getLogger(__name__)
+
+EVENT_LABELS: dict[str, str] = {
+    "llm.request.payload": "Ultimo prompt enviado ao LLM (payload completo da pipeline).",
+    "llm.response.summary": "Resposta recebida do LLM.",
+}
 
 
 class LLMServiceError(Exception):
@@ -31,6 +41,50 @@ class LLMService:
             timeout=self.settings.LLM_TIMEOUT_SECONDS,
             default_headers=self.settings.llm_auth_header or None,
         )
+
+    def _log(self, level: int, event: str, **fields: object) -> None:
+        """Log estruturado, alinhado com o estilo dos outros services."""
+        if getattr(self.settings, "LOG_JSON", False):
+            payload = {"event": event, **fields}
+            prefix = EVENT_LABELS.get(event, event)
+            if getattr(self.settings, "LOG_JSON_PRETTY", False):
+                logger.log(
+                    level,
+                    f"{prefix}\n"
+                    + json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        default=str,
+                        indent=max(int(getattr(self.settings, "LOG_JSON_INDENT", 2) or 0), 0),
+                    ),
+                )
+            else:
+                logger.log(
+                    level,
+                    f"{prefix} " + json.dumps(payload, ensure_ascii=False, default=str),
+                )
+            return
+        details = " ".join(f"{key}={value}" for key, value in fields.items())
+        logger.log(level, f"{event} {details}".strip())
+
+    def _log_messages_block(self, messages: list[dict[str, str]]) -> None:
+        """Log das messages como bloco de texto plano (newlines reais, sem escape).
+
+        E uma copia literal do que vai no fio para o LLM. Util para depurar
+        prompts longos sem perder formatacao.
+        """
+        sep = "=" * 70
+        sub = "-" * 70
+        chunks: list[str] = [f"{sep}", f"LLM PROMPT MESSAGES ({len(messages)})", f"{sep}"]
+        for idx, msg in enumerate(messages, start=1):
+            role = str(msg.get("role", "?"))
+            content = str(msg.get("content", ""))
+            chunks.append(f"{sub}")
+            chunks.append(f"[{idx}] role={role}  chars={len(content)}")
+            chunks.append(f"{sub}")
+            chunks.append(content)
+        chunks.append(f"{sep}")
+        logger.info("\n".join(chunks))
 
     async def generate(
         self,
@@ -72,6 +126,23 @@ class LLMService:
         # if self.settings.LLM_MAX_TOKENS > 0:
         #     payload["max_tokens"] = self.settings.LLM_MAX_TOKENS
 
+        # Log do ultimo prompt enviado ao LLM (payload completo, incluindo
+        # system_prompt e mensagem do utilizador) -- ultima etapa da pipeline.
+        # Meta como JSON estruturado; mensagens como bloco de texto plano para
+        # newlines/acentos saírem legíveis e nao escapados.
+        self._log(
+            logging.INFO,
+            "llm.request.payload",
+            model=model,
+            response_format=response_format.type,
+            temperature=temperature,
+            n_messages=len(messages),
+            system_chars=len(system_content),
+            user_chars=len(user_content),
+            base_url=self.settings.llm_openai_base_url_resolved,
+        )
+        self._log_messages_block(messages)
+
         try:
             # Prefer parse-style call when available on the configured SDK/client.
             completions_api = self.client.chat.completions
@@ -87,6 +158,17 @@ class LLMService:
         content = _extract_chat_content(completion)
         if not isinstance(content, str) or not content.strip():
             raise LLMServiceError("LLM returned empty content.")
+
+        self._log(
+            logging.INFO,
+            "llm.response.summary",
+            model=model,
+            response_format=response_format.type,
+            response_chars=len(content),
+        )
+        # Resposta completa como texto plano (sem JSON escape).
+        sep = "=" * 70
+        logger.info("\n".join([sep, "LLM RESPONSE", sep, content, sep]))
 
         parsed_json: dict[str, Any] | list[Any] | None = None
         if response_format.type == "json_object":

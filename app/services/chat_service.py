@@ -1,5 +1,6 @@
 ﻿from functools import lru_cache
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -67,6 +68,64 @@ from app.services.tour_navigation import TourNavigationService, get_tour_navigat
 
 logger = logging.getLogger(__name__)
 StatusCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class TemporalQuery:
+    start_year: int | None
+    end_year: int | None
+    expression: str | None = None
+    confidence: float | None = None
+
+
+_TOUR_SCOPE_PATTERNS: tuple[str, ...] = (
+    r"\b(?:nesta|neste|nessa|nesse|na|no|desta|deste|da|do)\s+(?:visita|tour|percurso)(?:\s+(?:virtual|360|digital|guiada|guiado))?\b",
+    r"\b(?:visita|tour|percurso)\s+(?:virtual|360|digital)\b",
+    r"\b(?:in\s+)?this\s+(?:virtual\s+|360\s+|digital\s+)?(?:tour|visit)\b",
+    r"\b(?:in\s+the\s+)?(?:virtual|360|digital)\s+(?:tour|visit)\b",
+)
+
+
+_HARDCODED_HISTORICAL_PERIODS: tuple[tuple[tuple[str, ...], TemporalQuery], ...] = (
+    (
+        (
+            "periodo pombalino",
+            "epoca pombalina",
+            "era pombalina",
+        ),
+        TemporalQuery(1750, 1777, "periodo pombalino", 1.0),
+    ),
+    (
+        (
+            "periodo joanino",
+            "periodo joanino de d joao v",
+        ),
+        TemporalQuery(1706, 1750, "periodo joanino", 1.0),
+    ),
+    (
+        (
+            "periodo manuelino",
+            "epoca manuelina",
+        ),
+        TemporalQuery(1495, 1521, "periodo manuelino", 1.0),
+    ),
+    (
+        (
+            "periodo sebastianista",
+            "periodo sebastianistas",
+            "sebastianista",
+            "sebastianistas",
+            "crise de sucessao",
+        ),
+        TemporalQuery(1578, 1580, "periodo sebastianista", 1.0),
+    ),
+    (
+        ("periodo miguelista", "miguelista", "miguelistas"),
+        TemporalQuery(1828, 1834, "periodo miguelista", 1.0),
+    ),
+)
+
+
 EVENT_LABELS: dict[str, str] = {
     "chat.receive": "Recebida mensagem no endpoint de chat.",
     "chat.receive_image": "Recebida mensagem com imagem no endpoint de chat.",
@@ -77,6 +136,8 @@ EVENT_LABELS: dict[str, str] = {
     "chat.route": "Decisao de routing (rag vs llm_only).",
     "chat.route_delta": "Deltas de estado calculados pelo router.",
     "chat.retrieve_prepare": "Retrieval preparado antes de consultar OpenSearch.",
+    "chat.temporal_query": "Filtro temporal interpretado para retrieval.",
+    "chat.tour_scope_filter": "Filtro de visita virtual aplicado ao retrieval.",
     "chat.retrieve_query_rewrite": "Query de retrieval reescrita para OpenSearch.",
     "chat.retrieve_embedding_ready": "Embedding de query gerado para retrieval.",
     "chat.retrieve": "Tentativa de retrieval no RAG.",
@@ -85,13 +146,7 @@ EVENT_LABELS: dict[str, str] = {
     "chat.retrieve_skipped": "Retrieval ignorado nesta mensagem.",
     "chat.image_embedding_ready": "Embedding multimodal da imagem gerado.",
     "chat.image_retrieve": "Image retrieval executado com sucesso.",
-    "chat.image_matches_llm_filter_skipped": "Filtro LLM de image matches ignorado para preservar recall em retrieval.",
-    "chat.image_matches_llm_filter": "Image matches filtrados por decisao LLM antes da resposta final.",
-    "chat.image_matches_llm_filter_error": "Erro ao filtrar image matches com LLM; fallback para lista original.",
     "chat.image_match_enrichment": "Debug de associacao entre image matches, artefactos e targets de tour.",
-    "chat.docs_llm_filter": "Docs de retrieval filtrados por decisao LLM antes da resposta final.",
-    "chat.docs_llm_filter_skipped": "Filtro LLM de docs ignorado para preservar recall em query de pesquisa.",
-    "chat.docs_llm_filter_error": "Erro ao filtrar docs com LLM; fallback para lista original.",
     "chat.image_retrieve_empty": "Image retrieval sem resultados.",
     "chat.image_retrieve_error": "Erro inesperado durante image retrieval.",
     "chat.model_retrieve": "Model retrieval executado com sucesso.",
@@ -203,14 +258,6 @@ _EN_QUERY_LANGUAGE_HINTS: set[str] = {
     "tiles",
 }
 
-_INTENTS_WITH_RECALL_GUARDRAIL: set[str] = {
-    "search",
-    "refine",
-    "image_search",
-    "model_search",
-}
-
-
 class ChatService:
     """Chat service.
 
@@ -260,9 +307,6 @@ class ChatService:
 
         details = " ".join(f"{key}={value}" for key, value in fields.items())
         logger.log(level, f"{event} {details}".strip())
-
-    def _intent_requires_recall_guardrail(self, intent: str | None) -> bool:
-        return str(intent or "").strip().casefold() in _INTENTS_WITH_RECALL_GUARDRAIL
 
     def health(self) -> ChatHealthResponse:
         return ChatHealthResponse(
@@ -674,12 +718,19 @@ class ChatService:
         page_size: int,
         total: int,
         match_section_label: str = "visible_image_matches",
+        prefer_artifact_results: bool = False,
+        include_image_matches_section: bool = True,
     ) -> str:
-        docs_for_prompt = (
+        artifact_docs = self._artifact_results_as_prompt_docs(artifact_results)
+        image_docs = (
             self._image_matches_as_visible_prompt_docs(image_matches)
             if image_matches
-            else self._artifact_results_as_prompt_docs(artifact_results)
+            else []
         )
+        if prefer_artifact_results and artifact_docs:
+            docs_for_prompt = artifact_docs
+        else:
+            docs_for_prompt = image_docs or artifact_docs
         visible_count = len(docs_for_prompt)
         if visible_count <= 0:
             return ""
@@ -700,7 +751,7 @@ class ChatService:
             sections.append("current_visible_results:")
             sections.append(docs_context)
 
-        if image_matches:
+        if image_matches and include_image_matches_section:
             image_match_payload = [
                 match.model_dump(
                     exclude_none=True,
@@ -1526,20 +1577,6 @@ class ChatService:
                 language=language,
                 artifact_count=retrieved_docs_count,
             )
-            retrieved_docs = await self._filter_docs_with_llm(
-                docs=retrieved_docs,
-                user_message=payload.message,
-                museum_slug=payload.museum_slug,
-                intent=str(router_decision.get("intent", "")),
-                model_override=payload.model_override,
-                system_prompt=payload.system_prompt,
-            )
-            retrieved_docs_count = len(retrieved_docs)
-            if retrieval_request:
-                retrieved_docs_count = max(
-                    retrieved_docs_count,
-                    int(retrieval_request.get("results_total") or 0),
-                )
             self._log(
                 logging.INFO,
                 "chat.retrieve",
@@ -1577,25 +1614,6 @@ class ChatService:
                         image_hits=artifact_image_hits,
                         artifact_docs=retrieved_docs,
                     )
-                    image_matches = await self._filter_image_matches_with_llm(
-                        image_matches=image_matches,
-                        user_message=payload.message,
-                        museum_slug=payload.museum_slug,
-                        intent=str(router_decision.get("intent", "")),
-                        model_override=payload.model_override,
-                        system_prompt=payload.system_prompt,
-                    )
-                    if not self._intent_requires_recall_guardrail(
-                        str(router_decision.get("intent", ""))
-                    ):
-                        retrieved_docs = self._filter_docs_by_image_matches(
-                            docs=retrieved_docs,
-                            image_matches=image_matches,
-                        )
-                        image_matches = self._filter_image_matches_by_docs(
-                            image_matches=image_matches,
-                            docs=retrieved_docs,
-                        )
         else:
             self._log(
                 logging.DEBUG,
@@ -1658,10 +1676,12 @@ class ChatService:
         ).strip() or None
         visible_retrieval_context = self._build_visible_results_retrieval_context(
             artifact_results=paged_artifact_results,
-            image_matches=paged_image_matches,
+            image_matches=[],
             page=results_page,
             page_size=results_page_size,
             total=results_total,
+            prefer_artifact_results=True,
+            include_image_matches_section=False,
         )
 
         final_message = self._build_final_prompt(
@@ -1955,32 +1975,6 @@ class ChatService:
                 artifact_docs = []
 
             image_matches = self._build_image_matches(image_hits=image_hits, artifact_docs=artifact_docs)
-            image_matches = await self._filter_image_matches_with_llm(
-                image_matches=image_matches,
-                user_message=user_message,
-                museum_slug=payload.museum_slug,
-                intent="image_search",
-                model_override=payload.model_override,
-                system_prompt=payload.system_prompt,
-            )
-            filtered_artifact_docs = await self._filter_docs_with_llm(
-                docs=artifact_docs,
-                user_message=user_message,
-                museum_slug=payload.museum_slug,
-                intent="image_search",
-                model_override=payload.model_override,
-                system_prompt=payload.system_prompt,
-            )
-            artifact_docs = filtered_artifact_docs or artifact_docs
-            if not self._intent_requires_recall_guardrail("image_search"):
-                artifact_docs = self._filter_docs_by_image_matches(
-                    docs=artifact_docs,
-                    image_matches=image_matches,
-                )
-                image_matches = self._filter_image_matches_by_docs(
-                    image_matches=image_matches,
-                    docs=artifact_docs,
-                )
             await self._emit_status(
                 status_cb,
                 "status.artifacts_found",
@@ -2275,32 +2269,6 @@ class ChatService:
                 image_hits=retrieval_result.image_hits,
                 artifact_docs=artifact_docs,
             )
-            image_matches = await self._filter_image_matches_with_llm(
-                image_matches=image_matches,
-                user_message=user_message,
-                museum_slug=payload.museum_slug,
-                intent="model_search",
-                model_override=payload.model_override,
-                system_prompt=payload.system_prompt,
-            )
-            filtered_artifact_docs = await self._filter_docs_with_llm(
-                docs=artifact_docs,
-                user_message=user_message,
-                museum_slug=payload.museum_slug,
-                intent="model_search",
-                model_override=payload.model_override,
-                system_prompt=payload.system_prompt,
-            )
-            artifact_docs = filtered_artifact_docs or artifact_docs
-            if not self._intent_requires_recall_guardrail("model_search"):
-                artifact_docs = self._filter_docs_by_image_matches(
-                    docs=artifact_docs,
-                    image_matches=image_matches,
-                )
-                image_matches = self._filter_image_matches_by_docs(
-                    image_matches=image_matches,
-                    docs=artifact_docs,
-                )
             if retrieval_result.image_hits:
                 self._log(
                     logging.INFO,
@@ -3121,29 +3089,72 @@ class ChatService:
         result_window_size: int | None = None,
     ) -> tuple[str, int, list[dict[str, object]], dict[str, Any]]:
         raw_query = (query or "").strip()
+        temporal_query = await self._interpret_temporal_query(raw_query)
+        tour_scope_expression = self._extract_tour_scope_expression(raw_query)
+        retrieval_filters = self._merge_temporal_filter(filters, temporal_query)
+        retrieval_filters = self._merge_tour_scope_filter(
+            retrieval_filters,
+            tour_scope_expression,
+        )
+        search_query = self._strip_temporal_expression_from_query(raw_query, temporal_query)
+        search_query = self._strip_tour_scope_expression_from_query(
+            search_query,
+            tour_scope_expression,
+        )
+        if not search_query:
+            search_query = "objetos"
         lexical_query_fallback = self._build_lexical_query(
-            query=raw_query,
+            query=search_query,
             museum_slug=museum_slug,
             museum_id=museum_id,
         )
         lexical_query = lexical_query_fallback
-        embedding_query = (lexical_query_fallback or raw_query).strip()
+        embedding_query = search_query
         query_rewrite_source = "heuristic"
 
         llm_lexical_query, _ = await self._rewrite_retrieval_query_with_llm(
-            query=raw_query,
+            query=search_query,
             museum_slug=museum_slug,
             museum_id=museum_id,
             filters=filters,
             sort=sort,
         )
         if llm_lexical_query:
-            lexical_query = llm_lexical_query
-            embedding_query = (lexical_query or raw_query).strip()
+            llm_lexical_query = self._strip_temporal_expression_from_query(
+                llm_lexical_query,
+                temporal_query,
+            )
+            llm_lexical_query = self._strip_tour_scope_expression_from_query(
+                llm_lexical_query,
+                tour_scope_expression,
+            )
         if llm_lexical_query:
+            lexical_query = llm_lexical_query
+            embedding_query = llm_lexical_query
+            search_query = llm_lexical_query
             query_rewrite_source = "llm"
-        lexical_query = self._append_missing_temporal_query_terms(raw_query, lexical_query)
-        embedding_query = self._append_missing_temporal_query_terms(raw_query, embedding_query)
+
+        temporal_filter_payload = self._temporal_query_filter_payload(temporal_query)
+        if temporal_filter_payload:
+            self._log(
+                logging.INFO,
+                "chat.temporal_query",
+                museum_slug=museum_slug,
+                museum_id=museum_id,
+                original_query=raw_query,
+                temporal_query=temporal_filter_payload,
+            )
+
+        tour_scope_filter_payload = self._tour_scope_filter_payload(tour_scope_expression)
+        if tour_scope_filter_payload:
+            self._log(
+                logging.INFO,
+                "chat.tour_scope_filter",
+                museum_slug=museum_slug,
+                museum_id=museum_id,
+                original_query=raw_query,
+                tour_scope=tour_scope_filter_payload,
+            )
 
         self._log(
             logging.INFO,
@@ -3152,6 +3163,7 @@ class ChatService:
             museum_id=museum_id,
             source=query_rewrite_source,
             original_query=raw_query,
+            search_query=search_query,
             lexical_query=lexical_query,
             embedding_query=embedding_query,
         )
@@ -3161,9 +3173,10 @@ class ChatService:
             museum_slug=museum_slug,
             museum_id=museum_id,
             original_query=raw_query,
+            search_query=search_query,
             embedding_query=embedding_query,
             lexical_query=lexical_query,
-            filters=filters,
+            filters=retrieval_filters,
             sort=sort,
         )
         if self.settings.CHAT_USE_QUERY_EMBEDDINGS:
@@ -3219,7 +3232,7 @@ class ChatService:
                 query_embedding=query_embedding,
                 from_offset=0,
                 page_size=retrieval_page_size,
-                filters=filters,
+                filters=retrieval_filters,
                 sort=sort,
                 retrieval_window_size=retrieval_window_size,
             )
@@ -3248,13 +3261,17 @@ class ChatService:
         retrieval_request = {
             "kind": "text",
             "museum_id": museum_id,
+            "original_query": raw_query,
+            "search_query": search_query,
             "query_text": embedding_query,
             "lexical_query": lexical_query,
             "query_embedding": query_embedding,
-            "filters": dict(filters),
+            "filters": dict(retrieval_filters),
             "sort": dict(sort),
             "retrieval_window_size": retrieval_window_size,
             "results_total": results_total,
+            "temporal_query": temporal_filter_payload,
+            "tour_scope": tour_scope_filter_payload,
         }
         return context, results_total, docs, retrieval_request
 
@@ -3301,55 +3318,319 @@ class ChatService:
         )
         return re.sub(r"[^a-z0-9]+", " ", folded, flags=re.UNICODE).strip()
 
-    def _extract_temporal_query_terms(self, text: str) -> list[str]:
+    def _fold_query_text_with_index(self, text: str) -> tuple[str, list[int]]:
+        folded_chars: list[str] = []
+        source_indices: list[int] = []
+        for index, char in enumerate(text or ""):
+            normalized = unicodedata.normalize("NFKD", char.casefold())
+            for normalized_char in normalized:
+                if unicodedata.combining(normalized_char):
+                    continue
+                folded_chars.append(normalized_char if normalized_char.isalnum() else " ")
+                source_indices.append(index)
+        return "".join(folded_chars), source_indices
+
+    def _temporal_alias_expressions(self, temporal_query: TemporalQuery) -> list[str]:
+        expressions: list[str] = []
+        if temporal_query.expression:
+            expressions.append(temporal_query.expression)
+        for aliases, candidate in _HARDCODED_HISTORICAL_PERIODS:
+            if (
+                candidate.start_year == temporal_query.start_year
+                and candidate.end_year == temporal_query.end_year
+                and candidate.expression == temporal_query.expression
+            ):
+                expressions.extend(aliases)
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for expression in expressions:
+            folded = self._fold_query_text(expression)
+            if not folded or folded in seen:
+                continue
+            seen.add(folded)
+            deduped.append(expression)
+        return deduped
+
+    def _strip_temporal_expression_from_query(
+        self,
+        text: str,
+        temporal_query: TemporalQuery,
+    ) -> str:
+        raw_text = (text or "").strip()
+        if (
+            not raw_text
+            or temporal_query.start_year is None
+            or temporal_query.end_year is None
+        ):
+            return raw_text
+
+        folded_text, source_indices = self._fold_query_text_with_index(raw_text)
+        if not folded_text or not source_indices:
+            return raw_text
+
+        year = r"(?:1[0-9]{3}|20[0-9]{2}|21[0-9]{2})"
+        patterns = [
+            rf"\b(?:entre|de)\s+{year}\s+(?:e|a|ate)\s+{year}\b",
+            rf"\b(?:no\s+periodo|do\s+periodo|periodo)\s+{year}\s+(?:(?:e|a|ate)\s+)?{year}\b",
+            rf"\b{year}\s+(?:e|a|ate)\s+{year}\b",
+        ]
+
+        for expression in self._temporal_alias_expressions(temporal_query):
+            tokens = self._fold_query_text(expression).split()
+            if not tokens:
+                continue
+            phrase = r"\s+".join(re.escape(token) for token in tokens)
+            patterns.append(
+                rf"\b(?:(?:de|do|da|dos|das|no|na|nos|nas|em)\s+)?"
+                rf"{phrase}(?:\s+de\s+d\s+joao\s+(?:v|vi))?\b"
+            )
+
+        remove_mask = [False] * len(raw_text)
+        for pattern in patterns:
+            for match in re.finditer(pattern, folded_text):
+                if match.end() <= match.start():
+                    continue
+                start = source_indices[match.start()]
+                end = source_indices[match.end() - 1] + 1
+                for index in range(start, min(end, len(remove_mask))):
+                    remove_mask[index] = True
+
+        cleaned = "".join(
+            char for index, char in enumerate(raw_text) if not remove_mask[index]
+        )
+        cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned.strip(" ,.;:!?")
+
+    def _extract_tour_scope_expression(self, text: str) -> str | None:
+        raw_text = (text or "").strip()
+        if not raw_text:
+            return None
+
+        folded_text, source_indices = self._fold_query_text_with_index(raw_text)
+        if not folded_text or not source_indices:
+            return None
+
+        for pattern in _TOUR_SCOPE_PATTERNS:
+            match = re.search(pattern, folded_text)
+            if not match:
+                continue
+            start = source_indices[match.start()]
+            end = source_indices[match.end() - 1] + 1
+            expression = raw_text[start:end].strip(" ,.;:!?")
+            return expression or None
+
+        return None
+
+    def _strip_tour_scope_expression_from_query(
+        self,
+        text: str,
+        tour_scope_expression: str | None,
+    ) -> str:
+        raw_text = (text or "").strip()
+        if not raw_text or not tour_scope_expression:
+            return raw_text
+
+        folded_text, source_indices = self._fold_query_text_with_index(raw_text)
+        if not folded_text or not source_indices:
+            return raw_text
+
+        remove_mask = [False] * len(raw_text)
+        for pattern in _TOUR_SCOPE_PATTERNS:
+            for match in re.finditer(pattern, folded_text):
+                if match.end() <= match.start():
+                    continue
+                start = source_indices[match.start()]
+                end = source_indices[match.end() - 1] + 1
+                for index in range(start, min(end, len(remove_mask))):
+                    remove_mask[index] = True
+
+        cleaned = "".join(
+            char for index, char in enumerate(raw_text) if not remove_mask[index]
+        )
+        cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned.strip(" ,.;:!?")
+
+    def _extract_explicit_temporal_query(self, text: str) -> TemporalQuery:
         folded = self._fold_query_text(text)
         if not folded:
-            return []
+            return TemporalQuery(None, None, None, None)
 
-        terms: list[str] = []
-        seen: set[str] = set()
+        year = r"(?:1[0-9]{3}|20[0-9]{2}|21[0-9]{2})"
+        explicit_patterns = (
+            rf"\b(?:entre|de)\s+({year})\s+(?:e|a|ate)\s+({year})\b",
+            rf"\b(?:no\s+periodo|do\s+periodo|periodo)\s+({year})\s+(?:(?:e|a|ate)\s+)?({year})\b",
+            rf"\b({year})\s+(?:e|a|ate)\s+({year})\b",
+        )
+        for pattern in explicit_patterns:
+            match = re.search(pattern, folded)
+            if not match:
+                continue
+            start_year = int(match.group(1))
+            end_year = int(match.group(2))
+            if start_year > end_year:
+                start_year, end_year = end_year, start_year
+            return TemporalQuery(
+                start_year=start_year,
+                end_year=end_year,
+                expression=match.group(0),
+                confidence=1.0,
+            )
 
-        def _add(term: str) -> None:
-            normalized = self._fold_query_text(term)
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                terms.append(normalized)
+        return TemporalQuery(None, None, None, None)
 
-        for pattern in (
-            r"\b(?:anos?|decadas?)\s+(?:de\s+)?[0-9]{2,4}\b",
-            r"\b(?:seculo|sec)\s+(?:[ivxlcdm]+|[0-9]{1,2})\b",
-        ):
-            for match in re.finditer(pattern, folded):
-                _add(match.group(0))
+    def _resolve_hardcoded_historical_period(self, text: str) -> TemporalQuery:
+        folded = self._fold_query_text(text)
+        if not folded:
+            return TemporalQuery(None, None, None, None)
 
-        existing_tokens = {
-            token
-            for term in terms
-            for token in self._fold_query_text(term).split()
+        for aliases, temporal_query in _HARDCODED_HISTORICAL_PERIODS:
+            for alias in aliases:
+                folded_alias = self._fold_query_text(alias)
+                if not folded_alias:
+                    continue
+                if (
+                    temporal_query.expression == "periodo joanino"
+                    and re.search(r"\b(?:d\s*)?joao\s+vi\b", folded)
+                ):
+                    continue
+                if re.search(rf"\b{re.escape(folded_alias)}\b", folded):
+                    return temporal_query
+
+        return TemporalQuery(None, None, None, None)
+
+    def _build_temporal_interpretation_prompt(self, text: str) -> str:
+        return "\n".join(
+            [
+                "Interpreta referencias temporais numa pergunta sobre patrimonio/museus.",
+                "A tarefa NAO e responder ao utilizador.",
+                "Extrai um intervalo de anos apenas se a pergunta mencionar anos, datas, seculos, decadas ou um periodo historico reconhecivel.",
+                "Para periodos historicos implicitos, resolve para o intervalo historico mais usado no contexto portugues/europeu.",
+                "Nao inventes datas se nao houver referencia temporal.",
+                "Responde apenas JSON neste formato:",
+                '{"start_year":1900,"end_year":1910,"expression":"expressao temporal mencionada","confidence":0.9}',
+                "Se nao houver referencia temporal, responde:",
+                '{"start_year":null,"end_year":null,"expression":null,"confidence":0.0}',
+                "Regras:",
+                "- start_year e end_year devem ser inteiros ou null.",
+                "- expression deve ser a expressao temporal presente na pergunta, sem traduzir.",
+                "- confidence deve estar entre 0 e 1.",
+                "- Se tiveres duvida, usa null/null com confidence baixa.",
+                f"pergunta: {text}",
+            ]
+        )
+
+    async def _interpret_temporal_query(self, text: str) -> TemporalQuery:
+        explicit = self._extract_explicit_temporal_query(text)
+        if explicit.start_year is not None and explicit.end_year is not None:
+            return explicit
+
+        hardcoded_period = self._resolve_hardcoded_historical_period(text)
+        if hardcoded_period.start_year is not None and hardcoded_period.end_year is not None:
+            return hardcoded_period
+
+        folded = self._fold_query_text(text)
+        temporal_hints = (
+            "periodo",
+            "epoca",
+            "era",
+            "seculo",
+            "sec",
+            "decada",
+            "anos",
+        )
+        if not folded or not any(re.search(rf"\b{hint}\b", folded) for hint in temporal_hints):
+            return TemporalQuery(None, None, None, None)
+
+        try:
+            response = await self.llm_service.generate(
+                message=self._build_temporal_interpretation_prompt(text),
+                response_format=ResponseFormatObject(type="json_object"),
+                system_prompt=(
+                    "Es um interpretador temporal para retrieval museologico. "
+                    "Responde sempre JSON valido e nunca texto livre."
+                ),
+                model_override=None,
+            )
+        except Exception:
+            return TemporalQuery(None, None, None, None)
+
+        payload = response.parsed_json
+        if not isinstance(payload, dict):
+            return TemporalQuery(None, None, None, None)
+
+        start_year = payload.get("start_year")
+        end_year = payload.get("end_year")
+        confidence = payload.get("confidence")
+        if not isinstance(start_year, int) or not isinstance(end_year, int):
+            return TemporalQuery(None, None, None, None)
+        if start_year > end_year:
+            start_year, end_year = end_year, start_year
+        resolved_confidence = (
+            float(confidence)
+            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+            else 0.0
+        )
+        if resolved_confidence < 0.55:
+            return TemporalQuery(None, None, None, None)
+
+        expression = str(payload.get("expression") or "").strip() or None
+        return TemporalQuery(
+            start_year=start_year,
+            end_year=end_year,
+            expression=expression,
+            confidence=max(0.0, min(resolved_confidence, 1.0)),
+        )
+
+    def _temporal_query_filter_payload(
+        self,
+        temporal_query: TemporalQuery,
+    ) -> dict[str, object] | None:
+        if temporal_query.start_year is None or temporal_query.end_year is None:
+            return None
+        return {
+            "start_year": temporal_query.start_year,
+            "end_year": temporal_query.end_year,
+            "expression": temporal_query.expression,
+            "confidence": temporal_query.confidence,
+            "include_unknown": False,
         }
-        for match in re.finditer(r"\b(?:1[0-9]{3}|20[0-9]{2}|21[0-9]{2})\b", folded):
-            year = match.group(0)
-            if year not in existing_tokens:
-                _add(year)
 
-        return terms
+    def _merge_temporal_filter(
+        self,
+        filters: dict[str, object],
+        temporal_query: TemporalQuery,
+    ) -> dict[str, object]:
+        temporal_filter = self._temporal_query_filter_payload(temporal_query)
+        if not temporal_filter:
+            return dict(filters)
+        merged = dict(filters)
+        merged["_temporal_interval"] = temporal_filter
+        return merged
 
-    def _append_missing_temporal_query_terms(self, source: str, candidate: str) -> str:
-        cleaned_candidate = (candidate or "").strip()
-        if not cleaned_candidate:
-            return cleaned_candidate
+    def _tour_scope_filter_payload(
+        self,
+        tour_scope_expression: str | None,
+    ) -> dict[str, object] | None:
+        expression = str(tour_scope_expression or "").strip()
+        if not expression:
+            return None
+        return {
+            "in_tour": True,
+            "expression": expression,
+        }
 
-        candidate_tokens = set(self._fold_query_text(cleaned_candidate).split())
-        missing_terms: list[str] = []
-        for term in self._extract_temporal_query_terms(source):
-            term_tokens = self._fold_query_text(term).split()
-            if term_tokens and not all(token in candidate_tokens for token in term_tokens):
-                missing_terms.append(term)
-                candidate_tokens.update(term_tokens)
-
-        if not missing_terms:
-            return cleaned_candidate
-        return f"{cleaned_candidate} {' '.join(missing_terms)}".strip()
+    def _merge_tour_scope_filter(
+        self,
+        filters: dict[str, object],
+        tour_scope_expression: str | None,
+    ) -> dict[str, object]:
+        if not tour_scope_expression:
+            return dict(filters)
+        merged = dict(filters)
+        merged["in_tour"] = True
+        return merged
 
     def _has_query_language_mismatch(self, source: str, candidate: str) -> bool:
         source_pt = self._is_probably_portuguese_query(source)
@@ -3411,7 +3692,6 @@ class ChatService:
                 reason="language_mismatch",
             )
             lexical_query = ""
-        lexical_query = self._append_missing_temporal_query_terms(raw_query, lexical_query)
         return lexical_query, ""
 
     def _build_lexical_query(
@@ -3932,8 +4212,8 @@ class ChatService:
                     creators=creators_list,
                     creator_ids=_as_str_list(doc.get("creator_ids")),
                     date_or_period=str(doc.get("date_or_period") or "").strip() or None,
-                    date_year_start=_as_int(doc.get("date_year_start")),
-                    date_year_end=_as_int(doc.get("date_year_end")),
+                    start_year=_as_int(doc.get("start_year")),
+                    end_year=_as_int(doc.get("end_year")),
                     support_or_material=str(
                         doc.get("support_or_material") or doc.get("support") or ""
                     ).strip()
@@ -4555,75 +4835,6 @@ class ChatService:
                 matches.append(match)
         return matches
 
-    def _filter_docs_by_image_matches(
-        self,
-        *,
-        docs: list[dict[str, object]],
-        image_matches: list[ImageMatchResult],
-    ) -> list[dict[str, object]]:
-        if not docs or not image_matches:
-            return docs
-
-        inventories = {
-            str(match.inventory or "").strip().casefold()
-            for match in image_matches
-            if str(match.inventory or "").strip()
-        }
-        if inventories:
-            filtered = [doc for doc in docs if self._doc_inventory(doc).casefold() in inventories]
-            return filtered
-
-        artifact_ids = {
-            str(match.artifact_id or "").strip()
-            for match in image_matches
-            if str(match.artifact_id or "").strip()
-        }
-        if artifact_ids:
-            return [
-                doc
-                for doc in docs
-                if str(doc.get("artifact_id") or "").strip() in artifact_ids
-            ]
-
-        return docs
-
-    def _filter_image_matches_by_docs(
-        self,
-        *,
-        image_matches: list[ImageMatchResult],
-        docs: list[dict[str, object]],
-    ) -> list[ImageMatchResult]:
-        if not image_matches:
-            return image_matches
-        if not docs:
-            return []
-
-        inventories = {
-            self._doc_inventory(doc).casefold()
-            for doc in docs
-            if self._doc_inventory(doc)
-        }
-        if inventories:
-            return [
-                match
-                for match in image_matches
-                if str(match.inventory or "").strip().casefold() in inventories
-            ]
-
-        artifact_ids = {
-            str(doc.get("artifact_id") or "").strip()
-            for doc in docs
-            if str(doc.get("artifact_id") or "").strip()
-        }
-        if artifact_ids:
-            return [
-                match
-                for match in image_matches
-                if str(match.artifact_id or "").strip() in artifact_ids
-            ]
-
-        return image_matches
-
     def _enrich_image_matches(
         self,
         *,
@@ -4711,184 +4922,6 @@ class ChatService:
         )
 
         return enriched
-
-    async def _filter_docs_with_llm(
-        self,
-        *,
-        docs: list[dict[str, object]],
-        user_message: str,
-        museum_slug: str,
-        intent: str,
-        model_override: str | None,
-        system_prompt: str | None,
-    ) -> list[dict[str, object]]:
-        if len(docs) <= 1:
-            return docs
-        if self._intent_requires_recall_guardrail(intent):
-            self._log(
-                logging.INFO,
-                "chat.docs_llm_filter_skipped",
-                museum_slug=museum_slug,
-                intent=intent,
-                reason="intent_requires_recall",
-                docs=len(docs),
-            )
-            return docs
-
-        candidates = []
-        for index, doc in enumerate(docs, start=1):
-            candidates.append(
-                {
-                    "idx": index,
-                    "title": str(doc.get("title") or "").strip() or None,
-                    "inventory": self._doc_inventory(doc) or None,
-                    "description": str(doc.get("description") or "").strip()[:280] or None,
-                }
-            )
-
-        selector_prompt = (
-            "Seleciona apenas os artefactos relevantes para responder ao pedido do utilizador.\n"
-            "Responde estritamente em JSON no formato:\n"
-            '{"keep_indexes":[1,2]}\n'
-            "Regras:\n"
-            "- Usa apenas indices presentes em candidates.\n"
-            "- Mantem todos os relevantes (0..N).\n"
-            "- Se nenhum for relevante, devolve keep_indexes vazio.\n"
-            "- Nao inventes dados fora de candidates.\n\n"
-            f"museum_slug: {museum_slug}\n"
-            f"intent: {intent}\n"
-            f"user_message: {user_message}\n"
-            f"candidates: {json.dumps(candidates, ensure_ascii=True)}\n"
-        )
-
-        try:
-            response = await self.llm_service.generate(
-                message=selector_prompt,
-                response_format=ResponseFormatObject(type="json_object"),
-                system_prompt=system_prompt,
-                model_override=model_override,
-            )
-            payload = response.parsed_json
-            if not isinstance(payload, dict):
-                return docs
-            raw_indexes = payload.get("keep_indexes")
-            if not isinstance(raw_indexes, list):
-                return docs
-            keep_positions: set[int] = set()
-            for value in raw_indexes:
-                if isinstance(value, int):
-                    keep_positions.add(value)
-                elif isinstance(value, str) and value.isdigit():
-                    keep_positions.add(int(value))
-
-            filtered = [doc for idx, doc in enumerate(docs, start=1) if idx in keep_positions]
-            self._log(
-                logging.INFO,
-                "chat.docs_llm_filter",
-                museum_slug=museum_slug,
-                intent=intent,
-                before=len(docs),
-                after=len(filtered),
-            )
-            return filtered
-        except Exception as exc:
-            self._log(
-                logging.WARNING,
-                "chat.docs_llm_filter_error",
-                museum_slug=museum_slug,
-                intent=intent,
-                reason=str(exc),
-            )
-            return docs
-
-    async def _filter_image_matches_with_llm(
-        self,
-        *,
-        image_matches: list[ImageMatchResult],
-        user_message: str,
-        museum_slug: str,
-        intent: str,
-        model_override: str | None,
-        system_prompt: str | None,
-    ) -> list[ImageMatchResult]:
-        if len(image_matches) <= 1:
-            return image_matches
-        if self._intent_requires_recall_guardrail(intent):
-            self._log(
-                logging.INFO,
-                "chat.image_matches_llm_filter_skipped",
-                museum_slug=museum_slug,
-                intent=intent,
-                reason="intent_requires_recall",
-                image_matches=len(image_matches),
-            )
-            return image_matches
-
-        candidates = [
-            {
-                "idx": index,
-                "original_image_name": match.original_image_name,
-                "title": match.title,
-                "inventory": match.inventory,
-                "score": match.score,
-            }
-            for index, match in enumerate(image_matches, start=1)
-        ]
-        selector_prompt = (
-            "Seleciona apenas os candidatos de imagem que sao relevantes para a pergunta do utilizador.\n"
-            "Responde estritamente em JSON com o formato:\n"
-            '{"keep_indexes":[1,2]}\n'
-            "Regras:\n"
-            "- Usa apenas os indices presentes em candidates.\n"
-            "- Mantem todos os que fizerem sentido; nao limites a 1 por defeito.\n"
-            "- Se nenhum fizer sentido, devolve keep_indexes vazio.\n"
-            "- Nao inventes informacao fora de candidates.\n\n"
-            f"museum_slug: {museum_slug}\n"
-            f"intent: {intent}\n"
-            f"user_message: {user_message}\n"
-            f"candidates: {json.dumps(candidates, ensure_ascii=True)}\n"
-        )
-
-        try:
-            response = await self.llm_service.generate(
-                message=selector_prompt,
-                response_format=ResponseFormatObject(type="json_object"),
-                system_prompt=system_prompt,
-                model_override=model_override,
-            )
-            payload = response.parsed_json
-            if not isinstance(payload, dict):
-                return image_matches
-            raw_indexes = payload.get("keep_indexes")
-            if not isinstance(raw_indexes, list):
-                return image_matches
-            keep_positions: set[int] = set()
-            for value in raw_indexes:
-                if isinstance(value, int):
-                    keep_positions.add(value)
-                elif isinstance(value, str) and value.isdigit():
-                    keep_positions.add(int(value))
-            filtered = [
-                match for idx, match in enumerate(image_matches, start=1) if idx in keep_positions
-            ]
-            self._log(
-                logging.INFO,
-                "chat.image_matches_llm_filter",
-                museum_slug=museum_slug,
-                intent=intent,
-                before=len(image_matches),
-                after=len(filtered),
-            )
-            return filtered
-        except Exception as exc:
-            self._log(
-                logging.WARNING,
-                "chat.image_matches_llm_filter_error",
-                museum_slug=museum_slug,
-                intent=intent,
-                reason=str(exc),
-            )
-            return image_matches
 
     def _resolve_navigation_targets(
         self,

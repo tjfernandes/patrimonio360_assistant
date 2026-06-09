@@ -199,6 +199,7 @@ class OpenSearchGateway:
             "tipo_inventario",
             "source_system",
         }
+
         numeric_fields = {
             "image_count",
             "image_order",
@@ -206,9 +207,13 @@ class OpenSearchGateway:
             "height",
             "exhibition_count",
             "bibliography_count",
-            "date_year_start",
-            "date_year_end",
+            "start_year",
+            "end_year",
         }
+        boolean_fields = {
+            "in_tour",
+        }
+
         legacy_keyword_aliases = {
             "inventory": "inventory_number",
             "support": "support_or_material",
@@ -221,7 +226,100 @@ class OpenSearchGateway:
         for key, value in filters.items():
             if value is None:
                 continue
+
+            if key == "_temporal_interval":
+                if not isinstance(value, dict):
+                    continue
+
+                query_start_year = value.get("start_year")
+                query_end_year = value.get("end_year")
+
+                if (
+                    not isinstance(query_start_year, int)
+                    or isinstance(query_start_year, bool)
+                    or not isinstance(query_end_year, int)
+                    or isinstance(query_end_year, bool)
+                ):
+                    continue
+
+                # Proteção contra intervalos invertidos.
+                if query_start_year > query_end_year:
+                    query_start_year, query_end_year = (
+                        query_end_year,
+                        query_start_year,
+                    )
+
+                clauses.append(
+                    {
+                        "bool": {
+                            "should": [
+                                # Caso 1:
+                                # Documento com start_year e end_year.
+                                #
+                                # Há sobreposição quando:
+                                # document.start_year <= query.end_year
+                                # AND
+                                # document.end_year >= query.start_year
+                                {
+                                    "bool": {
+                                        "filter": [
+                                            {
+                                                "range": {
+                                                    "start_year": {
+                                                        "lte": query_end_year,
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                "range": {
+                                                    "end_year": {
+                                                        "gte": query_start_year,
+                                                    }
+                                                }
+                                            },
+                                        ]
+                                    }
+                                },
+
+                                # Caso 2:
+                                # Documento com apenas start_year.
+                                #
+                                # O start_year é tratado como uma data pontual
+                                # e tem de estar dentro do intervalo pesquisado.
+                                {
+                                    "bool": {
+                                        "filter": [
+                                            {
+                                                "range": {
+                                                    "start_year": {
+                                                        "gte": query_start_year,
+                                                        "lte": query_end_year,
+                                                    }
+                                                }
+                                            }
+                                        ],
+                                        "must_not": [
+                                            {
+                                                "exists": {
+                                                    "field": "end_year",
+                                                }
+                                            }
+                                        ],
+                                    }
+                                },
+                            ],
+                            "minimum_should_match": 1,
+                        }
+                    }
+                )
+                continue
+
             resolved_key = legacy_keyword_aliases.get(key, key)
+
+            if resolved_key in boolean_fields:
+                if isinstance(value, bool):
+                    clauses.append({"term": {resolved_key: value}})
+                continue
 
             if resolved_key in keyword_fields:
                 if isinstance(value, list) and value:
@@ -235,27 +333,113 @@ class OpenSearchGateway:
                     range_payload = {
                         op: val
                         for op, val in value.items()
-                        if op in {"gt", "gte", "lt", "lte"} and isinstance(val, (int, float))
+                        if (
+                            op in {"gt", "gte", "lt", "lte"}
+                            and isinstance(val, (int, float))
+                            and not isinstance(val, bool)
+                        )
                     }
+
                     if range_payload:
-                        clauses.append({"range": {resolved_key: range_payload}})
-                elif isinstance(value, (int, float)):
-                    clauses.append({"term": {resolved_key: value}})
+                        clauses.append(
+                            {
+                                "range": {
+                                    resolved_key: range_payload,
+                                }
+                            }
+                        )
+
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    clauses.append(
+                        {
+                            "term": {
+                                resolved_key: value,
+                            }
+                        }
+                    )
+
                 continue
 
-            if key.endswith("_gte") and isinstance(value, (int, float)):
+            if (
+                key.endswith("_gte")
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
                 field = key[:-4]
+
                 if field in numeric_fields:
-                    clauses.append({"range": {field: {"gte": value}}})
+                    clauses.append(
+                        {
+                            "range": {
+                                field: {
+                                    "gte": value,
+                                }
+                            }
+                        }
+                    )
+
                 continue
 
-            if key.endswith("_lte") and isinstance(value, (int, float)):
+            if (
+                key.endswith("_lte")
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
                 field = key[:-4]
+
                 if field in numeric_fields:
-                    clauses.append({"range": {field: {"lte": value}}})
+                    clauses.append(
+                        {
+                            "range": {
+                                field: {
+                                    "lte": value,
+                                }
+                            }
+                        }
+                    )
+
                 continue
 
         return clauses
+
+
+    @staticmethod
+    def _temporal_known_year_matches_interval(
+        *,
+        document_start_year: int | None,
+        document_end_year: int | None,
+        query_start_year: int,
+        query_end_year: int,
+    ) -> bool:
+        """
+        Verifica se a cronologia conhecida de um documento corresponde
+        ao intervalo cronológico da query.
+
+        Regras:
+        - start_year + end_year: verificar sobreposição de intervalos;
+        - apenas start_year: tratar como ano pontual;
+        - sem start_year: não corresponde.
+
+        Por contrato dos dados, end_year não existe sem start_year.
+        """
+
+        if query_start_year > query_end_year:
+            query_start_year, query_end_year = (
+                query_end_year,
+                query_start_year,
+            )
+
+        if document_start_year is None:
+            return False
+
+        if document_end_year is None:
+            return query_start_year <= document_start_year <= query_end_year
+
+        return (
+            document_start_year <= query_end_year
+            and document_end_year >= query_start_year
+        )
+
 
     def _build_sort(self, sort: dict[str, Any] | None) -> list[dict[str, Any]]:
         if not sort:
@@ -295,14 +479,21 @@ class OpenSearchGateway:
             return [{"term": {"museum_id": museum_slug}}]
         return []
 
-    def _build_in_tour_boost_clause(self) -> dict[str, Any] | None:
-        boost = self._configured_query_boost()
-        if boost <= 0:
+    def _build_in_tour_boost_clause(self, *, boost: float | None = None) -> dict[str, Any] | None:
+        # boost=None -> usa o boost de texto (CHAT_IN_TOUR_BOOST). Pesquisas por
+        # imagem/modelo passam boost=IMAGE_IN_TOUR_BOOST.
+        resolved = self._configured_query_boost() if boost is None else float(boost or 0)
+        if resolved <= 0:
             return None
-        return {"term": {"in_tour": {"value": True, "boost": boost}}}
+        return {"term": {"in_tour": {"value": True, "boost": resolved}}}
 
     def _configured_query_boost(self) -> float:
+        """Boost de in_tour para pesquisas de texto."""
         return float(getattr(self.settings, "CHAT_IN_TOUR_BOOST", 0) or 0)
+
+    def _configured_image_boost(self) -> float:
+        """Boost de in_tour para pesquisas por imagem/modelo 3D."""
+        return float(getattr(self.settings, "IMAGE_IN_TOUR_BOOST", 0) or 0)
 
     def _is_in_tour(self, value: Any) -> bool:
         if isinstance(value, bool):
@@ -313,10 +504,10 @@ class OpenSearchGateway:
             return bool(value)
         return False
 
-    def _artifact_candidate_size(self, top_k: int) -> int:
+    def _artifact_candidate_size(self, top_k: int, *, boost: float | None = None) -> int:
         base = max(top_k, 1)
-        boost = self._configured_query_boost()
-        if boost <= 0:
+        resolved = self._configured_query_boost() if boost is None else float(boost or 0)
+        if resolved <= 0:
             return base
         return min(150, max(base * 4, base + 20))
 
@@ -426,8 +617,8 @@ class OpenSearchGateway:
             "creator_ids": self._as_list_of_strings(source.get("creator_ids")),
             "creator": legacy_creator or (creators[0] if creators else None),
             "date_or_period": source.get("date_or_period"),
-            "date_year_start": self._coerce_int(source.get("date_year_start")),
-            "date_year_end": self._coerce_int(source.get("date_year_end")),
+            "start_year": self._coerce_int(source.get("start_year")),
+            "end_year": self._coerce_int(source.get("end_year")),
             "support_or_material": support_or_material or None,
             "technique": source.get("technique"),
             # Conjuntos.
@@ -445,7 +636,7 @@ class OpenSearchGateway:
             "origin_history": origin_history or None,
             "incorporation": source.get("incorporation"),
             "production_center": production_center or None,
-            "description": self._truncate(source.get("description"), max_chars=900),
+            "description": str(source.get("description") or "").strip() or None,
             "search_text": search_text or None,
             "detail_type": source.get("detail_type"),
             "detail_url": source.get("detail_url"),
@@ -552,11 +743,7 @@ class OpenSearchGateway:
             if retrieval_window_size is not None
             else None
         )
-        knn_k = self._resolve_knn_k(
-            from_offset=from_value,
-            size=size,
-            retrieval_window_size=retrieval_window,
-        )
+        knn_k = 150
         filter_clauses = self._build_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
@@ -661,8 +848,8 @@ class OpenSearchGateway:
                 "bibliography",
                 "bibliography_count",
                 "date_or_period",
-                "date_year_start",
-                "date_year_end",
+                "start_year",
+                "end_year",
                 "support_or_material",
                 "technique",
                 "origin_history",
@@ -955,8 +1142,9 @@ class OpenSearchGateway:
     ) -> list[dict[str, Any]]:
         client = self._ensure_client()
         requested_top_k = max(top_k, 1)
-        size = self._artifact_candidate_size(requested_top_k)
-        in_tour_boost_clause = self._build_in_tour_boost_clause()
+        image_boost = self._configured_image_boost()
+        size = self._artifact_candidate_size(requested_top_k, boost=image_boost)
+        in_tour_boost_clause = self._build_in_tour_boost_clause(boost=image_boost)
         bool_query: dict[str, Any] = {
             "filter": self._build_image_filter_clauses(
                 museum_slug=museum_slug,
@@ -1053,7 +1241,7 @@ class OpenSearchGateway:
             size=size,
             retrieval_window_size=retrieval_window,
         )
-        in_tour_boost_clause = self._build_in_tour_boost_clause()
+        in_tour_boost_clause = self._build_in_tour_boost_clause(boost=self._configured_image_boost())
         bool_query: dict[str, Any] = {
             "filter": self._build_image_filter_clauses(
                 museum_slug=museum_slug,
@@ -1131,12 +1319,13 @@ class OpenSearchGateway:
 
         client = self._ensure_client()
         requested_top_k = max(top_k, 1)
-        size = self._artifact_candidate_size(requested_top_k)
+        image_boost = self._configured_image_boost()
+        size = self._artifact_candidate_size(requested_top_k, boost=image_boost)
         filter_clauses = self._build_image_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
         )
-        in_tour_boost_clause = self._build_in_tour_boost_clause()
+        in_tour_boost_clause = self._build_in_tour_boost_clause(boost=image_boost)
 
         should_clauses: list[dict[str, Any]] = []
         for embedding in embeddings:
@@ -1146,7 +1335,9 @@ class OpenSearchGateway:
                         "visual_embedding": {
                             "vector": embedding,
                             "k": max(30, size * 3),
-                            "boost": self._configured_query_boost(),
+                            # Ponderacao por imagem (modelo 3D -> varias vistas),
+                            # nao confundir com o boost de in_tour.
+                            "boost": 3.0,
                         }
                     }
                 }
@@ -1245,7 +1436,7 @@ class OpenSearchGateway:
             museum_slug=museum_slug,
             museum_id=museum_id,
         )
-        in_tour_boost_clause = self._build_in_tour_boost_clause()
+        in_tour_boost_clause = self._build_in_tour_boost_clause(boost=self._configured_image_boost())
 
         should_clauses: list[dict[str, Any]] = []
         for embedding in embeddings:
@@ -1255,7 +1446,9 @@ class OpenSearchGateway:
                         "visual_embedding": {
                             "vector": embedding,
                             "k": knn_k,
-                            "boost": self._configured_query_boost(),
+                            # Ponderacao por imagem (modelo 3D -> varias vistas),
+                            # nao confundir com o boost de in_tour.
+                            "boost": 3.0,
                         }
                     }
                 }
@@ -1600,8 +1793,8 @@ class OpenSearchGateway:
                 "bibliography",
                 "bibliography_count",
                 "date_or_period",
-                "date_year_start",
-                "date_year_end",
+                "start_year",
+                "end_year",
                 "support_or_material",
                 "technique",
                 "origin_history",
@@ -1745,8 +1938,8 @@ class OpenSearchGateway:
                 "bibliography",
                 "bibliography_count",
                 "date_or_period",
-                "date_year_start",
-                "date_year_end",
+                "start_year",
+                "end_year",
                 "support_or_material",
                 "technique",
                 "origin_history",

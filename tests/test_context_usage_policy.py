@@ -28,7 +28,7 @@ from app.schemas.chat import (
     ImageMatchResult,
     TourNavigationTarget,
 )
-from app.services.chat_service import ChatService
+from app.services.chat_service import ChatService, TemporalQuery
 from app.services.chat_session_store import ChatSessionState, ChatSessionStore, ChatTurn
 
 
@@ -140,6 +140,54 @@ class _LLMRewriteFail:
         raise RuntimeError("llm unavailable")
 
 
+class _LLMTemporalPeriods:
+    async def generate(self, **kwargs: object):
+        message = str(kwargs.get("message") or "").casefold()
+        if "periodo regencial" in message:
+            return types.SimpleNamespace(
+                parsed_json={
+                    "start_year": 1831,
+                    "end_year": 1840,
+                    "expression": "periodo regencial",
+                    "confidence": 0.86,
+                }
+            )
+        if "periodo pombalino" in message:
+            return types.SimpleNamespace(
+                parsed_json={
+                    "start_year": 1750,
+                    "end_year": 1777,
+                    "expression": "periodo pombalino",
+                    "confidence": 0.91,
+                }
+            )
+        if "periodo joanino" in message:
+            return types.SimpleNamespace(
+                parsed_json={
+                    "start_year": 1808,
+                    "end_year": 1821,
+                    "expression": "periodo joanino",
+                    "confidence": 0.92,
+                }
+            )
+        return types.SimpleNamespace(
+            parsed_json={
+                "start_year": None,
+                "end_year": None,
+                "expression": None,
+                "confidence": 0.0,
+            }
+        )
+
+
+class _LLMRewriteFailTemporalPeriods(_LLMTemporalPeriods):
+    async def generate(self, **kwargs: object):
+        message = str(kwargs.get("message") or "").casefold()
+        if "interpreta referencias temporais" in message:
+            return await super().generate(**kwargs)
+        raise RuntimeError("rewrite unavailable")
+
+
 class _LLMShouldNotBeCalled:
     async def generate(self, **_: object):
         raise AssertionError("LLM filter should have been skipped for this intent")
@@ -172,6 +220,44 @@ class _LLMRewriteDropsDates:
                 "lexical_query": "transformacoes do traje cerimonial portugues",
             }
         )
+
+
+class _LLMRewriteLeaksTemporalPeriod:
+    async def generate(self, **_: object):
+        return types.SimpleNamespace(
+            parsed_json={
+                "lexical_query": "trajes periodo pombalino",
+            }
+        )
+
+
+class _LLMRewriteLeaksTourScope:
+    async def generate(self, **_: object):
+        return types.SimpleNamespace(
+            parsed_json={
+                "lexical_query": "vestidos de noiva nesta visita virtual",
+            }
+        )
+
+
+class _LLMRewriteMuseumQuestionExamples:
+    async def generate(self, **kwargs: object):
+        message = str(kwargs.get("message") or "")
+        query = message.rsplit("user_query:", 1)[-1]
+        query = query.split("active_filters_json:", 1)[0].casefold()
+        if "personalidades sepultadas" in query:
+            return types.SimpleNamespace(
+                parsed_json={
+                    "lexical_query": "personalidades sepultadas nos Jerónimos",
+                }
+            )
+        if "15 minutos" in query:
+            return types.SimpleNamespace(
+                parsed_json={
+                    "lexical_query": "objetos",
+                }
+            )
+        raise RuntimeError("unexpected rewrite prompt")
 
 
 class _LLMRouterSearchAsLlmOnly:
@@ -827,7 +913,26 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(lexical, "vista lisboa castelo")
         self.assertEqual(embedding, "")
 
-    def test_retrieval_query_rewrite_preserves_explicit_years(self) -> None:
+    def test_temporal_query_extracts_explicit_year_interval(self) -> None:
+        service = _build_service()
+
+        temporal_query = asyncio.run(
+            service._interpret_temporal_query(
+                "transformacoes do traje cerimonial portugues entre 1750 e 1910"
+            )
+        )
+
+        self.assertEqual(
+            temporal_query,
+            TemporalQuery(
+                start_year=1750,
+                end_year=1910,
+                expression="entre 1750 e 1910",
+                confidence=1.0,
+            ),
+        )
+
+    def test_temporal_query_resolves_implicit_historical_period(self) -> None:
         settings = get_settings()
         service = ChatService(
             settings=settings,
@@ -835,28 +940,202 @@ class ContextUsagePolicyTests(unittest.TestCase):
             embedding_provider=_Dummy(),
             model_retrieval_service=_Dummy(),
             tour_navigation_service=_Dummy(),
-            llm_service=_LLMRewriteDropsDates(),
+            llm_service=_LLMShouldNotBeCalled(),
             session_store=ChatSessionStore(settings),
         )
 
-        lexical, embedding = asyncio.run(
-            service._rewrite_retrieval_query_with_llm(
-                query=(
-                    "Podes gerar uma cronologia das principais transformacoes "
-                    "do traje cerimonial portugues entre 1750 e 1910?"
-                ),
-                museum_slug="mnt",
-                museum_id="mnt",
-                filters={},
-                sort={},
+        temporal_query = asyncio.run(
+            service._interpret_temporal_query(
+                "influencias francesas na alfaiataria portuguesa do periodo joanino"
             )
         )
 
         self.assertEqual(
-            lexical,
-            "transformacoes do traje cerimonial portugues 1750 1910",
+            temporal_query,
+            TemporalQuery(
+                start_year=1706,
+                end_year=1750,
+                expression="periodo joanino",
+                confidence=1.0,
+            ),
         )
-        self.assertEqual(embedding, "")
+
+    def test_temporal_query_resolves_pombaline_period(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMShouldNotBeCalled(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        temporal_query = asyncio.run(
+            service._interpret_temporal_query("encontra trajes do periodo pombalino")
+        )
+
+        self.assertEqual(
+            temporal_query,
+            TemporalQuery(
+                start_year=1750,
+                end_year=1777,
+                expression="periodo pombalino",
+                confidence=1.0,
+            ),
+        )
+
+    def test_temporal_query_resolves_curated_historical_periods(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMShouldNotBeCalled(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        cases = [
+            ("pecas do periodo manuelino", TemporalQuery(1495, 1521, "periodo manuelino", 1.0)),
+            ("trajes sebastianistas", TemporalQuery(1578, 1580, "periodo sebastianista", 1.0)),
+            ("objetos da crise de sucessao", TemporalQuery(1578, 1580, "periodo sebastianista", 1.0)),
+            ("moda do periodo miguelista", TemporalQuery(1828, 1834, "periodo miguelista", 1.0)),
+        ]
+
+        for query, expected in cases:
+            with self.subTest(query=query):
+                self.assertEqual(
+                    asyncio.run(service._interpret_temporal_query(query)),
+                    expected,
+                )
+
+    def test_temporal_query_uses_llm_for_non_curated_period(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMTemporalPeriods(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        temporal_query = asyncio.run(
+            service._interpret_temporal_query("trajes do periodo regencial")
+        )
+
+        self.assertEqual(
+            temporal_query,
+            TemporalQuery(
+                start_year=1831,
+                end_year=1840,
+                expression="periodo regencial",
+                confidence=0.86,
+            ),
+        )
+
+    def test_temporal_query_uses_llm_for_joao_vi_period(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMTemporalPeriods(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        temporal_query = asyncio.run(
+            service._interpret_temporal_query("trajes do periodo joanino de D. Joao VI")
+        )
+
+        self.assertEqual(
+            temporal_query,
+            TemporalQuery(
+                start_year=1808,
+                end_year=1821,
+                expression="periodo joanino",
+                confidence=0.92,
+            ),
+        )
+
+    def test_temporal_query_ignores_query_without_temporal_reference(self) -> None:
+        service = _build_service()
+
+        temporal_query = asyncio.run(
+            service._interpret_temporal_query("encontra vestidos de noiva em seda")
+        )
+
+        self.assertEqual(temporal_query, TemporalQuery(None, None, None, None))
+
+    def test_temporal_expression_is_removed_from_search_query_text(self) -> None:
+        service = _build_service()
+
+        cases = [
+            (
+                "Podes gerar uma cronologia do traje cerimonial entre 1750 e 1910?",
+                TemporalQuery(1750, 1910, "entre 1750 e 1910", 1.0),
+                "Podes gerar uma cronologia do traje cerimonial",
+            ),
+            (
+                "influencias francesas na alfaiataria portuguesa do periodo joanino",
+                TemporalQuery(1706, 1750, "periodo joanino", 1.0),
+                "influencias francesas na alfaiataria portuguesa",
+            ),
+            (
+                "encontra trajes do periodo pombalino",
+                TemporalQuery(1750, 1777, "periodo pombalino", 1.0),
+                "encontra trajes",
+            ),
+            (
+                "trajes sebastianistas",
+                TemporalQuery(1578, 1580, "periodo sebastianista", 1.0),
+                "trajes",
+            ),
+        ]
+
+        for query, temporal_query, expected in cases:
+            with self.subTest(query=query):
+                self.assertEqual(
+                    service._strip_temporal_expression_from_query(query, temporal_query),
+                    expected,
+                )
+
+    def test_tour_scope_expression_is_removed_from_search_query_text(self) -> None:
+        service = _build_service()
+
+        cases = [
+            (
+                "encontra vestidos de noiva nesta visita virtual",
+                "encontra vestidos de noiva",
+            ),
+            (
+                "mostra chapeus no tour",
+                "mostra chapeus",
+            ),
+            (
+                "blablabla nesta visita virtual",
+                "blablabla",
+            ),
+            (
+                "show dresses in this virtual tour",
+                "show dresses",
+            ),
+        ]
+
+        for query, expected in cases:
+            with self.subTest(query=query):
+                expression = service._extract_tour_scope_expression(query)
+                self.assertIsNotNone(expression)
+                self.assertEqual(
+                    service._strip_tour_scope_expression_from_query(query, expression),
+                    expected,
+                )
 
     def test_retrieval_query_rewrite_falls_back_when_llm_fails(self) -> None:
         settings = get_settings()
@@ -933,7 +1212,7 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos crianca")
         self.assertEqual(gateway.search_page_calls[0]["query_text"], "vestidos crianca")
 
-    def test_text_retrieval_sends_explicit_years_to_opensearch(self) -> None:
+    def test_text_retrieval_applies_explicit_year_interval_filter(self) -> None:
         settings = get_settings()
         gateway = _WindowOpenSearchGateway()
         service = ChatService(
@@ -962,12 +1241,357 @@ class ContextUsagePolicyTests(unittest.TestCase):
 
         self.assertEqual(
             gateway.search_page_calls[0]["lexical_query"],
-            "transformacoes do traje cerimonial portugues 1750 1910",
+            "transformacoes do traje cerimonial portugues",
         )
         self.assertEqual(
             gateway.search_page_calls[0]["query_text"],
-            "transformacoes do traje cerimonial portugues 1750 1910",
+            "transformacoes do traje cerimonial portugues",
         )
+        self.assertEqual(
+            gateway.search_page_calls[0]["filters"].get("_temporal_interval"),
+            {
+                "start_year": 1750,
+                "end_year": 1910,
+                "expression": "entre 1750 e 1910",
+                "confidence": 1.0,
+                "include_unknown": False,
+            },
+        )
+
+    def test_text_retrieval_applies_implicit_historical_period_filter(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFailTemporalPeriods(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="influencias francesas na alfaiataria portuguesa do periodo joanino",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(
+            gateway.search_page_calls[0]["query_text"],
+            "influencias francesas na alfaiataria portuguesa",
+        )
+        self.assertEqual(
+            gateway.search_page_calls[0]["lexical_query"],
+            "influencias francesas alfaiataria portuguesa",
+        )
+        self.assertEqual(
+            gateway.search_page_calls[0]["filters"].get("_temporal_interval"),
+            {
+                "start_year": 1706,
+                "end_year": 1750,
+                "expression": "periodo joanino",
+                "confidence": 1.0,
+                "include_unknown": False,
+            },
+        )
+
+    def test_text_retrieval_applies_pombaline_period_filter(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFailTemporalPeriods(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra trajes do periodo pombalino",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra trajes")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "trajes")
+        self.assertEqual(
+            gateway.search_page_calls[0]["filters"].get("_temporal_interval"),
+            {
+                "start_year": 1750,
+                "end_year": 1777,
+                "expression": "periodo pombalino",
+                "confidence": 1.0,
+                "include_unknown": False,
+            },
+        )
+
+    def test_text_retrieval_strips_temporal_period_from_llm_rewrite_output(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteLeaksTemporalPeriod(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra trajes do periodo pombalino",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "trajes")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "trajes")
+
+    def test_text_retrieval_uses_llm_for_non_curated_period_filter(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFailTemporalPeriods(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra trajes do periodo regencial",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra trajes")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "trajes")
+        self.assertEqual(
+            gateway.search_page_calls[0]["filters"].get("_temporal_interval"),
+            {
+                "start_year": 1831,
+                "end_year": 1840,
+                "expression": "periodo regencial",
+                "confidence": 0.86,
+                "include_unknown": False,
+            },
+        )
+
+    def test_text_retrieval_without_temporal_reference_keeps_filters_unchanged(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFail(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra vestidos de noiva em seda",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["filters"], {})
+
+    def test_text_retrieval_applies_tour_scope_filter(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFail(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra vestidos de noiva nesta visita virtual",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra vestidos de noiva")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos noiva")
+        self.assertEqual(gateway.search_page_calls[0]["filters"], {"in_tour": True})
+
+    def test_text_retrieval_combines_temporal_and_tour_scope_filters(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFail(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra trajes do periodo pombalino nesta visita virtual",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra trajes")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "trajes")
+        self.assertEqual(gateway.search_page_calls[0]["filters"].get("in_tour"), True)
+        self.assertEqual(
+            gateway.search_page_calls[0]["filters"].get("_temporal_interval"),
+            {
+                "start_year": 1750,
+                "end_year": 1777,
+                "expression": "periodo pombalino",
+                "confidence": 1.0,
+                "include_unknown": False,
+            },
+        )
+
+    def test_text_retrieval_strips_tour_scope_from_llm_rewrite_output(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteLeaksTourScope(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra vestidos de noiva nesta visita virtual",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "vestidos de noiva")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos de noiva")
+        self.assertEqual(gateway.search_page_calls[0]["filters"], {"in_tour": True})
+
+    def test_text_retrieval_uses_rewritten_query_for_lexical_and_embedding(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteMuseumQuestionExamples(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        _, _, _, retrieval_request = asyncio.run(
+            service._retrieve_context(
+                museum_slug="mj",
+                museum_id="mj",
+                query=(
+                    "Quem são as personalidades sepultadas nos Jerónimos "
+                    "e porque são importantes para Portugal?"
+                ),
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(
+            gateway.search_page_calls[0]["query_text"],
+            "personalidades sepultadas nos Jerónimos",
+        )
+        self.assertEqual(
+            gateway.search_page_calls[0]["lexical_query"],
+            "personalidades sepultadas nos Jerónimos",
+        )
+        self.assertEqual(retrieval_request["search_query"], "personalidades sepultadas nos Jerónimos")
+        self.assertEqual(retrieval_request["query_text"], "personalidades sepultadas nos Jerónimos")
+
+    def test_text_retrieval_removes_visit_planning_intent_from_rewrite(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteMuseumQuestionExamples(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        _, _, _, retrieval_request = asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query=(
+                    "Se eu tiver apenas 15 minutos para uma visita virtual, "
+                    "quais são os objetos que não devo perder?"
+                ),
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "objetos")
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "objetos")
+        self.assertEqual(gateway.search_page_calls[0]["filters"], {"in_tour": True})
+        self.assertEqual(retrieval_request["search_query"], "objetos")
+        self.assertEqual(retrieval_request["query_text"], "objetos")
 
     def test_retrieval_query_rewrite_prompt_does_not_expose_museum_context_terms(self) -> None:
         prompt = build_retrieval_query_rewrite_prompt(
@@ -979,6 +1603,9 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertNotIn("museum_slug", prompt)
         self.assertNotIn("museum_id", prompt)
         self.assertNotIn("mj", prompt)
+        self.assertIn("personalidades sepultadas nos Jerónimos", prompt)
+        self.assertIn("15 minutos", prompt)
+        self.assertIn("nao devo perder", prompt)
 
     def test_retrieval_query_rewrite_rejects_headgear_translation(self) -> None:
         settings = get_settings()
@@ -1186,6 +1813,50 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertIn("[Fotografia de Casamento]", current_visible_block)
         self.assertNotIn('"artifact_id"', current_visible_block)
 
+    def test_visible_results_context_can_prefer_artifact_cards_when_image_matches_exist(self) -> None:
+        service = _build_service()
+        visible_artifacts = [
+            ArtifactResult(
+                artifact_id="artifact_1",
+                inventory_number="5532",
+                title="Vestido de noiva",
+                description="Vestido de tafeta de seda creme.",
+            ),
+            ArtifactResult(
+                artifact_id="artifact_2",
+                inventory_number="35342",
+                title="Conjunto de noiva",
+                description="Conjunto de noiva com cauda.",
+            ),
+        ]
+        visible_image_matches = [
+            ImageMatchResult(
+                original_image_name="5532.jpg",
+                artifact_id="artifact_1",
+                inventory="5532",
+                title="Vestido de noiva/Feminino",
+                artifact={"artifact_id": "artifact_1", "title": "Vestido de noiva/Feminino"},
+            )
+        ]
+
+        context = service._build_visible_results_retrieval_context(
+            artifact_results=visible_artifacts,
+            image_matches=visible_image_matches,
+            page=1,
+            page_size=2,
+            total=2,
+            prefer_artifact_results=True,
+            include_image_matches_section=False,
+        )
+
+        current_visible_block = context.split("current_visible_results:", 1)[1]
+        self.assertIn("visible_results_count: 2", context)
+        self.assertIn("[doc_2]", current_visible_block)
+        self.assertIn("Vestido de noiva", current_visible_block)
+        self.assertIn("Conjunto de noiva", current_visible_block)
+        self.assertNotIn("Vestido de noiva/Feminino", current_visible_block)
+        self.assertNotIn("visible_image_matches:", context)
+
     def test_navigation_targets_cover_full_visible_result_set(self) -> None:
         settings = get_settings()
         navigation = _EchoTourNavigation()
@@ -1377,76 +2048,6 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(gateway.author_id_fetch_calls, [])
         self.assertEqual(gateway.author_name_fetch_calls, [])
 
-    def test_docs_llm_filter_is_skipped_for_search_intent(self) -> None:
-        settings = get_settings()
-        service = ChatService(
-            settings=settings,
-            opensearch_gateway=_Dummy(),
-            embedding_provider=_Dummy(),
-            model_retrieval_service=_Dummy(),
-            tour_navigation_service=_Dummy(),
-            llm_service=_LLMShouldNotBeCalled(),
-            session_store=ChatSessionStore(settings),
-        )
-        docs = [
-            {"artifact_id": "a1", "title": "Vestido 1", "description": "desc"},
-            {"artifact_id": "a2", "title": "Vestido 2", "description": "desc"},
-        ]
-
-        filtered = asyncio.run(
-            service._filter_docs_with_llm(
-                docs=docs,
-                user_message="encontra vestidos de crianca",
-                museum_slug="mnt",
-                intent="search",
-                model_override=None,
-                system_prompt=None,
-            )
-        )
-
-        self.assertEqual(filtered, docs)
-
-    def test_image_matches_llm_filter_is_skipped_for_image_search_intent(self) -> None:
-        settings = get_settings()
-        service = ChatService(
-            settings=settings,
-            opensearch_gateway=_Dummy(),
-            embedding_provider=_Dummy(),
-            model_retrieval_service=_Dummy(),
-            tour_navigation_service=_Dummy(),
-            llm_service=_LLMShouldNotBeCalled(),
-            session_store=ChatSessionStore(settings),
-        )
-        image_matches = [
-            types.SimpleNamespace(
-                original_image_name="img1.jpg",
-                artifact_id="a1",
-                score=0.9,
-                title="Vestido 1",
-                inventory="I1",
-            ),
-            types.SimpleNamespace(
-                original_image_name="img2.jpg",
-                artifact_id="a2",
-                score=0.8,
-                title="Vestido 2",
-                inventory="I2",
-            ),
-        ]
-
-        filtered = asyncio.run(
-            service._filter_image_matches_with_llm(
-                image_matches=image_matches,
-                user_message="encontra vestidos de crianca",
-                museum_slug="mnt",
-                intent="image_search",
-                model_override=None,
-                system_prompt=None,
-            )
-        )
-
-        self.assertEqual(filtered, image_matches)
-
     def test_paginate_results_keeps_order_and_reports_has_more(self) -> None:
         service = _build_service()
         state = _state_with_history()
@@ -1502,6 +2103,49 @@ class ContextUsagePolicyTests(unittest.TestCase):
             [item.inventory_id for item in paged_navigation_targets],
             ["I3", "I4"],
         )
+
+    def test_paginate_results_keeps_all_artifacts_when_image_matches_are_fewer(self) -> None:
+        service = _build_service()
+        state = _state_with_history()
+        artifacts = [
+            ArtifactResult(artifact_id=f"a{index}", inventory_number=f"I{index}")
+            for index in range(1, 6)
+        ]
+        image_matches = [
+            ImageMatchResult(
+                original_image_name="img_1.jpg",
+                artifact_id="a1",
+                inventory="I1",
+            )
+        ]
+
+        (
+            paged_artifacts,
+            paged_image_matches,
+            _paged_navigation_targets,
+            results_page,
+            results_page_size,
+            results_total,
+            results_has_more,
+        ) = service._build_paged_results(
+            state=state,
+            artifact_results=artifacts,
+            image_matches=image_matches,
+            navigation_targets=[],
+            page=1,
+            page_size=5,
+            default_page_size=5,
+        )
+
+        self.assertEqual(results_page, 1)
+        self.assertEqual(results_page_size, 5)
+        self.assertEqual(results_total, 5)
+        self.assertFalse(results_has_more)
+        self.assertEqual(
+            [item.artifact_id for item in paged_artifacts],
+            ["a1", "a2", "a3", "a4", "a5"],
+        )
+        self.assertEqual([item.artifact_id for item in paged_image_matches], ["a1"])
 
     def test_get_results_page_returns_empty_for_missing_session(self) -> None:
         service = _build_service()

@@ -285,8 +285,8 @@ class ArtifactResult(BaseModel):
     creators: list[str] = Field(default_factory=list)
     creator_ids: list[str] = Field(default_factory=list)
     date_or_period: str | None = None
-    date_year_start: int | None = None
-    date_year_end: int | None = None
+    start_year: int | None = None
+    end_year: int | None = None
     support_or_material: str | None = None
     technique: str | None = None
     origin_history: str | None = None

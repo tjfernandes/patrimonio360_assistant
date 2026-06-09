@@ -26,6 +26,7 @@ def _settings() -> SimpleNamespace:
         LOG_JSON_PRETTY=False,
         LOG_JSON_INDENT=2,
         CHAT_IN_TOUR_BOOST=1.75,
+        IMAGE_IN_TOUR_BOOST=1.75,
         CHAT_RETRIEVAL_EMBEDDING_ONLY=False,
         OPENSEARCH_INDEX_ARTIFACT="cultural_heritage_artifacts",
         OPENSEARCH_INDEX_IMAGE="cultural_heritage_images",
@@ -218,6 +219,21 @@ class _ImageFetchOutOfOrderDummyClient:
 
 
 class OpenSearchFieldMappingTests(unittest.TestCase):
+    def test_artifact_payload_keeps_full_description(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        description = "Descricao longa. " * 120
+
+        payload = gateway._artifact_payload_from_source(
+            source={
+                "artifact_id": "artifact_full_description",
+                "description": description,
+            },
+            score=1.0,
+            snippet="Descricao longa.",
+        )
+
+        self.assertEqual(payload["description"], description.strip())
+
     def test_lexical_multi_match_uses_text_subfields(self) -> None:
         gateway = OpenSearchGateway(_settings())
         body = gateway._build_query_body(
@@ -297,7 +313,7 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertEqual(len(nested_bool["should"]), 2)
         first_knn = nested_bool["should"][0]["knn"]
         self.assertIn("visual_embedding", first_knn)
-        self.assertEqual(first_knn["visual_embedding"]["boost"], 1.75)
+        self.assertEqual(first_knn["visual_embedding"]["boost"], 3.0)
 
     def test_artifact_fetch_by_inventory_requires_museum_id_filter(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -460,6 +476,149 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         )
         self.assertEqual(knn_query["text_embedding"]["k"], 150)
 
+    def test_temporal_interval_filter_uses_overlap_with_start_year_point_fallback(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        gateway._search_relevant_context_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="influencias francesas na alfaiataria portuguesa",
+            lexical_query="influencias francesas alfaiataria portuguesa",
+            query_embedding=[0.1, 0.2, 0.3],
+            from_offset=0,
+            page_size=5,
+            filters={
+                "_temporal_interval": {
+                    "start_year": 1808,
+                    "end_year": 1821,
+                    "expression": "periodo joanino",
+                    "confidence": 0.9,
+                    "include_unknown": False,
+                }
+            },
+            sort=None,
+        )
+
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        queries = body["query"]["hybrid"]["queries"]
+        bool_queries = [query["bool"] for query in queries if "bool" in query]
+        self.assertTrue(bool_queries)
+        expected_filter = {
+            "bool": {
+                "should": [
+                    {
+                        "bool": {
+                            "filter": [
+                                {"range": {"start_year": {"lte": 1821}}},
+                                {"range": {"end_year": {"gte": 1808}}},
+                            ]
+                        }
+                    },
+                    {
+                        "bool": {
+                            "filter": [
+                                {"range": {"start_year": {"gte": 1808, "lte": 1821}}},
+                            ],
+                            "must_not": [{"exists": {"field": "end_year"}}],
+                        }
+                    },
+                ],
+                "minimum_should_match": 1,
+            }
+        }
+        for bool_query in bool_queries:
+            self.assertIn(expected_filter, bool_query["filter"])
+
+    def test_in_tour_filter_uses_boolean_term(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _PagedSearchDummyClient()
+        gateway._client = dummy
+
+        gateway._search_relevant_context_page_sync(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="vestidos de noiva",
+            lexical_query="vestidos noiva",
+            query_embedding=[0.1, 0.2, 0.3],
+            from_offset=0,
+            page_size=5,
+            filters={"in_tour": True},
+            sort=None,
+        )
+
+        assert dummy.last_kwargs is not None
+        body = dummy.last_kwargs["body"]
+        assert isinstance(body, dict)
+        queries = body["query"]["hybrid"]["queries"]
+        bool_queries = [query["bool"] for query in queries if "bool" in query]
+        self.assertTrue(bool_queries)
+        for bool_query in bool_queries:
+            self.assertIn({"term": {"in_tour": True}}, bool_query["filter"])
+
+    def test_temporal_known_year_range_policy(self) -> None:
+        matches = OpenSearchGateway._temporal_known_year_matches_interval
+
+        self.assertFalse(
+            matches(
+                document_start_year=1790,
+                document_end_year=1800,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+        self.assertTrue(
+            matches(
+                document_start_year=1800,
+                document_end_year=1810,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+        self.assertTrue(
+            matches(
+                document_start_year=1815,
+                document_end_year=1830,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+        self.assertFalse(
+            matches(
+                document_start_year=1822,
+                document_end_year=1850,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+        self.assertFalse(
+            matches(
+                document_start_year=None,
+                document_end_year=1815,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+        self.assertFalse(
+            matches(
+                document_start_year=None,
+                document_end_year=1800,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+        self.assertFalse(
+            matches(
+                document_start_year=None,
+                document_end_year=None,
+                query_start_year=1808,
+                query_end_year=1821,
+            )
+        )
+
     def test_image_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())
         dummy = _SearchDummyClient()
@@ -596,7 +755,7 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         nested_bool = body["query"]["bool"]["must"][0]["bool"]
         first_knn = nested_bool["should"][0]["knn"]
         self.assertEqual(first_knn["visual_embedding"]["k"], 150)
-        self.assertEqual(first_knn["visual_embedding"]["boost"], 1.75)
+        self.assertEqual(first_knn["visual_embedding"]["boost"], 3.0)
 
     def test_multiview_retrieval_prioritizes_in_tour_results(self) -> None:
         gateway = OpenSearchGateway(_settings())
