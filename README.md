@@ -200,13 +200,6 @@ Notes:
   - `MULTIVIEW_RENDER_ORBIT_MARGIN`
   - `MULTIVIEW_RENDER_ENSURE_TOP`
   - `MULTIVIEW_RENDER_DELAY_MS`
-- Logging knobs:
-  - `LOG_LEVEL` (`DEBUG`, `INFO`, ...)
-  - `LOG_JSON` (`true` for structured JSON logs)
-  - `LOG_JSON_PRETTY` (`true` for indented multiline JSON logs)
-  - `LOG_JSON_INDENT` (spaces for indentation, default `2`)
-  - `LOG_CHAT_MESSAGES` (`true` to include raw user text in logs; default `false`)
-  - `LOG_CHAT_STATE_HISTORY` (`true` to include full state history; default `false`)
 
 ## Image Search Flow (chat upload)
 

@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+from pathlib import Path
 import sys
 import types
 
@@ -17,10 +18,9 @@ if "pydantic_settings" not in sys.modules:
     pydantic_settings_stub.SettingsConfigDict = _SettingsConfigDict
     sys.modules["pydantic_settings"] = pydantic_settings_stub
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.prompts.chat_prompts import build_final_answer_prompt
 from app.prompts.query_planner_prompts import build_retrieval_query_rewrite_prompt
-from app.query_planning import QueryExecutionResult, QueryPlan
 from app.schemas.chat import (
     ArtifactResult,
     ChatMessageRequest,
@@ -84,38 +84,6 @@ class _PagedOpenSearchGateway:
                     "title": "Vestido paginado 5",
                     "museum_id": "mnt",
                     "description": "Quinto resultado vindo diretamente do OpenSearch.",
-                },
-            ],
-        )
-
-    async def fetch_images_by_artifact_ids(self, **kwargs: object) -> list[dict[str, object]]:
-        self.image_fetch_calls.append(dict(kwargs))
-        return []
-
-
-class _StructuredPagedOpenSearchGateway:
-    def __init__(self) -> None:
-        self.execute_calls: list[dict[str, object]] = []
-        self.image_fetch_calls: list[dict[str, object]] = []
-
-    async def execute_structured_query(self, **kwargs: object):
-        self.execute_calls.append(dict(kwargs))
-        return types.SimpleNamespace(
-            total=7,
-            items=[
-                {
-                    "artifact_id": "structured_page_5",
-                    "inventory_number": "S5",
-                    "title": "Resultado estruturado 5",
-                    "museum_id": "mnt",
-                    "description": "Resultado estruturado vindo diretamente do OpenSearch.",
-                },
-                {
-                    "artifact_id": "structured_page_6",
-                    "inventory_number": "S6",
-                    "title": "Resultado estruturado 6",
-                    "museum_id": "mnt",
-                    "description": "Resultado estruturado vindo diretamente do OpenSearch.",
                 },
             ],
         )
@@ -240,6 +208,15 @@ class _LLMRewriteLeaksTourScope:
         )
 
 
+class _LLMRewriteWeddingDress:
+    async def generate(self, **_: object):
+        return types.SimpleNamespace(
+            parsed_json={
+                "lexical_query": "vestidos de noiva",
+            }
+        )
+
+
 class _LLMRewriteMuseumQuestionExamples:
     async def generate(self, **kwargs: object):
         message = str(kwargs.get("message") or "")
@@ -285,15 +262,38 @@ class _EmbeddingOk:
         return [0.1, 0.2, 0.3]
 
 
+class _EmbeddingShouldNotBeCalled:
+    async def embed_text(self, text: str) -> list[float]:
+        raise AssertionError(f"embedding should not have been called for {text}")
+
+
 class _WindowOpenSearchGateway:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        inventory_results: list[dict[str, object]] | None = None,
+        retrieval_boosts: list[dict[str, object]] | None = None,
+    ) -> None:
         self.search_page_calls: list[dict[str, object]] = []
+        self.inventory_lookup_calls: list[dict[str, object]] = []
+        self.inventory_results = inventory_results or []
+        self.retrieval_boosts = retrieval_boosts or []
+
+    def matched_retrieval_boosts(self, **_: object) -> list[dict[str, object]]:
+        return list(self.retrieval_boosts)
+
+    async def search_artifacts_by_inventory_candidates(self, **kwargs: object):
+        self.inventory_lookup_calls.append(dict(kwargs))
+        return list(self.inventory_results)
 
     async def search_relevant_context_page(self, **kwargs: object):
         self.search_page_calls.append(dict(kwargs))
         page_size = int(kwargs.get("page_size") or 0)
         return types.SimpleNamespace(
             total=1234,
+            query_body={
+                "index": "cultural_heritage_artifacts",
+                "body": {"query": {"match_all": {}}},
+            },
             results=[
                 {
                     "artifact_id": f"artifact_{index}",
@@ -482,6 +482,13 @@ def _state_with_history() -> ChatSessionState:
 
 
 class ContextUsagePolicyTests(unittest.TestCase):
+    def test_query_log_default_path_uses_evaluation_directory(self) -> None:
+        settings = Settings()
+        expected = Path(__file__).resolve().parents[1] / "evaluation" / "backend_queries.jsonl"
+
+        self.assertEqual(settings.QUERY_LOG_PATH, "evaluation/backend_queries.jsonl")
+        self.assertEqual(settings.query_log_path_resolved, expected.resolve())
+
     def test_case_a_follow_up_should_carry_filters_and_sort(self) -> None:
         service = _build_service()
         state = _state_with_history()
@@ -568,19 +575,6 @@ class ContextUsagePolicyTests(unittest.TestCase):
 
         self.assertEqual(events[0]["message"], "Found 2 artifacts")
 
-    def test_structured_reply_uses_selected_english_language(self) -> None:
-        service = _build_service()
-        reply = service._format_structured_reply(
-            plan=QueryPlan(operation="count", confidence=0.9),
-            result=QueryExecutionResult(operation="count", count=3, total=3),
-            language="en",
-        )
-
-        self.assertEqual(
-            reply,
-            "There are 3 artifacts in the collection that match the request.",
-        )
-
     def test_sanitizer_keeps_english_reply_english(self) -> None:
         service = _build_service()
         reply = service._sanitize_assistant_reply(
@@ -645,7 +639,22 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertTrue(bool(policy.get("is_follow_up")))
         self.assertTrue(bool(policy.get("use_history_for_query")))
 
-    def test_result_selection_prefers_single_inventory_match(self) -> None:
+    def test_tour_scope_query_should_not_use_artifact_context(self) -> None:
+        service = _build_service()
+        state = _state_with_history()
+        state.filters = {"artifact_id": "artifact_159341"}
+
+        policy = service._derive_context_policy(
+            message="E consegues encontrar chapeus nesta visita?",
+            state=state,
+        )
+
+        self.assertFalse(bool(policy.get("is_follow_up")))
+        self.assertFalse(bool(policy.get("use_history_for_query")))
+        self.assertFalse(bool(policy.get("carry_filters")))
+        self.assertFalse(bool(policy.get("carry_sort")))
+
+    def test_last_result_ids_updates_without_selected_artifact(self) -> None:
         service = _build_service()
         state = _state_with_history()
         docs = [
@@ -660,122 +669,35 @@ class ContextUsagePolicyTests(unittest.TestCase):
                 "title": "Outro Painel",
             },
         ]
-        hinted = service._infer_selected_artifact_from_reply(
-            reply_text=(
-                'O azulejo "Jesus entre os Doutores" encontra-se no museu '
-                "(MNAz 866 Az)."
-            ),
-            docs=docs,
-        )
-        service._update_result_selection_state(
+
+        service._update_last_result_ids(
             state=state,
             artifact_docs=docs,
-            effective_filters={},
-            hinted_selected_artifact_id=hinted,
         )
 
-        self.assertEqual(state.selected_artifact_id, "artifact_866")
+        self.assertFalse(hasattr(state, "selected_artifact_id"))
         self.assertEqual(state.last_result_ids, ["artifact_866", "artifact_123"])
 
-    def test_result_selection_prefers_first_mentioned_when_multi(self) -> None:
+    def test_artifact_id_filter_is_not_persisted_to_state(self) -> None:
         service = _build_service()
         state = _state_with_history()
-        docs = [
-            {
-                "artifact_id": "artifact_866",
-                "inventory": "MNAz 866 Az",
-                "title": "Jesus entre os Doutores",
-            },
-            {
-                "artifact_id": "artifact_754",
-                "inventory": "MNAz 754 Proj",
-                "title": "Estresido",
-            },
-            {
-                "artifact_id": "artifact_10042",
-                "inventory": "MNAz 10042 Az",
-                "title": "Cristo entrega as chaves a Sao Pedro",
-            },
-        ]
-        hinted = service._infer_selected_artifact_from_reply(
-            reply_text=(
-                "No museu existe Jesus entre os doutores (MNAz 866 Az), "
-                "alem de Estresido (MNAz 754 Proj) e Cristo entrega as chaves "
-                "a Sao Pedro (MNAz 10042 Az)."
-            ),
-            docs=docs,
-        )
-        service._update_result_selection_state(
-            state=state,
-            artifact_docs=docs,
-            effective_filters={},
-            hinted_selected_artifact_id=hinted,
-        )
-
-        self.assertEqual(state.selected_artifact_id, "artifact_866")
-
-    def test_result_selection_defaults_to_first_id_when_multi(self) -> None:
-        service = _build_service()
-        state = _state_with_history()
-        docs = [
-            {"artifact_id": "artifact_159341", "inventory": "A"},
-            {"artifact_id": "artifact_159345", "inventory": "B"},
-            {"artifact_id": "artifact_159331", "inventory": "C"},
-        ]
-
-        service._update_result_selection_state(
-            state=state,
-            artifact_docs=docs,
-            effective_filters={},
-            hinted_selected_artifact_id=None,
-        )
-
-        self.assertEqual(state.selected_artifact_id, "artifact_159341")
-        self.assertEqual(
-            state.last_result_ids,
-            ["artifact_159341", "artifact_159345", "artifact_159331"],
-        )
-
-    def test_follow_up_scope_singular_uses_selected_artifact_id(self) -> None:
-        service = _build_service()
-        state = _state_with_history()
-        state.selected_artifact_id = "artifact_159341"
-        state.last_result_ids = ["artifact_159341", "artifact_159345"]
         router_decision = {
             "mode": "rag",
-            "use_history_for_query": True,
+            "intent": "search",
+            "filters_delta": {
+                "artifact_id": "artifact_159341",
+                "category": "pintura",
+            },
+            "sort_delta": {},
         }
 
-        scoped = service._apply_follow_up_artifact_scope(
-            message="diz os materiais desse azulejo",
+        service._apply_router_decision_to_state(
             state=state,
             router_decision=router_decision,
-            filters={},
         )
 
-        self.assertEqual(scoped.get("artifact_id"), "artifact_159341")
-
-    def test_follow_up_scope_plural_uses_last_result_ids(self) -> None:
-        service = _build_service()
-        state = _state_with_history()
-        state.selected_artifact_id = "artifact_159341"
-        state.last_result_ids = ["artifact_159341", "artifact_159345", "artifact_159331"]
-        router_decision = {
-            "mode": "rag",
-            "use_history_for_query": True,
-        }
-
-        scoped = service._apply_follow_up_artifact_scope(
-            message="e os materiais desses azulejos?",
-            state=state,
-            router_decision=router_decision,
-            filters={},
-        )
-
-        self.assertEqual(
-            scoped.get("artifact_id"),
-            ["artifact_159341", "artifact_159345", "artifact_159331"],
-        )
+        self.assertNotIn("artifact_id", state.filters)
+        self.assertEqual(state.filters.get("category"), "pintura")
 
     def test_context_policy_guardrail_forces_follow_up_rag(self) -> None:
         service = _build_service()
@@ -854,6 +776,65 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertTrue(bool(decision["needs_retrieval"]))
         self.assertIn("guardrail_search_requires_retrieval", str(decision["reason"]))
 
+    def test_router_failure_fallback_uses_llm_only_for_obvious_greeting(self) -> None:
+        service = _build_service()
+
+        decision = service._fallback_router_decision(
+            "olá",
+            context_policy={
+                "is_follow_up": False,
+                "use_history_for_answer": False,
+                "carry_filters": True,
+                "carry_sort": True,
+            },
+        )
+
+        self.assertEqual(decision["mode"], "llm_only")
+        self.assertEqual(decision["intent"], "fallback")
+        self.assertFalse(bool(decision["needs_retrieval"]))
+        self.assertEqual(decision["rewritten_query"], "olá")
+        self.assertEqual(
+            decision["reason"],
+            "router_unavailable_deterministic_fallback_llm_only",
+        )
+        self.assertFalse(bool(decision["carry_filters"]))
+        self.assertFalse(bool(decision["carry_sort"]))
+
+    def test_router_failure_fallback_defaults_to_rag_for_search_and_factual_messages(self) -> None:
+        service = _build_service()
+        messages = [
+            "encontra vestidos de noiva",
+            "há azulejos do século XVIII nesta visita?",
+            "quem fez esta peça?",
+        ]
+
+        for message in messages:
+            with self.subTest(message=message):
+                decision = service._fallback_router_decision(
+                    message,
+                    context_policy={
+                        "is_follow_up": False,
+                        "use_history_for_answer": True,
+                        "carry_filters": True,
+                        "carry_sort": True,
+                    },
+                )
+
+                self.assertEqual(decision["mode"], "rag")
+                self.assertEqual(decision["intent"], "search")
+                self.assertTrue(bool(decision["needs_retrieval"]))
+                self.assertEqual(decision["rewritten_query"], message)
+                self.assertEqual(
+                    decision["reason"],
+                    "router_unavailable_deterministic_fallback_rag",
+                )
+                self.assertFalse(bool(decision["use_history_for_query"]))
+                self.assertTrue(bool(decision["use_history_for_answer"]))
+                self.assertFalse(bool(decision["carry_filters"]))
+                self.assertFalse(bool(decision["carry_sort"]))
+                self.assertEqual(decision["filters_delta"], {})
+                self.assertEqual(decision["sort_delta"], {})
+
     def test_lexical_query_strips_conversational_filler(self) -> None:
         service = _build_service()
 
@@ -876,18 +857,168 @@ class ContextUsagePolicyTests(unittest.TestCase):
 
         self.assertEqual(cleaned, "azulejos iconografia mariana")
 
-    def test_structured_schema_uses_new_mapping_fields(self) -> None:
+    def test_inventory_candidate_extractor_is_conservative(self) -> None:
         service = _build_service()
-        schema = service._build_structured_query_schema(museum_id="mnaz")
 
-        self.assertIn("inventory_number", schema.fields)
-        self.assertIn("inventory_number", schema.facetable_fields)
-        self.assertIn("category.text", schema.text_fields)
-        self.assertIn("support_or_material.text", schema.text_fields)
-        self.assertIn("technique.text", schema.text_fields)
-        self.assertIn("origin_history", schema.text_fields)
-        self.assertIn("production_center.text", schema.text_fields)
-        self.assertIn("incorporation.text", schema.text_fields)
+        spaced = service._extract_inventory_candidates("mostra a peca MNAZ 1234")
+        compact = service._extract_inventory_candidates("MNAZ1234")
+        explicit = service._extract_inventory_candidates("numero de inventario 1234")
+        piece_number = service._extract_inventory_candidates("mostra a peca 557")
+        piece_number_marker = service._extract_inventory_candidates("mostra a peca numero 557")
+        slash_number = service._extract_inventory_candidates("mostra a peca 3573/8")
+
+        self.assertIn("mnaz 1234", spaced)
+        self.assertIn("mnaz1234", spaced)
+        self.assertIn("mnaz1234", compact)
+        self.assertIn("mnaz 1234", compact)
+        self.assertIn("1234", explicit)
+        self.assertIn("557", piece_number)
+        self.assertIn("557", piece_number_marker)
+        self.assertIn("3573 8", slash_number)
+        self.assertIn("35738", slash_number)
+        self.assertEqual(service._extract_inventory_candidates("mostra objetos de 1750"), [])
+        self.assertEqual(service._extract_inventory_candidates("mostra a peca de 1750"), [])
+        self.assertEqual(service._extract_inventory_candidates("objetos do seculo XVIII"), [])
+
+    def test_inventory_lookup_short_circuits_normal_text_retrieval_when_found(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway(
+            inventory_results=[
+                {
+                    "artifact_id": "artifact_mnaz_1234",
+                    "inventory_number": "MNAZ 1234",
+                    "title": "Painel de azulejos",
+                    "museum_id": "mnaz",
+                    "description": "Resultado por numero de inventario.",
+                }
+            ]
+        )
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingShouldNotBeCalled(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMShouldNotBeCalled(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        context, total, docs, retrieval_request = asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnaz",
+                museum_id="mnaz",
+                query="mostra a peca MNAZ 1234",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(total, 1)
+        self.assertIn("Painel de azulejos", context)
+        self.assertEqual(docs[0]["artifact_id"], "artifact_mnaz_1234")
+        self.assertEqual(gateway.search_page_calls, [])
+        self.assertEqual(gateway.inventory_lookup_calls[0]["museum_id"], "mnaz")
+        self.assertIn("mnaz 1234", gateway.inventory_lookup_calls[0]["inventory_numbers"])
+        self.assertEqual(retrieval_request["kind"], "inventory")
+        self.assertEqual(retrieval_request["query_text"], "mostra a peca MNAZ 1234")
+
+    def test_bare_piece_number_lookup_short_circuits_normal_text_retrieval_when_found(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway(
+            inventory_results=[
+                {
+                    "artifact_id": "artifact_mnt_557",
+                    "inventory_number": "557",
+                    "title": "Fivela",
+                    "museum_id": "mnt",
+                    "description": "Resultado por numero de inventario simples.",
+                }
+            ]
+        )
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingShouldNotBeCalled(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMShouldNotBeCalled(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        context, total, docs, retrieval_request = asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="mostra a peca 557",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(total, 1)
+        self.assertIn("Fivela", context)
+        self.assertEqual(docs[0]["artifact_id"], "artifact_mnt_557")
+        self.assertEqual(gateway.search_page_calls, [])
+        self.assertEqual(gateway.inventory_lookup_calls[0]["museum_id"], "mnt")
+        self.assertIn("557", gateway.inventory_lookup_calls[0]["inventory_numbers"])
+        self.assertEqual(retrieval_request["kind"], "inventory")
+
+    def test_compact_inventory_number_lookup_is_attempted_then_falls_back(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFail(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnaz",
+                museum_id="mnaz",
+                query="MNAZ1234",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(len(gateway.inventory_lookup_calls), 1)
+        self.assertIn("mnaz1234", gateway.inventory_lookup_calls[0]["inventory_numbers"])
+        self.assertEqual(len(gateway.search_page_calls), 1)
+
+    def test_plain_year_query_does_not_attempt_inventory_lookup(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFail(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnaz",
+                museum_id="mnaz",
+                query="mostra objetos de 1750",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.inventory_lookup_calls, [])
+        self.assertEqual(len(gateway.search_page_calls), 1)
 
     def test_retrieval_query_rewrite_uses_llm(self) -> None:
         settings = get_settings()
@@ -1210,7 +1341,7 @@ class ContextUsagePolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos crianca")
-        self.assertEqual(gateway.search_page_calls[0]["query_text"], "vestidos crianca")
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra vestidos de crianca")
 
     def test_text_retrieval_applies_explicit_year_interval_filter(self) -> None:
         settings = get_settings()
@@ -1245,7 +1376,7 @@ class ContextUsagePolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             gateway.search_page_calls[0]["query_text"],
-            "transformacoes do traje cerimonial portugues",
+            "Podes gerar uma cronologia das principais transformacoes do traje cerimonial portugues",
         )
         self.assertEqual(
             gateway.search_page_calls[0]["filters"].get("_temporal_interval"),
@@ -1362,7 +1493,7 @@ class ContextUsagePolicyTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(gateway.search_page_calls[0]["query_text"], "trajes")
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra trajes")
         self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "trajes")
 
     def test_text_retrieval_uses_llm_for_non_curated_period_filter(self) -> None:
@@ -1427,6 +1558,59 @@ class ContextUsagePolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(gateway.search_page_calls[0]["filters"], {})
+
+    def test_text_retrieval_logs_matched_alias_boosts(self) -> None:
+        settings = get_settings()
+        retrieval_boosts = [
+            {
+                "group": "support_or_material",
+                "kind": "match",
+                "field": "support_or_material.text",
+                "query": "seda",
+                "boost": 1.5,
+                "matched_alias": "seda",
+            }
+        ]
+        gateway = _WindowOpenSearchGateway(retrieval_boosts=retrieval_boosts)
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteFail(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        _, _, _, retrieval_request = asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query="encontra vestidos de seda",
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(retrieval_request["retrieval_boosts"], retrieval_boosts)
+        self.assertEqual(
+            retrieval_request["opensearch_query"],
+            {
+                "index": "cultural_heritage_artifacts",
+                "body": {"query": {"match_all": {}}},
+            },
+        )
+        self.assertEqual(
+            service._text_boosts_applied_for_log(
+                router_decision={"mode": "rag"},
+                retrieval_request=retrieval_request,
+            ),
+            {
+                "in_tour_boost": settings.CHAT_IN_TOUR_BOOST,
+                "retrieval_boosts": retrieval_boosts,
+            },
+        )
 
     def test_text_retrieval_applies_tour_scope_filter(self) -> None:
         settings = get_settings()
@@ -1518,11 +1702,11 @@ class ContextUsagePolicyTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(gateway.search_page_calls[0]["query_text"], "vestidos de noiva")
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], "encontra vestidos de noiva")
         self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos de noiva")
         self.assertEqual(gateway.search_page_calls[0]["filters"], {"in_tour": True})
 
-    def test_text_retrieval_uses_rewritten_query_for_lexical_and_embedding(self) -> None:
+    def test_text_retrieval_uses_rewrite_only_for_lexical_query(self) -> None:
         settings = get_settings()
         gateway = _WindowOpenSearchGateway()
         service = ChatService(
@@ -1534,15 +1718,16 @@ class ContextUsagePolicyTests(unittest.TestCase):
             llm_service=_LLMRewriteMuseumQuestionExamples(),
             session_store=ChatSessionStore(settings),
         )
+        query = (
+            "Quem são as personalidades sepultadas nos Jerónimos "
+            "e porque são importantes para Portugal?"
+        )
 
         _, _, _, retrieval_request = asyncio.run(
             service._retrieve_context(
                 museum_slug="mj",
                 museum_id="mj",
-                query=(
-                    "Quem são as personalidades sepultadas nos Jerónimos "
-                    "e porque são importantes para Portugal?"
-                ),
+                query=query,
                 filters={},
                 sort={},
                 result_window_size=10,
@@ -1551,14 +1736,46 @@ class ContextUsagePolicyTests(unittest.TestCase):
 
         self.assertEqual(
             gateway.search_page_calls[0]["query_text"],
-            "personalidades sepultadas nos Jerónimos",
+            query,
         )
         self.assertEqual(
             gateway.search_page_calls[0]["lexical_query"],
             "personalidades sepultadas nos Jerónimos",
         )
-        self.assertEqual(retrieval_request["search_query"], "personalidades sepultadas nos Jerónimos")
-        self.assertEqual(retrieval_request["query_text"], "personalidades sepultadas nos Jerónimos")
+        self.assertEqual(retrieval_request["search_query"], query)
+        self.assertEqual(retrieval_request["query_text"], query)
+
+    def test_text_retrieval_keeps_original_embedding_query_for_wedding_dress_rewrite(self) -> None:
+        settings = get_settings()
+        gateway = _WindowOpenSearchGateway()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=gateway,
+            embedding_provider=_EmbeddingOk(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMRewriteWeddingDress(),
+            session_store=ChatSessionStore(settings),
+        )
+        query = "Consegues encontrar vestidos de noiva?"
+
+        _, _, _, retrieval_request = asyncio.run(
+            service._retrieve_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                query=query,
+                filters={},
+                sort={},
+                result_window_size=10,
+            )
+        )
+
+        self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "vestidos de noiva")
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], query)
+        self.assertEqual(retrieval_request["lexical_query"], "vestidos de noiva")
+        self.assertEqual(retrieval_request["query_rewrite_source"], "llm")
+        self.assertEqual(retrieval_request["search_query"], query)
+        self.assertEqual(retrieval_request["query_text"], query)
 
     def test_text_retrieval_removes_visit_planning_intent_from_rewrite(self) -> None:
         settings = get_settings()
@@ -1572,26 +1789,35 @@ class ContextUsagePolicyTests(unittest.TestCase):
             llm_service=_LLMRewriteMuseumQuestionExamples(),
             session_store=ChatSessionStore(settings),
         )
+        query = (
+            "Se eu tiver apenas 15 minutos para uma visita virtual, "
+            "quais são os objetos que não devo perder?"
+        )
+        tour_scope_expression = service._extract_tour_scope_expression(query)
+        original_search_query = service._strip_tour_scope_expression_from_query(
+            query,
+            tour_scope_expression,
+        )
+        if not original_search_query:
+            original_search_query = "objetos"
 
         _, _, _, retrieval_request = asyncio.run(
             service._retrieve_context(
                 museum_slug="mnt",
                 museum_id="mnt",
-                query=(
-                    "Se eu tiver apenas 15 minutos para uma visita virtual, "
-                    "quais são os objetos que não devo perder?"
-                ),
+                query=query,
                 filters={},
                 sort={},
                 result_window_size=10,
             )
         )
 
-        self.assertEqual(gateway.search_page_calls[0]["query_text"], "objetos")
+        self.assertEqual(gateway.search_page_calls[0]["query_text"], original_search_query)
         self.assertEqual(gateway.search_page_calls[0]["lexical_query"], "objetos")
         self.assertEqual(gateway.search_page_calls[0]["filters"], {"in_tour": True})
-        self.assertEqual(retrieval_request["search_query"], "objetos")
-        self.assertEqual(retrieval_request["query_text"], "objetos")
+        self.assertEqual(retrieval_request["query_rewrite_source"], "llm")
+        self.assertEqual(retrieval_request["search_query"], original_search_query)
+        self.assertEqual(retrieval_request["query_text"], original_search_query)
 
     def test_retrieval_query_rewrite_prompt_does_not_expose_museum_context_terms(self) -> None:
         prompt = build_retrieval_query_rewrite_prompt(
@@ -2338,68 +2564,6 @@ class ContextUsagePolicyTests(unittest.TestCase):
         self.assertEqual(response.artifact_results, [])
         self.assertFalse(response.results_has_more)
         self.assertEqual(gateway.search_page_calls, [])
-
-    def test_get_results_page_materializes_structured_list_page_from_opensearch(self) -> None:
-        settings = get_settings()
-        session_store = ChatSessionStore(settings)
-        gateway = _StructuredPagedOpenSearchGateway()
-        service = ChatService(
-            settings=settings,
-            opensearch_gateway=gateway,
-            embedding_provider=_Dummy(),
-            model_retrieval_service=_Dummy(),
-            tour_navigation_service=_NoTourNavigation(),
-            llm_service=_Dummy(),
-            session_store=session_store,
-        )
-        state = ChatSessionState(conversation_id="conv_structured_page", museum_slug="mnt")
-        state.last_paged_results_default_page_size = 2
-        state.last_paged_retrieval_request = {
-            "kind": "structured_list",
-            "museum_id": "mnt",
-            "plan": {
-                "mode": "structured",
-                "operation": "list",
-                "confidence": 1.0,
-                "query_text": "vestidos",
-                "filters": [],
-                "list_spec": {"limit": 2, "fields": [], "sort": []},
-            },
-            "dsl": {
-                "endpoint": "_search",
-                "index": "cultural_heritage_artifacts",
-                "body": {"size": 2, "query": {"match_all": {}}},
-            },
-            "results_total": 7,
-        }
-        session_store.save(state)
-
-        response = asyncio.run(
-            service.get_results_page(
-                ChatResultsPageRequest(
-                    museum_slug="mnt",
-                    museum_id="mnt",
-                    conversation_id="conv_structured_page",
-                    results_page=3,
-                    results_page_size=2,
-                )
-            )
-        )
-
-        self.assertEqual(response.results_page, 3)
-        self.assertEqual(response.results_page_size, 2)
-        self.assertEqual(response.results_total, 7)
-        self.assertTrue(response.results_has_more)
-        self.assertEqual(
-            [artifact.artifact_id for artifact in response.artifact_results],
-            ["structured_page_5", "structured_page_6"],
-        )
-        self.assertEqual(len(gateway.execute_calls), 1)
-        dsl = gateway.execute_calls[0]["dsl"]
-        self.assertEqual(dsl.body["from"], 4)
-        self.assertEqual(dsl.body["size"], 2)
-        self.assertTrue(dsl.body["track_total_hits"])
-
 
 if __name__ == "__main__":
     unittest.main()

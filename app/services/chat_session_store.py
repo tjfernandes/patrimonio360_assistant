@@ -22,7 +22,6 @@ class ChatSessionState:
     intent: str | None = None
     filters: dict[str, Any] = field(default_factory=dict)
     sort: dict[str, Any] = field(default_factory=dict)
-    selected_artifact_id: str | None = None
     last_result_ids: list[str] = field(default_factory=list)
     last_paged_artifact_results: list[dict[str, Any]] = field(default_factory=list)
     last_paged_image_matches: list[dict[str, Any]] = field(default_factory=list)
@@ -57,7 +56,6 @@ class ChatSessionStore:
             existing.intent = None
             existing.filters = {}
             existing.sort = {}
-            existing.selected_artifact_id = None
             existing.last_result_ids = []
             existing.last_paged_artifact_results = []
             existing.last_paged_image_matches = []

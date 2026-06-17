@@ -396,6 +396,7 @@ class TourNavigationTarget(BaseModel):
 class ChatMessageResponse(BaseModel):
     status: Literal["ok"] = "ok"
     conversation_id: str = Field(default_factory=lambda: str(uuid4()))
+    query_id: str | None = None
     response_format: ResponseFormatObject = Field(
         default_factory=lambda: ResponseFormatObject(type="text")
     )

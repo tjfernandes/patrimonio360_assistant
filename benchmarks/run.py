@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import datetime, timezone
-import logging
 from pathlib import Path
 
 from benchmarks.loaders import load_benchmark_suite
@@ -19,7 +18,6 @@ from benchmarks.report import (
 from benchmarks.runner import run_benchmark_suite
 from benchmarks.variants import VARIANT_SPECS, resolve_variants
 
-logger = logging.getLogger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -144,7 +142,6 @@ def main() -> int:
     if args.list_variants:
         _print_variants()
         return 0
-    logging.basicConfig(level=logging.INFO)
     return asyncio.run(_main_async(args))
 
 

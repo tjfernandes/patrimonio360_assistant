@@ -1,21 +1,80 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from functools import lru_cache
-import json
-import logging
 from pathlib import Path
+import re
 from typing import Any
+import unicodedata
 from urllib.parse import urlparse
 
 from app.core.config import Settings, get_settings
-from app.query_planning import (
-    CompiledOpenSearchDSL,
-    QueryExecutionResult,
-    QueryPlan,
-    execute_query,
+
+NO_STEM_AND_FIELDS = [
+    "title.no_stem^10",
+    "description.no_stem^3",
+]
+
+NO_STEM_PHRASE_FIELDS = [
+    "title.no_stem^8",
+    "description.no_stem^2",
+]
+
+NO_STEM_OR_FIELDS = [
+    "title.no_stem^3",
+    "description.no_stem^1",
+]
+
+_RETRIEVAL_BOOST_ALIASES_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "retrieval_boost_aliases.json"
 )
+
+
+@lru_cache(maxsize=1)
+def _load_retrieval_boost_aliases() -> dict[str, list[dict[str, Any]]]:
+    try:
+        payload = json.loads(_RETRIEVAL_BOOST_ALIASES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    loaded: dict[str, list[dict[str, Any]]] = {}
+    for group in ("category", "support_or_material", "technique"):
+        entries = payload.get(group)
+        if isinstance(entries, list):
+            loaded[group] = [entry for entry in entries if isinstance(entry, dict)]
+    return loaded
+
+
+def _fold_boost_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", (text or "").casefold())
+    folded = "".join(char for char in normalized if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]+", " ", folded, flags=re.UNICODE).strip()
+
+
+def _boost_tokens(text: str) -> list[str]:
+    folded = _fold_boost_text(text)
+    return folded.split() if folded else []
+
+
+def _contains_token_sequence(tokens: list[str], alias_tokens: list[str]) -> bool:
+    if not tokens or not alias_tokens or len(alias_tokens) > len(tokens):
+        return False
+    alias_size = len(alias_tokens)
+    return any(
+        tokens[index : index + alias_size] == alias_tokens
+        for index in range(len(tokens) - alias_size + 1)
+    )
+
+
+def _coerce_boost(value: Any, fallback: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def _import_opensearch() -> Any:
@@ -28,29 +87,13 @@ def _import_opensearch() -> Any:
     return OpenSearch
 
 
-logger = logging.getLogger(__name__)
-EVENT_LABELS: dict[str, str] = {
-    "opensearch.retrieve.body": "Body completo enviado ao OpenSearch para retrieval.",
-    "opensearch.retrieve.response": "Resposta de retrieval recebida do OpenSearch.",
-    "opensearch.image_retrieve.body": "Body completo enviado ao OpenSearch para image retrieval.",
-    "opensearch.image_retrieve.response": "Resposta de image retrieval recebida do OpenSearch.",
-    "opensearch.image_fetch_by_artifact.body": "Body completo enviado ao OpenSearch para fetch de imagens por artifact_id.",
-    "opensearch.image_fetch_by_artifact.response": "Resposta de fetch de imagens por artifact_id recebida do OpenSearch.",
-    "opensearch.artifact_fetch.body": "Body completo enviado ao OpenSearch para fetch por artifact_id.",
-    "opensearch.artifact_fetch.response": "Resposta de fetch por artifact_id recebida do OpenSearch.",
-    "opensearch.structured.body": "Body completo enviado ao OpenSearch para query estruturada.",
-    "opensearch.structured.response": "Resposta de query estruturada recebida do OpenSearch.",
-    "opensearch.entity_fetch.body": "Body completo enviado ao OpenSearch para fetch de entidade(s).",
-    "opensearch.entity_fetch.response": "Resposta de fetch de entidade(s) recebida do OpenSearch.",
-    "opensearch.artifact_fetch_by_entity.body": "Body completo enviado ao OpenSearch para fetch de artefactos por entidade.",
-    "opensearch.artifact_fetch_by_entity.response": "Resposta de fetch de artefactos por entidade recebida do OpenSearch.",
-}
 
 
 @dataclass(slots=True)
 class OpenSearchRetrievalPage:
     results: list[dict[str, Any]]
     total: int
+    query_body: dict[str, Any] | None = None
 
 
 class OpenSearchGateway:
@@ -67,30 +110,6 @@ class OpenSearchGateway:
         self.settings = settings
         self._client: Any | None = None
 
-    def _log(self, level: int, event: str, **fields: object) -> None:
-        if self.settings.LOG_JSON:
-            payload = {"event": event, **fields}
-            prefix = EVENT_LABELS.get(event, event)
-            if self.settings.LOG_JSON_PRETTY:
-                logger.log(
-                    level,
-                    f"{prefix}\n"
-                    + json.dumps(
-                        payload,
-                        ensure_ascii=False,
-                        default=str,
-                        indent=max(self.settings.LOG_JSON_INDENT, 0),
-                    ),
-                )
-            else:
-                logger.log(
-                    level,
-                    f"{prefix} " + json.dumps(payload, ensure_ascii=False, default=str),
-                )
-            return
-
-        details = " ".join(f"{key}={value}" for key, value in fields.items())
-        logger.log(level, f"{event} {details}".strip())
 
     def _resolve_opensearch_endpoint(self) -> tuple[str, str, int, str]:
         host_value = (self.settings.OPENSEARCH_HOST or "").strip()
@@ -716,6 +735,149 @@ class OpenSearchGateway:
             return max(int(retrieval_window_size), int(size), int(minimum), 1)
         return max((int(from_offset) + int(size)) * 3, int(size), int(minimum), 1)
 
+    def _matched_retrieval_boost_clauses(
+        self,
+        *,
+        query_text: str,
+        lexical_query: str | None,
+    ) -> list[dict[str, Any]]:
+        boosts = self._matched_retrieval_boosts(
+            query_text=query_text,
+            lexical_query=lexical_query,
+        )
+        clauses: list[dict[str, Any]] = []
+
+        for boost in boosts:
+            kind = boost.get("kind")
+            field = str(boost.get("field") or "").strip()
+            boost_value = boost.get("boost")
+            if kind == "term" and field == "category":
+                value = str(boost.get("value") or "").strip()
+                if not value:
+                    continue
+                clauses.append(
+                    {
+                        "term": {
+                            "category": {
+                                "value": value,
+                                "boost": boost_value,
+                            }
+                        }
+                    }
+                )
+            elif kind == "match" and field:
+                query = str(boost.get("query") or "").strip()
+                if not query:
+                    continue
+                clauses.append(
+                    {
+                        "match": {
+                            field: {
+                                "query": query,
+                                "boost": boost_value,
+                            }
+                        }
+                    }
+                )
+
+        return clauses
+
+    def matched_retrieval_boosts(
+        self,
+        *,
+        query_text: str,
+        lexical_query: str | None,
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                key: value
+                for key, value in boost.items()
+                if key in {"group", "kind", "field", "query", "value", "boost", "matched_alias"}
+            }
+            for boost in self._matched_retrieval_boosts(
+                query_text=query_text,
+                lexical_query=lexical_query,
+            )
+        ]
+
+    def _matched_retrieval_boosts(
+        self,
+        *,
+        query_text: str,
+        lexical_query: str | None,
+    ) -> list[dict[str, Any]]:
+        tokens = _boost_tokens(f"{query_text or ''} {lexical_query or ''}")
+        if not tokens:
+            return []
+
+        config = _load_retrieval_boost_aliases()
+        boosts: list[dict[str, Any]] = []
+
+        def matched_alias(aliases: list[Any]) -> str | None:
+            for alias in aliases:
+                alias_text = str(alias)
+                if _contains_token_sequence(tokens, _boost_tokens(alias_text)):
+                    return alias_text
+            return None
+
+        def add_text_match_boosts(*, group: str, field: str, fallback_boost: float) -> None:
+            seen_queries: set[str] = set()
+            for entry in config.get(group, []):
+                query = str(entry.get("query") or "").strip()
+                aliases = entry.get("aliases")
+                if not query or not isinstance(aliases, list) or query in seen_queries:
+                    continue
+                alias = matched_alias(aliases)
+                if not alias:
+                    continue
+                seen_queries.add(query)
+                boost = _coerce_boost(entry.get("boost"), fallback_boost)
+                boosts.append(
+                    {
+                        "group": group,
+                        "kind": "match",
+                        "field": field,
+                        "query": query,
+                        "boost": boost,
+                        "matched_alias": alias,
+                    }
+                )
+
+        seen_categories: set[str] = set()
+        for entry in config.get("category", []):
+            value = str(entry.get("value") or "").strip()
+            aliases = entry.get("aliases")
+            if not value or not isinstance(aliases, list) or value in seen_categories:
+                continue
+            alias = matched_alias(aliases)
+            if not alias:
+                continue
+            seen_categories.add(value)
+            boost = _coerce_boost(entry.get("boost"), 1.0)
+            boosts.append(
+                {
+                    "group": "category",
+                    "kind": "term",
+                    "field": "category",
+                    "value": value,
+                    "boost": boost,
+                    "matched_alias": alias,
+                }
+            )
+
+        add_text_match_boosts(
+            group="support_or_material",
+            field="support_or_material.text",
+            fallback_boost=1.0,
+        )
+        add_text_match_boosts(
+            group="technique",
+            field="technique.text",
+            fallback_boost=1.0,
+        )
+
+        return boosts
+
     def _build_query_body(
         self,
         *,
@@ -743,7 +905,7 @@ class OpenSearchGateway:
             if retrieval_window_size is not None
             else None
         )
-        knn_k = 150
+        knn_k = 1000
         filter_clauses = self._build_filter_clauses(
             museum_slug=museum_slug,
             museum_id=museum_id,
@@ -773,43 +935,58 @@ class OpenSearchGateway:
                 hybrid_queries.append(knn_query)
 
         lexical_query_value = (lexical_query or query_text or "").strip()
+        retrieval_boost_clauses = self._matched_retrieval_boost_clauses(
+            query_text=query_text,
+            lexical_query=lexical_query_value,
+        )
         if lexical_query_value and not embedding_only:
-            multi_match_query: dict[str, Any] = {
-                "multi_match": {
-                    "query": lexical_query_value,
-                    "fields": [
-                        "search_text^4",
-                        "title^3",
-                        "description^2",
-                        "inventory_number^1.8",
-                        "inventory_number.text^1.8",
-                        "category.text^1.5",
-                        "super_category.text^1.3",
-                        # Relacoes textuais (export relacional do RAIZ).
-                        "creators.text^1.5",
-                        "sets.text^1.2",
-                        "exhibitions.text^1.1",
-                        "bibliography^0.6",
-                        "support_or_material.text^1.2",
-                        "technique.text^1.2",
-                        "origin_history^1.1",
-                        "production_center.text^1.1",
-                        "incorporation.text^1.1",
-                        "museum.text",
+            lexical_bool_query: dict[str, Any] = {
+                "bool": {
+                    "should": [
+                        {
+                            "multi_match": {
+                                "query": lexical_query_value,
+                                "fields": NO_STEM_AND_FIELDS,
+                                "type": "best_fields",
+                                "operator": "and",
+                                "boost": 5,
+                            }
+                        },
+                        {
+                            "multi_match": {
+                                "query": lexical_query_value,
+                                "fields": NO_STEM_PHRASE_FIELDS,
+                                "type": "phrase",
+                                "boost": 4,
+                            }
+                        },
+                        {
+                            "multi_match": {
+                                "query": lexical_query_value,
+                                "fields": NO_STEM_OR_FIELDS,
+                                "type": "best_fields",
+                                "operator": "or",
+                                "minimum_should_match": "2<75%",
+                                "boost": 0.3,
+                            }
+                        },
                     ],
-                    "type": "best_fields",
-                    "operator": "or",
+                    "minimum_should_match": 1,
                 }
             }
-            if filter_clauses or in_tour_boost_clause:
-                bool_query = {"must": [multi_match_query]}
+            if filter_clauses or in_tour_boost_clause or retrieval_boost_clauses:
+                bool_query = {"must": [lexical_bool_query]}
                 if filter_clauses:
                     bool_query["filter"] = filter_clauses
+                should_clauses: list[dict[str, Any]] = []
                 if in_tour_boost_clause:
-                    bool_query["should"] = [in_tour_boost_clause]
+                    should_clauses.append(in_tour_boost_clause)
+                should_clauses.extend(retrieval_boost_clauses)
+                if should_clauses:
+                    bool_query["should"] = should_clauses
                 hybrid_queries.append({"bool": bool_query})
             else:
-                hybrid_queries.append(multi_match_query)
+                hybrid_queries.append(lexical_bool_query)
 
         if not hybrid_queries:
             fallback_query: dict[str, Any] = {"match_all": {}}
@@ -961,11 +1138,6 @@ class OpenSearchGateway:
             filters=filters,
             sort=sort,
         )
-        self._log(
-            logging.INFO,
-            "opensearch.retrieve.body",
-            body=body,
-        )
 
         search_kwargs: dict[str, Any] = {
             "index": self.settings.OPENSEARCH_INDEX_ARTIFACT,
@@ -990,18 +1162,6 @@ class OpenSearchGateway:
                 "category": top_source.get("category"),
                 "production_center": self._resolve_production_center(top_source),
             }
-        self._log(
-            logging.INFO,
-            "opensearch.retrieve.response",
-            index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-            top_1_hit=top_1_hit,
-        )
         results: list[dict[str, Any]] = []
         results = self._artifact_results_from_hits(hits)
 
@@ -1040,7 +1200,6 @@ class OpenSearchGateway:
             ),
             retrieval_window_size=retrieval_window_size,
         )
-        self._log(logging.INFO, "opensearch.retrieve.body", body=body)
 
         search_kwargs: dict[str, Any] = {
             "index": self.settings.OPENSEARCH_INDEX_ARTIFACT,
@@ -1052,21 +1211,12 @@ class OpenSearchGateway:
         response = client.search(**search_kwargs)
         hits = response.get("hits", {}).get("hits", [])
         total_value = self._total_hits_value(response)
-        self._log(
-            logging.INFO,
-            "opensearch.retrieve.response",
-            index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-            from_offset=from_offset,
-            page_size=page_size,
-        )
         results = self._artifact_results_from_hits(hits)
-        return OpenSearchRetrievalPage(results=results, total=total_value)
+        return OpenSearchRetrievalPage(
+            results=results,
+            total=total_value,
+            query_body=dict(search_kwargs),
+        )
 
     async def search_relevant_context(
         self,
@@ -1181,11 +1331,6 @@ class OpenSearchGateway:
             ],
             "query": {"bool": bool_query},
         }
-        self._log(
-            logging.INFO,
-            "opensearch.image_retrieve.body",
-            body=body,
-        )
         response = client.search(
             index=self.settings.OPENSEARCH_INDEX_IMAGE,
             body=body,
@@ -1202,18 +1347,6 @@ class OpenSearchGateway:
                 "image_id": top_source.get("image_id"),
                 "museum_id": top_source.get("museum_id"),
             }
-        self._log(
-            logging.INFO,
-            "opensearch.image_retrieve.response",
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-            top_1_hit=top_1_hit,
-        )
 
         results = self._image_results_from_hits(hits)
         return self._prioritize_in_tour_results(results, top_k=requested_top_k)
@@ -1280,29 +1413,17 @@ class OpenSearchGateway:
             ],
             "query": {"bool": bool_query},
         }
-        self._log(logging.INFO, "opensearch.image_retrieve.body", body=body)
-        response = client.search(
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            body=body,
-        )
+        search_kwargs: dict[str, Any] = {
+            "index": self.settings.OPENSEARCH_INDEX_IMAGE,
+            "body": body,
+        }
+        response = client.search(**search_kwargs)
         hits = response.get("hits", {}).get("hits", [])
         total_value = self._total_hits_value(response)
-        self._log(
-            logging.INFO,
-            "opensearch.image_retrieve.response",
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-            from_offset=from_value,
-            page_size=size,
-        )
         return OpenSearchRetrievalPage(
             results=self._image_results_from_hits(hits),
             total=total_value,
+            query_body=dict(search_kwargs),
         )
 
     def _search_similar_images_multi_sync(
@@ -1367,11 +1488,6 @@ class OpenSearchGateway:
             ],
             "query": {"bool": bool_query},
         }
-        self._log(
-            logging.INFO,
-            "opensearch.image_retrieve.body",
-            body=body,
-        )
         response = client.search(
             index=self.settings.OPENSEARCH_INDEX_IMAGE,
             body=body,
@@ -1388,18 +1504,6 @@ class OpenSearchGateway:
                 "image_id": top_source.get("image_id"),
                 "museum_id": top_source.get("museum_id"),
             }
-        self._log(
-            logging.INFO,
-            "opensearch.image_retrieve.response",
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-            top_1_hit=top_1_hit,
-        )
 
         results = self._image_results_from_hits(hits)
         return self._prioritize_in_tour_results(results, top_k=requested_top_k)
@@ -1480,29 +1584,17 @@ class OpenSearchGateway:
             ],
             "query": {"bool": bool_query},
         }
-        self._log(logging.INFO, "opensearch.image_retrieve.body", body=body)
-        response = client.search(
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            body=body,
-        )
+        search_kwargs = {
+            "index": self.settings.OPENSEARCH_INDEX_IMAGE,
+            "body": body,
+        }
+        response = client.search(**search_kwargs)
         hits = response.get("hits", {}).get("hits", [])
         total_value = self._total_hits_value(response)
-        self._log(
-            logging.INFO,
-            "opensearch.image_retrieve.response",
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-            from_offset=from_value,
-            page_size=size,
-        )
         return OpenSearchRetrievalPage(
             results=self._image_results_from_hits(hits),
             total=total_value,
+            query_body=dict(search_kwargs),
         )
 
     async def search_similar_images(
@@ -1652,11 +1744,6 @@ class OpenSearchGateway:
         }
         if per_artifact_value == 1:
             body["collapse"] = {"field": "artifact_id"}
-        self._log(
-            logging.INFO,
-            "opensearch.image_fetch_by_artifact.body",
-            body=body,
-        )
         response = client.search(
             index=self.settings.OPENSEARCH_INDEX_IMAGE,
             body=body,
@@ -1664,17 +1751,6 @@ class OpenSearchGateway:
         hits = response.get("hits", {}).get("hits", [])
         total_obj = response.get("hits", {}).get("total", {})
         total_value = total_obj.get("value") if isinstance(total_obj, dict) else total_obj
-        self._log(
-            logging.INFO,
-            "opensearch.image_fetch_by_artifact.response",
-            index=self.settings.OPENSEARCH_INDEX_IMAGE,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-        )
 
         by_artifact: dict[str, list[dict[str, Any]]] = {artifact_id: [] for artifact_id in unique_ids}
         seen_keys_by_artifact: dict[str, set[str]] = {
@@ -1817,11 +1893,6 @@ class OpenSearchGateway:
                 }
             },
         }
-        self._log(
-            logging.INFO,
-            "opensearch.artifact_fetch.body",
-            body=body,
-        )
         response = client.search(
             index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
             body=body,
@@ -1829,17 +1900,6 @@ class OpenSearchGateway:
         hits = response.get("hits", {}).get("hits", [])
         total_obj = response.get("hits", {}).get("total", {})
         total_value = total_obj.get("value") if isinstance(total_obj, dict) else total_obj
-        self._log(
-            logging.INFO,
-            "opensearch.artifact_fetch.response",
-            index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-        )
 
         by_id: dict[str, dict[str, Any]] = {}
         for hit in hits:
@@ -1893,13 +1953,6 @@ class OpenSearchGateway:
 
         resolved_museum_id = str(museum_id or "").strip()
         if not resolved_museum_id:
-            self._log(
-                logging.WARNING,
-                "opensearch.artifact_fetch_by_inventory.skipped",
-                museum_slug=museum_slug,
-                reason="missing_museum_id",
-                inventory_count=len(unique_inventories),
-            )
             return []
 
         client = self._ensure_client()
@@ -1973,11 +2026,6 @@ class OpenSearchGateway:
                 }
             },
         }
-        self._log(
-            logging.INFO,
-            "opensearch.artifact_fetch_by_inventory.body",
-            body=body,
-        )
         response = client.search(
             index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
             body=body,
@@ -1985,17 +2033,6 @@ class OpenSearchGateway:
         hits = response.get("hits", {}).get("hits", [])
         total_obj = response.get("hits", {}).get("total", {})
         total_value = total_obj.get("value") if isinstance(total_obj, dict) else total_obj
-        self._log(
-            logging.INFO,
-            "opensearch.artifact_fetch_by_inventory.response",
-            index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            took_ms=response.get("took"),
-            timed_out=response.get("timed_out"),
-            hits_returned=len(hits),
-            hits_total=total_value,
-        )
 
         by_inventory: dict[str, dict[str, Any]] = {}
         for hit in hits:
@@ -2024,6 +2061,135 @@ class OpenSearchGateway:
                 break
         return ordered
 
+    def _search_artifacts_by_inventory_candidates_once(
+        self,
+        *,
+        client: Any,
+        inventory_numbers: list[str],
+        top_k: int,
+        museum_id: str | None,
+    ) -> list[dict[str, Any]]:
+        inventory_terms: list[str] = []
+        seen_terms: set[str] = set()
+        for value in inventory_numbers:
+            cleaned = str(value or "").strip()
+            if not cleaned:
+                continue
+            for candidate in (cleaned, cleaned.casefold()):
+                if candidate and candidate not in seen_terms:
+                    seen_terms.add(candidate)
+                    inventory_terms.append(candidate)
+
+        if not inventory_terms:
+            return []
+
+        should_clauses: list[dict[str, Any]] = []
+        for candidate in inventory_terms:
+            should_clauses.append({"term": {"inventory_number": candidate}})
+        for candidate in inventory_numbers:
+            cleaned = str(candidate or "").strip()
+            if cleaned:
+                should_clauses.append({"match": {"inventory_number.text": cleaned}})
+
+        bool_query: dict[str, Any] = {
+            "must": [
+                {
+                    "bool": {
+                        "should": should_clauses,
+                        "minimum_should_match": 1,
+                    }
+                }
+            ]
+        }
+        resolved_museum_id = str(museum_id or "").strip()
+        if resolved_museum_id:
+            bool_query["filter"] = [{"term": {"museum_id": resolved_museum_id}}]
+
+        body: dict[str, Any] = {
+            "size": max(int(top_k), 1),
+            "_source": [
+                "artifact_id",
+                "tipo_inventario",
+                "inventory_number",
+                "title",
+                "museum_id",
+                "museum",
+                "category",
+                "super_category",
+                "creator",
+                "creators",
+                "creator_ids",
+                "sets",
+                "set_ids",
+                "set_numbers",
+                "exhibitions",
+                "exhibition_ids",
+                "exhibition_types",
+                "exhibition_count",
+                "bibliography",
+                "bibliography_count",
+                "date_or_period",
+                "start_year",
+                "end_year",
+                "support_or_material",
+                "technique",
+                "origin_history",
+                "incorporation",
+                "production_center",
+                "description",
+                "search_text",
+                "detail_type",
+                "detail_url",
+                "in_tour",
+                "image_ids",
+                "image_file_ids",
+                "image_paths",
+                "image_urls",
+                "image_count",
+            ],
+            "query": {"bool": bool_query},
+        }
+
+        response = client.search(
+            index=self.settings.OPENSEARCH_INDEX_ARTIFACT,
+            body=body,
+        )
+        hits = response.get("hits", {}).get("hits", [])
+        return self._artifact_results_from_hits(hits)
+
+    def _search_artifacts_by_inventory_candidates_sync(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        inventory_numbers: list[str],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        unique_inventories: list[str] = []
+        seen: set[str] = set()
+        for inventory_number in inventory_numbers:
+            cleaned = str(inventory_number or "").strip()
+            if not cleaned:
+                continue
+            seen_key = cleaned.casefold()
+            if seen_key in seen:
+                continue
+            seen.add(seen_key)
+            unique_inventories.append(cleaned)
+
+        if not unique_inventories:
+            return []
+
+        client = self._ensure_client()
+        size = min(max(top_k, 1), 5)
+        resolved_museum_id = str(museum_id or "").strip()
+        return self._search_artifacts_by_inventory_candidates_once(
+            client=client,
+            inventory_numbers=unique_inventories,
+            top_k=size,
+            museum_id=resolved_museum_id or None,
+        )
+
     async def fetch_artifacts_by_ids(
         self,
         *,
@@ -2050,6 +2216,22 @@ class OpenSearchGateway:
     ) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
             self._fetch_artifacts_by_inventory_numbers_sync,
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            inventory_numbers=inventory_numbers,
+            top_k=top_k,
+        )
+
+    async def search_artifacts_by_inventory_candidates(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        inventory_numbers: list[str],
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._search_artifacts_by_inventory_candidates_sync,
             museum_slug=museum_slug,
             museum_id=museum_id,
             inventory_numbers=inventory_numbers,
@@ -2119,16 +2301,8 @@ class OpenSearchGateway:
             "_source": source_fields,
             "query": {"terms": {"entity_id": unique_ids}},
         }
-        self._log(logging.INFO, "opensearch.entity_fetch.body", index=index_name, body=body)
         response = client.search(index=index_name, body=body)
         hits = response.get("hits", {}).get("hits", []) or []
-        self._log(
-            logging.INFO,
-            "opensearch.entity_fetch.response",
-            index=index_name,
-            took_ms=response.get("took"),
-            hits_returned=len(hits),
-        )
 
         by_id: dict[str, dict[str, Any]] = {}
         for hit in hits:
@@ -2180,16 +2354,8 @@ class OpenSearchGateway:
             "_source": self._ENTITY_SOURCE_FIELDS["autor"],
             "query": {"ids": {"values": unique_ids}},
         }
-        self._log(logging.INFO, "opensearch.author_fetch_by_id.body", index=index_name, body=body)
         response = client.search(index=index_name, body=body)
         hits = response.get("hits", {}).get("hits", []) or []
-        self._log(
-            logging.INFO,
-            "opensearch.author_fetch_by_id.response",
-            index=index_name,
-            took_ms=response.get("took"),
-            hits_returned=len(hits),
-        )
 
         by_id: dict[str, dict[str, Any]] = {}
         for hit in hits:
@@ -2273,16 +2439,8 @@ class OpenSearchGateway:
                 }
             },
         }
-        self._log(logging.INFO, "opensearch.entity_fetch.body", index=index_name, body=body)
         response = client.search(index=index_name, body=body)
         hits = response.get("hits", {}).get("hits", []) or []
-        self._log(
-            logging.INFO,
-            "opensearch.entity_fetch.response",
-            index=index_name,
-            took_ms=response.get("took"),
-            hits_returned=len(hits),
-        )
 
         results: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
@@ -2374,18 +2532,9 @@ class OpenSearchGateway:
                 {"_score": {"order": "desc"}},
             ],
         }
-        self._log(logging.INFO, "opensearch.artifact_fetch_by_entity.body",
-                  index=self.settings.OPENSEARCH_INDEX_ARTIFACT, body=body)
         response = client.search(index=self.settings.OPENSEARCH_INDEX_ARTIFACT, body=body)
         hits = response.get("hits", {}).get("hits", []) or []
         total_value = self._total_hits_value(response)
-        self._log(
-            logging.INFO,
-            "opensearch.artifact_fetch_by_entity.response",
-            tipo=tipo, entity_id=eid,
-            from_offset=from_value,
-            hits_returned=len(hits), hits_total=total_value,
-        )
         results = self._artifact_results_from_hits(hits)
         return results, total_value
 
@@ -2410,49 +2559,6 @@ class OpenSearchGateway:
             from_offset=from_offset,
             exclude_artifact_id=exclude_artifact_id,
         )
-
-    def _execute_structured_query_sync(
-        self,
-        *,
-        plan: QueryPlan,
-        dsl: CompiledOpenSearchDSL,
-    ) -> QueryExecutionResult:
-        client = self._ensure_client()
-        self._log(
-            logging.INFO,
-            "opensearch.structured.body",
-            endpoint=dsl.endpoint,
-            index=dsl.index,
-            operation=plan.operation,
-            body=dsl.body,
-        )
-        result = execute_query(plan=plan, dsl=dsl, client=client)
-        self._log(
-            logging.INFO,
-            "opensearch.structured.response",
-            endpoint=dsl.endpoint,
-            index=dsl.index,
-            operation=plan.operation,
-            total=result.total,
-            count=result.count,
-            exists=result.exists,
-            groups=len(result.groups),
-            items=len(result.items),
-        )
-        return result
-
-    async def execute_structured_query(
-        self,
-        *,
-        plan: QueryPlan,
-        dsl: CompiledOpenSearchDSL,
-    ) -> QueryExecutionResult:
-        return await asyncio.to_thread(
-            self._execute_structured_query_sync,
-            plan=plan,
-            dsl=dsl,
-        )
-
 
 @lru_cache(maxsize=1)
 def get_opensearch_gateway() -> OpenSearchGateway:

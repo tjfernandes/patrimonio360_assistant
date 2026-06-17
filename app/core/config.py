@@ -19,13 +19,6 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "development"
     API_PREFIX: str = "/api/v1"
-    LOG_LEVEL: str = "INFO"
-    LOG_JSON: bool = True
-    LOG_JSON_PRETTY: bool = True
-    LOG_JSON_INDENT: int = 2
-    LOG_CHAT_MESSAGES: bool = False
-    LOG_CHAT_STATE_HISTORY: bool = False
-    DEBUG_EMBEDDINGS: bool = False
 
     CORS_ALLOW_ORIGINS: str = "*"
     CORS_ALLOW_METHODS: str = "*"
@@ -92,9 +85,6 @@ class Settings(BaseSettings):
     CHAT_ROLLING_SUMMARY_MAX_CHARS: int = 600
     CHAT_ENABLE_RAG: bool = True
     CHAT_ENABLE_LLM_LEXICAL_QUERY: bool = True
-    CHAT_ENABLE_STRUCTURED_QUERY_PLANNING: bool = True
-    CHAT_ANALYTICS_PLANNER_MIN_CONFIDENCE: float = 0.55
-    CHAT_ANALYTICS_LIST_TOP_K: int = 10
     CHAT_PREWARM_ON_STARTUP: bool = False
     CHAT_PREWARM_INCLUDE_MULTIMODAL: bool = True
     CHAT_PREWARM_INCLUDE_MULTIVIEW_WORKER: bool = False
@@ -103,6 +93,7 @@ class Settings(BaseSettings):
     CHAT_RETRIEVAL_CANDIDATES: int = 15
     CHAT_RETRIEVAL_TOP_K: int = 5
     CHAT_RETRIEVAL_RESULTS_PAGE_SIZE: int = 10
+    CHAT_INCLUDE_ORIGIN_HISTORY_IN_LLM_CONTEXT: bool = True
     CHAT_RELATED_ARTIFACTS_PAGE_SIZE: int = 10
     CHAT_RETRIEVAL_PAGINATION_WINDOW: int = 150
     CHAT_IN_TOUR_BOOST: float = 5
@@ -132,6 +123,11 @@ class Settings(BaseSettings):
     MULTIVIEW_RENDER_DELAY_MS: int = 8
     MULTIVIEW_SAVE_LAST_VIEWS: bool = True
     MULTIVIEW_LAST_VIEWS_DIR: str = "tmp/multiview_last_views"
+
+    # Structured backend_query JSONL logging for offline evaluation/paper analysis.
+    QUERY_LOG_ENABLED: bool = True
+    QUERY_LOG_PATH: str = "logs/evaluation/backend_queries.jsonl"
+    FRONTEND_EVENT_LOG_PATH: str = "logs/evaluation/frontend_events.jsonl"
 
     @property
     def cors_allow_origins_list(self) -> list[str]:
@@ -226,6 +222,26 @@ class Settings(BaseSettings):
         raw = (self.MULTIVIEW_LAST_VIEWS_DIR or "").strip()
         if not raw:
             raw = "tmp/multiview_last_views"
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (Path(__file__).resolve().parents[2] / path).resolve()
+        return path
+
+    @property
+    def query_log_path_resolved(self) -> Path:
+        raw = (self.QUERY_LOG_PATH or "").strip()
+        if not raw:
+            raw = "logs/evaluation/backend_queries.jsonl"
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (Path(__file__).resolve().parents[2] / path).resolve()
+        return path
+
+    @property
+    def frontend_event_log_path_resolved(self) -> Path:
+        raw = (self.FRONTEND_EVENT_LOG_PATH or "").strip()
+        if not raw:
+            raw = "logs/evaluation/frontend_events.jsonl"
         path = Path(raw).expanduser()
         if not path.is_absolute():
             path = (Path(__file__).resolve().parents[2] / path).resolve()

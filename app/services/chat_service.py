@@ -2,9 +2,9 @@
 import asyncio
 from dataclasses import dataclass
 import json
-import logging
 from pathlib import Path
 import re
+import time
 import unicodedata
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
@@ -20,19 +20,6 @@ from app.prompts.query_planner_prompts import (
     RETRIEVAL_QUERY_REWRITE_SYSTEM_PROMPT,
     build_retrieval_query_rewrite_prompt,
 )
-from app.query_planning import (
-    CompiledOpenSearchDSL,
-    QueryCompileError,
-    QueryExecutionResult,
-    QueryPlanningError,
-    QueryPlan,
-    QuerySchema,
-    QuerySchemaField,
-    classify_query,
-    compile_query,
-    plan_query,
-)
-from app.query_planning.models import ListSpec, TermFilter
 from app.schemas.chat import (
     ArtifactImageResult,
     ArtifactResult,
@@ -64,9 +51,9 @@ from app.services.chat_i18n import normalize_language, translate
 from app.services.llm_service import LLMService, LLMServiceError, get_llm_service
 from app.services.opensearch_client import OpenSearchGateway, get_opensearch_gateway
 from app.services.model_retrieval import ModelRetrievalService, get_model_retrieval_service
+from app.services.query_logger import QueryLogger, get_query_logger, utc_timestamp
 from app.services.tour_navigation import TourNavigationService, get_tour_navigation_service
 
-logger = logging.getLogger(__name__)
 StatusCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -84,6 +71,48 @@ _TOUR_SCOPE_PATTERNS: tuple[str, ...] = (
     r"\b(?:in\s+)?this\s+(?:virtual\s+|360\s+|digital\s+)?(?:tour|visit)\b",
     r"\b(?:in\s+the\s+)?(?:virtual|360|digital)\s+(?:tour|visit)\b",
 )
+
+_INVENTORY_PREFIXES: tuple[str, ...] = (
+    "mj",
+    "mnaa",
+    "mnac",
+    "mnaj",
+    "mnar",
+    "mnap",
+    "mnaz",
+    "mnmc",
+    "mnsr",
+    "mnt",
+)
+
+_EXPLICIT_INVENTORY_MARKERS: tuple[tuple[str, ...], ...] = (
+    ("numero", "de", "inventario"),
+    ("n", "de", "inventario"),
+    ("inventario",),
+    ("referencia",),
+    ("ref",),
+)
+
+_ARTIFACT_REFERENCE_MARKERS: set[str] = {
+    "artefacto",
+    "artefactos",
+    "artefato",
+    "artefatos",
+    "item",
+    "itens",
+    "objeto",
+    "objetos",
+    "peca",
+    "pecas",
+}
+
+_ARTIFACT_REFERENCE_NUMBER_CONNECTORS: set[str] = {
+    "n",
+    "no",
+    "nr",
+    "num",
+    "numero",
+}
 
 
 _HARDCODED_HISTORICAL_PERIODS: tuple[tuple[tuple[str, ...], TemporalQuery], ...] = (
@@ -126,51 +155,6 @@ _HARDCODED_HISTORICAL_PERIODS: tuple[tuple[tuple[str, ...], TemporalQuery], ...]
 )
 
 
-EVENT_LABELS: dict[str, str] = {
-    "chat.receive": "Recebida mensagem no endpoint de chat.",
-    "chat.receive_image": "Recebida mensagem com imagem no endpoint de chat.",
-    "chat.receive_model": "Recebida mensagem com modelo 3D no endpoint de chat.",
-    "chat.receive_message": "Conteudo de mensagem recebido.",
-    "chat.rewrite": "Query reescrita para este input.",
-    "chat.router_unavailable": "Router indisponivel; fallback para llm_only.",
-    "chat.route": "Decisao de routing (rag vs llm_only).",
-    "chat.route_delta": "Deltas de estado calculados pelo router.",
-    "chat.retrieve_prepare": "Retrieval preparado antes de consultar OpenSearch.",
-    "chat.temporal_query": "Filtro temporal interpretado para retrieval.",
-    "chat.tour_scope_filter": "Filtro de visita virtual aplicado ao retrieval.",
-    "chat.retrieve_query_rewrite": "Query de retrieval reescrita para OpenSearch.",
-    "chat.retrieve_embedding_ready": "Embedding de query gerado para retrieval.",
-    "chat.retrieve": "Tentativa de retrieval no RAG.",
-    "chat.retrieve_embedding_disabled": "Embeddings de query desativados; retrieval ignorado.",
-    "chat.retrieve_embedding_error": "Embedding indisponivel; retrieval cancelado.",
-    "chat.retrieve_skipped": "Retrieval ignorado nesta mensagem.",
-    "chat.image_embedding_ready": "Embedding multimodal da imagem gerado.",
-    "chat.image_retrieve": "Image retrieval executado com sucesso.",
-    "chat.image_match_enrichment": "Debug de associacao entre image matches, artefactos e targets de tour.",
-    "chat.image_retrieve_empty": "Image retrieval sem resultados.",
-    "chat.image_retrieve_error": "Erro inesperado durante image retrieval.",
-    "chat.model_retrieve": "Model retrieval executado com sucesso.",
-    "chat.model_retrieve_empty": "Model retrieval sem resultados.",
-    "chat.model_retrieve_error": "Erro inesperado durante model retrieval.",
-    "chat.reply_sanitized": "Resposta final sanitizada para remover IDs internos.",
-    "chat.llm_error": "Erro ao chamar o LLM.",
-    "chat.reply": "Resposta final gerada pelo LLM.",
-    "chat.results_page_reply": "Resposta da pagina de resultados gerada pelo LLM.",
-    "chat.results_page_reply_error": "Erro ao gerar resposta da pagina de resultados; fallback simples.",
-    "chat.state_after_reply": "Estado da conversa apos resposta.",
-    "chat.retrieve_not_implemented": "Retrieval ainda nao implementado neste ambiente.",
-    "chat.retrieve_error": "Erro inesperado durante retrieval.",
-    "chat.retrieve_results_page": "Pagina de resultados de retrieval devolvida.",
-    "chat.navigation_targets": "Alvos de navegacao em tour resolvidos para esta resposta.",
-    "chat.context_policy": "Politica de reutilizacao de contexto para o turno atual.",
-    "chat.context_artifact_scope": "Filtro contextual por artifact_id aplicado para follow-up referencial.",
-    "chat.structured.classify": "Classificacao da query para modo estruturado.",
-    "chat.structured.plan": "Plano estruturado gerado para query analitica.",
-    "chat.structured.fallback": "Fallback do modo estruturado para fluxo RAG.",
-    "chat.structured.execute": "Query estruturada executada no OpenSearch.",
-    "chat.structured.reply": "Resposta final gerada por executor estruturado.",
-    "chat.retrieve_query_rewrite_guardrail": "Guardrail aplicado a query reescrita pelo LLM.",
-}
 
 _PT_QUERY_LANGUAGE_HINTS: set[str] = {
     "de",
@@ -274,6 +258,7 @@ class ChatService:
         tour_navigation_service: TourNavigationService,
         llm_service: LLMService,
         session_store: ChatSessionStore,
+        query_logger: QueryLogger | None = None,
     ) -> None:
         self.settings = settings
         self.opensearch_gateway = opensearch_gateway
@@ -282,31 +267,8 @@ class ChatService:
         self.tour_navigation_service = tour_navigation_service
         self.llm_service = llm_service
         self.session_store = session_store
+        self.query_logger = query_logger or get_query_logger()
 
-    def _log(self, level: int, event: str, **fields: object) -> None:
-        if self.settings.LOG_JSON:
-            payload = {"event": event, **fields}
-            prefix = EVENT_LABELS.get(event, event)
-            if self.settings.LOG_JSON_PRETTY:
-                logger.log(
-                    level,
-                    f"{prefix}\n"
-                    + json.dumps(
-                        payload,
-                        ensure_ascii=False,
-                        default=str,
-                        indent=max(self.settings.LOG_JSON_INDENT, 0),
-                    ),
-                )
-            else:
-                logger.log(
-                    level,
-                    f"{prefix} " + json.dumps(payload, ensure_ascii=False, default=str),
-                )
-            return
-
-        details = " ".join(f"{key}={value}" for key, value in fields.items())
-        logger.log(level, f"{event} {details}".strip())
 
     def health(self) -> ChatHealthResponse:
         return ChatHealthResponse(
@@ -337,7 +299,7 @@ class ChatService:
         try:
             await status_cb(payload)
         except Exception:
-            logger.debug("status callback failed", exc_info=True)
+            pass
 
     def _sync_state_language(
         self,
@@ -651,11 +613,14 @@ class ChatService:
         artifact_results: list[ArtifactResult],
     ) -> list[dict[str, object]]:
         docs: list[dict[str, object]] = []
+        excluded_fields = {"images"}
+        if not self.settings.CHAT_INCLUDE_ORIGIN_HISTORY_IN_LLM_CONTEXT:
+            excluded_fields.add("origin_history")
         for artifact in artifact_results:
             payload = artifact.model_dump(
                 mode="json",
                 exclude_none=True,
-                exclude={"images"},
+                exclude=excluded_fields,
             )
             if payload:
                 docs.append(payload)
@@ -700,6 +665,8 @@ class ChatService:
             for field in artifact_fields:
                 value = artifact.get(field)
                 if value in (None, "", [], {}):
+                    continue
+                if field == "origin_history" and not self.settings.CHAT_INCLUDE_ORIGIN_HISTORY_IN_LLM_CONTEXT:
                     continue
                 if field == "inventory_number" and inventory:
                     continue
@@ -878,24 +845,9 @@ class ChatService:
                 language=language,
             )
             if reply:
-                self._log(
-                    logging.INFO,
-                    "chat.results_page_reply",
-                    conversation_id=payload.conversation_id,
-                    museum_slug=payload.museum_slug,
-                    page=page,
-                    reply_chars=len(reply),
-                )
                 return reply
         except Exception as exc:
-            self._log(
-                logging.WARNING,
-                "chat.results_page_reply_error",
-                conversation_id=payload.conversation_id,
-                museum_slug=payload.museum_slug,
-                page=page,
-                reason=str(exc),
-            )
+            pass
         return translate("message.results_page_fallback", language)
 
     async def _materialize_text_results_page(
@@ -938,14 +890,6 @@ class ChatService:
                     max_total=max(len(artifact_ids), 1),
                 )
             except Exception as exc:
-                self._log(
-                    logging.WARNING,
-                    "chat.image_retrieve_error",
-                    conversation_id=payload.conversation_id,
-                    museum_slug=payload.museum_slug,
-                    museum_id=payload.museum_id,
-                    reason=f"artifact_image_fetch_failed: {exc}",
-                )
                 image_hits = []
             image_matches = self._build_image_matches(
                 image_hits=image_hits,
@@ -1095,73 +1039,6 @@ class ChatService:
             results_request_id=results_request_id,
         )
 
-    async def _materialize_structured_results_page(
-        self,
-        *,
-        state: ChatSessionState,
-        payload: ChatResultsPageRequest,
-        request: dict[str, Any],
-        page: int,
-        page_size: int,
-    ) -> ChatResultsPageResponse:
-        from_offset = (page - 1) * page_size
-        plan = QueryPlan.model_validate(request.get("plan") or {})
-        dsl = CompiledOpenSearchDSL.model_validate(request.get("dsl") or {})
-        body = dict(dsl.body)
-        body["from"] = from_offset
-        body["size"] = page_size
-        body["track_total_hits"] = True
-        paged_dsl = CompiledOpenSearchDSL(
-            endpoint=dsl.endpoint,
-            index=dsl.index,
-            body=body,
-        )
-        result = await self.opensearch_gateway.execute_structured_query(
-            plan=plan,
-            dsl=paged_dsl,
-        )
-        museum_id = str(request.get("museum_id") or payload.museum_id or "").strip() or None
-        artifact_results = await self._build_artifact_results(
-            museum_slug=payload.museum_slug,
-            museum_id=museum_id,
-            artifact_docs=result.items,
-        )
-        navigation_targets = self._resolve_navigation_targets(
-            museum_slug=payload.museum_slug,
-            museum_id=museum_id,
-            docs=result.items,
-        )
-        reported_total = self._reported_results_total(request, int(result.total or 0))
-        reply = await self._generate_results_page_reply(
-            payload=payload,
-            request=request,
-            docs=result.items,
-            artifact_results=artifact_results,
-            image_matches=[],
-            page=page,
-            total=reported_total,
-        )
-        results_request_id = self._cache_last_retrieval_results(
-            state=state,
-            artifact_results=artifact_results,
-            image_matches=[],
-            navigation_targets=navigation_targets,
-            default_page_size=page_size,
-            retrieval_request=request,
-        )
-        return ChatResultsPageResponse(
-            conversation_id=payload.conversation_id,
-            reply=reply,
-            artifact_results=artifact_results,
-            image_matches=[],
-            navigation_targets=navigation_targets,
-            results_page=page,
-            results_page_size=page_size,
-            results_total=reported_total,
-            results_has_more=(from_offset + page_size) < reported_total,
-            results_request_id=results_request_id,
-        )
-
     async def get_results_page(self, payload: ChatResultsPageRequest) -> ChatResultsPageResponse:
         state = self.session_store.get(payload.conversation_id)
         if state is None or state.museum_slug != payload.museum_slug:
@@ -1236,21 +1113,6 @@ class ChatService:
                 page_size=results_page_size,
             )
             self.session_store.save(state)
-            self._log(
-                logging.INFO,
-                "chat.retrieve_results_page",
-                conversation_id=payload.conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=payload.museum_id,
-                source="opensearch",
-                kind=retrieval_kind,
-                page=response.results_page,
-                page_size=response.results_page_size,
-                total=response.results_total,
-                has_more=response.results_has_more,
-                artifact_results=len(response.artifact_results),
-                image_matches=len(response.image_matches),
-            )
             return response
         if retrieval_kind in {"image", "model"}:
             response = await self._materialize_media_results_page(
@@ -1261,48 +1123,7 @@ class ChatService:
                 page_size=results_page_size,
             )
             self.session_store.save(state)
-            self._log(
-                logging.INFO,
-                "chat.retrieve_results_page",
-                conversation_id=payload.conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=payload.museum_id,
-                source="opensearch",
-                kind=retrieval_kind,
-                page=response.results_page,
-                page_size=response.results_page_size,
-                total=response.results_total,
-                has_more=response.results_has_more,
-                artifact_results=len(response.artifact_results),
-                image_matches=len(response.image_matches),
-            )
             return response
-        if retrieval_kind == "structured_list":
-            response = await self._materialize_structured_results_page(
-                state=state,
-                payload=payload,
-                request=retrieval_request,
-                page=results_page,
-                page_size=results_page_size,
-            )
-            self.session_store.save(state)
-            self._log(
-                logging.INFO,
-                "chat.retrieve_results_page",
-                conversation_id=payload.conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=payload.museum_id,
-                source="opensearch",
-                kind=retrieval_kind,
-                page=response.results_page,
-                page_size=response.results_page_size,
-                total=response.results_total,
-                has_more=response.results_has_more,
-                artifact_results=len(response.artifact_results),
-                image_matches=len(response.image_matches),
-            )
-            return response
-
         artifact_results = [
             ArtifactResult(**item)
             for item in (
@@ -1340,19 +1161,6 @@ class ChatService:
             page_size=payload.results_page_size,
             default_page_size=default_page_size,
         )
-        self._log(
-            logging.INFO,
-            "chat.retrieve_results_page",
-            conversation_id=payload.conversation_id,
-            museum_slug=payload.museum_slug,
-            museum_id=payload.museum_id,
-            page=results_page,
-            page_size=results_page_size,
-            total=results_total,
-            has_more=results_has_more,
-            artifact_results=len(paged_artifacts),
-            image_matches=len(paged_image_matches),
-        )
         reply = await self._generate_results_page_reply(
             payload=payload,
             request=retrieval_request,
@@ -1378,6 +1186,191 @@ class ChatService:
             ),
         )
 
+    def _log_correlation_ids(
+        self,
+        *,
+        metadata: dict[str, Any] | None,
+        museum_slug: str | None,
+    ) -> dict[str, str | None]:
+        """Resolve the IDs required by the backend_query log event.
+
+        `session_id`, `participant_id` and `task_id` have no first-class field
+        on the chat request schemas today; they are read from the optional
+        `metadata` payload (`ChatMessageRequest.metadata` and friends) so a
+        future frontend/evaluation harness can populate them without a schema
+        change. `tour_id` falls back to `museum_slug`, which is the identifier
+        actually used to resolve a virtual tour in this codebase (see
+        `poi_tours/panorama-overlays-inventory-<museum_slug>.json`).
+        """
+        meta = metadata or {}
+
+        def _meta_str(key: str) -> str | None:
+            value = meta.get(key)
+            text = str(value).strip() if value is not None else ""
+            return text or None
+
+        resolved_tour_id = _meta_str("tour_id") or (str(museum_slug).strip() or None if museum_slug else None)
+        return {
+            "session_id": _meta_str("session_id"),
+            "participant_id": _meta_str("participant_id"),
+            "task_id": _meta_str("task_id"),
+            "tour_id": resolved_tour_id,
+        }
+
+    def _log_retrieved_artifact_entries(
+        self,
+        docs: list[dict[str, Any]],
+        *,
+        source: str,
+    ) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for doc in docs:
+            artifact_id = str(doc.get("artifact_id") or "").strip()
+            if not artifact_id:
+                continue
+            entries.append(
+                {
+                    "artifact_id": artifact_id,
+                    "inventory_number": doc.get("inventory_number") or None,
+                    "title": doc.get("title") or None,
+                    "score": doc.get("score"),
+                    "source": source,
+                }
+            )
+        return entries
+
+    def _log_shown_artifact_entries(
+        self,
+        artifact_results: list[ArtifactResult],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "artifact_id": artifact.artifact_id,
+                "inventory_number": artifact.inventory_number,
+                "title": artifact.title,
+            }
+            for artifact in artifact_results
+        ]
+
+    def _log_navigation_target_entries(
+        self,
+        *,
+        navigation_targets: list[TourNavigationTarget],
+        artifact_results: list[ArtifactResult],
+    ) -> list[dict[str, Any]]:
+        artifact_id_by_inventory = {
+            str(artifact.inventory_number or "").strip().casefold(): artifact.artifact_id
+            for artifact in artifact_results
+            if str(artifact.inventory_number or "").strip()
+        }
+        entries: list[dict[str, Any]] = []
+        for target in navigation_targets:
+            inventory_key = str(target.inventory_id or "").strip().casefold()
+            entries.append(
+                {
+                    "artifact_id": artifact_id_by_inventory.get(inventory_key),
+                    "inventory_number": target.inventory_id,
+                    "has_navigation_target": True,
+                    "panorama_id": target.panorama_key,
+                    "overlay_id": target.overlay_id,
+                }
+            )
+        return entries
+
+    async def _emit_query_log(
+        self,
+        *,
+        payload: Any,
+        conversation_id: str,
+        query_id: str,
+        language: str | None,
+        raw_query: str | None,
+        resolved_query: str | None,
+        lexical_query: str | None,
+        embedding_query: str | None,
+        route: str | None,
+        retrieval_mode: str,
+        filters_applied: dict[str, Any] | None,
+        boosts_applied: dict[str, Any] | None,
+        retrieved_artifacts: list[dict[str, Any]],
+        shown_artifacts: list[dict[str, Any]],
+        navigation_targets: list[dict[str, Any]],
+        latency_retrieval_ms: float | None,
+        latency_llm_ms: float | None,
+        latency_total_ms: float | None,
+        status: str,
+        error: str | None,
+        opensearch_query: dict[str, Any] | None = None,
+    ) -> None:
+        metadata = getattr(payload, "metadata", None)
+        museum_slug = getattr(payload, "museum_slug", None)
+        correlation = self._log_correlation_ids(metadata=metadata, museum_slug=museum_slug)
+        event: dict[str, Any] = {
+            "event_type": "backend_query",
+            "timestamp": utc_timestamp(),
+            "session_id": correlation["session_id"],
+            "conversation_id": conversation_id,
+            "query_id": query_id,
+            "participant_id": correlation["participant_id"],
+            "task_id": correlation["task_id"],
+            "tour_id": correlation["tour_id"],
+            "museum_slug": museum_slug,
+            "language": language,
+            "raw_query": raw_query,
+            "resolved_query": resolved_query,
+            "lexical_query": lexical_query,
+            "embedding_query": embedding_query,
+            "route": route,
+            "retrieval_mode": retrieval_mode,
+            "filters_applied": filters_applied or {},
+            "boosts_applied": boosts_applied or {},
+            "retrieved_artifacts": retrieved_artifacts,
+            "shown_artifacts": shown_artifacts,
+            "navigation_targets": navigation_targets,
+            "latency_retrieval_ms": latency_retrieval_ms,
+            "latency_llm_ms": latency_llm_ms,
+            "latency_total_ms": latency_total_ms,
+            "status": status,
+            "error": error,
+            "opensearch_query": opensearch_query,
+        }
+        await self.query_logger.log_event(event)
+
+    def _matched_retrieval_boosts_for_log(
+        self,
+        *,
+        query_text: str | None,
+        lexical_query: str | None,
+    ) -> list[dict[str, Any]]:
+        if self.settings.CHAT_RETRIEVAL_EMBEDDING_ONLY:
+            return []
+        boost_resolver = getattr(self.opensearch_gateway, "matched_retrieval_boosts", None)
+        if not callable(boost_resolver):
+            return []
+        try:
+            boosts = boost_resolver(
+                query_text=str(query_text or ""),
+                lexical_query=lexical_query,
+            )
+        except Exception:
+            return []
+        return boosts if isinstance(boosts, list) else []
+
+    def _text_boosts_applied_for_log(
+        self,
+        *,
+        router_decision: dict[str, object],
+        retrieval_request: dict[str, Any],
+    ) -> dict[str, Any]:
+        if router_decision.get("mode") != "rag":
+            return {}
+
+        boosts: dict[str, Any] = {"in_tour_boost": self.settings.CHAT_IN_TOUR_BOOST}
+        retrieval_boosts = retrieval_request.get("retrieval_boosts")
+        if isinstance(retrieval_boosts, list) and retrieval_boosts:
+            boosts["retrieval_boosts"] = retrieval_boosts
+        return boosts
+
     async def handle_message(
         self,
         payload: ChatMessageRequest,
@@ -1386,21 +1379,10 @@ class ChatService:
     ) -> ChatMessageResponse:
         conversation_id = payload.conversation_id or str(uuid4())
         requested_format = payload.response_format or ResponseFormatObject(type="text")
-        self._log(
-            logging.INFO,
-            "chat.receive",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            museum_id=payload.museum_id,
-            response_format=requested_format.type,
-        )
-        if self.settings.LOG_CHAT_MESSAGES:
-            self._log(
-                logging.DEBUG,
-                "chat.receive_message",
-                conversation_id=conversation_id,
-                text=payload.message,
-            )
+        query_id = str(uuid4())
+        request_started_at = time.monotonic()
+        retrieval_latency_ms: float | None = None
+        llm_latency_ms: float | None = None
 
         state = self.session_store.load_or_create(
             conversation_id=conversation_id,
@@ -1414,28 +1396,6 @@ class ChatService:
             message=payload.message,
             state=state,
         )
-        self._log(
-            logging.INFO,
-            "chat.context_policy",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            is_follow_up=context_policy.get("is_follow_up"),
-            use_history_for_query=context_policy.get("use_history_for_query"),
-            use_history_for_answer=context_policy.get("use_history_for_answer"),
-            carry_filters=context_policy.get("carry_filters"),
-            carry_sort=context_policy.get("carry_sort"),
-            reason=context_policy.get("reason"),
-        )
-
-        structured_response = await self._try_handle_structured_query(
-            payload=payload,
-            state=state,
-            conversation_id=conversation_id,
-            requested_format=requested_format,
-            status_cb=status_cb,
-        )
-        if structured_response is not None:
-            return structured_response
 
         try:
             router_decision = await self._route_message(
@@ -1444,70 +1404,17 @@ class ChatService:
                 context_policy=context_policy,
             )
         except LLMServiceError:
-            self._log(
-                logging.WARNING,
-                "chat.router_unavailable",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
+            router_decision = self._fallback_router_decision(
+                payload.message,
+                context_policy=context_policy,
             )
-            router_decision = {
-                "mode": "llm_only",
-                "intent": "fallback",
-                "rewritten_query": payload.message,
-                "needs_retrieval": False,
-                "reason": "router_unavailable: usa contexto local",
-                "is_follow_up": bool(context_policy.get("is_follow_up", False)),
-                "use_history_for_query": bool(
-                    context_policy.get("use_history_for_query", False)
-                ),
-                "use_history_for_answer": bool(
-                    context_policy.get("use_history_for_answer", False)
-                ),
-                "carry_filters": bool(context_policy.get("carry_filters", False)),
-                "carry_sort": bool(context_policy.get("carry_sort", False)),
-                "filters_delta": {},
-                "sort_delta": {},
-            }
         router_decision = self._apply_context_policy_guardrails(
             router_decision=router_decision,
             context_policy=context_policy,
             user_message=payload.message,
         )
-        self._log(
-            logging.INFO,
-            "chat.route",
-            conversation_id=conversation_id,
-            mode=router_decision.get("mode"),
-            intent=router_decision.get("intent"),
-            needs_retrieval=router_decision.get("needs_retrieval"),
-            is_follow_up=router_decision.get("is_follow_up"),
-            use_history_for_query=router_decision.get("use_history_for_query"),
-            use_history_for_answer=router_decision.get("use_history_for_answer"),
-            carry_filters=router_decision.get("carry_filters"),
-            carry_sort=router_decision.get("carry_sort"),
-            reason=router_decision.get("reason"),
-        )
         rewritten_query = str(router_decision.get("rewritten_query", payload.message)).strip()
         original_message = (payload.message or "").strip()
-        self._log(
-            logging.INFO,
-            "chat.rewrite",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            original_message=original_message,
-            rewritten_query=rewritten_query,
-            query_changed=rewritten_query != original_message,
-            mode=router_decision.get("mode"),
-            intent=router_decision.get("intent"),
-        )
-        self._log(
-            logging.DEBUG,
-            "chat.route_delta",
-            conversation_id=conversation_id,
-            filters_delta=router_decision.get("filters_delta"),
-            sort_delta=router_decision.get("sort_delta"),
-            rewritten_query=router_decision.get("rewritten_query"),
-        )
 
         carry_filters = bool(router_decision.get("carry_filters", False))
         carry_sort = bool(router_decision.get("carry_sort", False))
@@ -1523,22 +1430,6 @@ class ChatService:
             base=base_sort,
             delta=router_decision.get("sort_delta"),
         )
-        pre_scope_filters = dict(effective_filters)
-        effective_filters = self._apply_follow_up_artifact_scope(
-            message=payload.message,
-            state=state,
-            router_decision=router_decision,
-            filters=effective_filters,
-        )
-        if effective_filters != pre_scope_filters:
-            self._log(
-                logging.INFO,
-                "chat.context_artifact_scope",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                artifact_id=effective_filters.get("artifact_id"),
-                reason="referential_follow_up_single_artifact",
-            )
 
         retrieval_context = ""
         retrieved_docs_count = 0
@@ -1558,6 +1449,7 @@ class ChatService:
             # Retrieval must stay strict to user wording (no expansion/rewrite additions).
             retrieval_query = payload.message
             await self._emit_status(status_cb, "status.searching_collection", language=language)
+            retrieval_started_at = time.monotonic()
             (
                 retrieval_context,
                 retrieved_docs_count,
@@ -1571,19 +1463,12 @@ class ChatService:
                 sort=effective_sort,
                 result_window_size=text_results_window_size,
             )
+            retrieval_latency_ms = (time.monotonic() - retrieval_started_at) * 1000
             await self._emit_status(
                 status_cb,
                 "status.artifacts_found",
                 language=language,
                 artifact_count=retrieved_docs_count,
-            )
-            self._log(
-                logging.INFO,
-                "chat.retrieve",
-                conversation_id=conversation_id,
-                mode="rag",
-                query=retrieval_query,
-                context_found=bool(retrieval_context),
             )
             if retrieved_docs:
                 artifact_ids = [
@@ -1601,27 +1486,13 @@ class ChatService:
                             max_total=max(len(artifact_ids), 1),
                         )
                     except Exception as exc:
-                        self._log(
-                            logging.WARNING,
-                            "chat.image_retrieve_error",
-                            conversation_id=conversation_id,
-                            museum_slug=payload.museum_slug,
-                            museum_id=self._resolve_museum_id(payload),
-                            reason=f"artifact_image_fetch_failed: {exc}",
-                        )
                         artifact_image_hits = []
                     image_matches = self._build_image_matches(
                         image_hits=artifact_image_hits,
                         artifact_docs=retrieved_docs,
                     )
         else:
-            self._log(
-                logging.DEBUG,
-                "chat.retrieve_skipped",
-                conversation_id=conversation_id,
-                mode=router_decision.get("mode"),
-                rag_enabled=self.settings.CHAT_ENABLE_RAG,
-            )
+            pass
         # Build the full artifact records (all images) so the detail modal matches
         # the image/model search behaviour. `artifact_image_hits` above only carries
         # one image per artifact (for the result-card thumbnails), so passing it here
@@ -1644,14 +1515,6 @@ class ChatService:
             artifact_results=artifact_results,
             navigation_targets=navigation_targets,
         )
-        if navigation_targets:
-            self._log(
-                logging.INFO,
-                "chat.navigation_targets",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                targets=[target.model_dump(exclude_none=True) for target in navigation_targets],
-            )
         (
             paged_artifact_results,
             paged_image_matches,
@@ -1695,6 +1558,7 @@ class ChatService:
         )
         await self._emit_status(status_cb, "status.generating_final_answer", language=language)
 
+        llm_started_at = time.monotonic()
         try:
             llm_response = await self.llm_service.generate(
                 message=final_message,
@@ -1703,17 +1567,46 @@ class ChatService:
                 model_override=payload.model_override,
             )
         except LLMServiceError as exc:
-            self._log(
-                logging.WARNING,
-                "chat.llm_error",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                error=str(exc),
-            )
+            llm_latency_ms = (time.monotonic() - llm_started_at) * 1000
             # Soft-fail in dev so frontend keeps moving while LLM infra is still unstable.
             fallback = translate("error.llm_unavailable", language, error=str(exc))
+            await self._emit_query_log(
+                payload=payload,
+                conversation_id=conversation_id,
+                query_id=query_id,
+                language=language,
+                raw_query=original_message,
+                resolved_query=rewritten_query,
+                lexical_query=retrieval_request.get("lexical_query"),
+                embedding_query=retrieval_request.get("query_text"),
+                route=str(router_decision.get("mode")),
+                retrieval_mode=("hybrid_text" if router_decision.get("mode") == "rag" else "none"),
+                filters_applied={
+                    "filters": effective_filters,
+                    "sort": effective_sort,
+                    "temporal_query": retrieval_request.get("temporal_query"),
+                    "tour_scope": retrieval_request.get("tour_scope"),
+                },
+                boosts_applied=self._text_boosts_applied_for_log(
+                    router_decision=router_decision,
+                    retrieval_request=retrieval_request,
+                ),
+                retrieved_artifacts=self._log_retrieved_artifact_entries(retrieved_docs, source="hybrid"),
+                shown_artifacts=self._log_shown_artifact_entries(paged_artifact_results),
+                navigation_targets=self._log_navigation_target_entries(
+                    navigation_targets=paged_navigation_targets,
+                    artifact_results=paged_artifact_results,
+                ),
+                latency_retrieval_ms=retrieval_latency_ms,
+                latency_llm_ms=llm_latency_ms,
+                latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+                status="error",
+                error=str(exc),
+                opensearch_query=retrieval_request.get("opensearch_query"),
+            )
             return ChatMessageResponse(
                 conversation_id=conversation_id,
+                query_id=query_id,
                 response_format=requested_format,
                 reply=fallback,
                 model_hint=payload.model_override
@@ -1727,30 +1620,13 @@ class ChatService:
                 results_has_more=results_has_more,
                 results_request_id=results_request_id,
             )
+        llm_latency_ms = (time.monotonic() - llm_started_at) * 1000
 
         reply_docs = self._artifact_results_as_prompt_docs(paged_artifact_results) or retrieved_docs
-        self._log(
-            logging.INFO,
-            "chat.reply",
-            conversation_id=conversation_id,
-            model=llm_response.model,
-            reply_chars=len(llm_response.text),
-        )
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
             docs=reply_docs,
             language=language,
-        )
-        if final_reply_text != llm_response.text:
-            self._log(
-                logging.INFO,
-                "chat.reply_sanitized",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-            )
-        selected_from_reply = self._infer_selected_artifact_from_reply(
-            reply_text=final_reply_text,
-            docs=reply_docs,
         )
 
         if not carry_filters:
@@ -1759,11 +1635,9 @@ class ChatService:
             state.sort = {}
 
         self._apply_router_decision_to_state(state=state, router_decision=router_decision)
-        self._update_result_selection_state(
+        self._update_last_result_ids(
             state=state,
             artifact_docs=retrieved_docs,
-            effective_filters=effective_filters,
-            hinted_selected_artifact_id=selected_from_reply,
             preserve_existing_when_empty=bool(router_decision.get("use_history_for_query", False)),
         )
         self.session_store.append_turn(state, role="assistant", text=final_reply_text)
@@ -1774,11 +1648,46 @@ class ChatService:
             router_decision=router_decision,
         )
         self.session_store.save(state)
-        self._log_state_after_reply(state)
         await self._emit_status(status_cb, "status.answer_ready", language=language)
+
+        await self._emit_query_log(
+            payload=payload,
+            conversation_id=conversation_id,
+            query_id=query_id,
+            language=language,
+            raw_query=original_message,
+            resolved_query=rewritten_query,
+            lexical_query=retrieval_request.get("lexical_query"),
+            embedding_query=retrieval_request.get("query_text"),
+            route=str(router_decision.get("mode")),
+            retrieval_mode=("hybrid_text" if router_decision.get("mode") == "rag" else "none"),
+            filters_applied={
+                "filters": effective_filters,
+                "sort": effective_sort,
+                "temporal_query": retrieval_request.get("temporal_query"),
+                "tour_scope": retrieval_request.get("tour_scope"),
+            },
+            boosts_applied=self._text_boosts_applied_for_log(
+                router_decision=router_decision,
+                retrieval_request=retrieval_request,
+            ),
+            retrieved_artifacts=self._log_retrieved_artifact_entries(retrieved_docs, source="hybrid"),
+            shown_artifacts=self._log_shown_artifact_entries(paged_artifact_results),
+            navigation_targets=self._log_navigation_target_entries(
+                navigation_targets=paged_navigation_targets,
+                artifact_results=paged_artifact_results,
+            ),
+            latency_retrieval_ms=retrieval_latency_ms,
+            latency_llm_ms=llm_latency_ms,
+            latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+            status="ok",
+            error=None,
+            opensearch_query=retrieval_request.get("opensearch_query"),
+        )
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
+            query_id=query_id,
             response_format=llm_response.response_format,
             reply=final_reply_text,
             reply_json=llm_response.parsed_json,
@@ -1842,6 +1751,10 @@ class ChatService:
     ) -> ChatMessageResponse:
         conversation_id = payload.conversation_id or str(uuid4())
         requested_format = payload.response_format or ResponseFormatObject(type="text")
+        query_id = str(uuid4())
+        request_started_at = time.monotonic()
+        retrieval_latency_ms: float | None = None
+        llm_latency_ms: float | None = None
         explicit_museum_id = self._resolve_explicit_museum_id_values(
             museum_id=payload.museum_id,
             metadata=payload.metadata,
@@ -1860,24 +1773,6 @@ class ChatService:
             "message.default_image_query",
             language,
         )
-        self._log(
-            logging.INFO,
-            "chat.receive_image",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            museum_id=museum_id,
-            response_format=requested_format.type,
-            image_filename=image_filename,
-            image_content_type=image_content_type,
-            image_bytes=len(image_bytes),
-        )
-        if self.settings.LOG_CHAT_MESSAGES:
-            self._log(
-                logging.DEBUG,
-                "chat.receive_message",
-                conversation_id=conversation_id,
-                text=user_message,
-            )
 
         self.session_store.append_turn(state, role="user", text=user_message)
         await self._emit_status(status_cb, "status.analyzing_image", language=language)
@@ -1887,31 +1782,41 @@ class ChatService:
         artifact_results: list[ArtifactResult] = []
         navigation_targets: list[TourNavigationTarget] = []
         image_results_total = 0
+        image_opensearch_query: dict[str, Any] | None = None
+        retrieval_started_at = time.monotonic()
         try:
             image_embedding = await self.embedding_provider.embed_multimodal_image_bytes(
                 image_bytes=image_bytes,
                 text=None,
             )
-            self._log(
-                logging.INFO,
-                "chat.image_embedding_ready",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-                image_embedding_dim=len(image_embedding),
-            )
         except Exception as exc:
-            self._log(
-                logging.WARNING,
-                "chat.image_retrieve_error",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-                reason=f"image_embedding_failed: {exc}",
-            )
+            retrieval_latency_ms = (time.monotonic() - retrieval_started_at) * 1000
             fallback = translate("error.image_processing_failed", language)
+            await self._emit_query_log(
+                payload=payload,
+                conversation_id=conversation_id,
+                query_id=query_id,
+                language=language,
+                raw_query=user_message,
+                resolved_query=user_message,
+                lexical_query=None,
+                embedding_query=None,
+                route="image_search",
+                retrieval_mode="image_similarity",
+                filters_applied={"filters": dict(state.filters), "sort": dict(state.sort)},
+                boosts_applied={"image_in_tour_boost": self.settings.IMAGE_IN_TOUR_BOOST},
+                retrieved_artifacts=[],
+                shown_artifacts=[],
+                navigation_targets=[],
+                latency_retrieval_ms=retrieval_latency_ms,
+                latency_llm_ms=None,
+                latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+                status="error",
+                error=str(exc),
+            )
             return ChatMessageResponse(
                 conversation_id=conversation_id,
+                query_id=query_id,
                 response_format=requested_format,
                 reply=fallback,
                 model_hint=payload.model_override or self.settings.llm_model_resolved,
@@ -1936,21 +1841,13 @@ class ChatService:
                 page_size=image_candidates_k,
                 retrieval_window_size=image_retrieval_window_size,
             )
+            image_opensearch_query = image_page.query_body
             image_hits = image_page.results
             image_results_total = self._bounded_retrieval_total(
                 image_page.total,
                 image_retrieval_window_size,
             )
         except Exception as exc:
-            self._log(
-                logging.ERROR,
-                "chat.image_retrieve_error",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-                reason=f"image_search_failed: {exc}",
-            )
-            logger.exception("chat.image_retrieve_error exception")
             image_hits = []
 
         if image_hits:
@@ -1963,15 +1860,6 @@ class ChatService:
                     top_k=image_candidates_k,
                 )
             except Exception as exc:
-                self._log(
-                    logging.ERROR,
-                    "chat.image_retrieve_error",
-                    conversation_id=conversation_id,
-                    museum_slug=payload.museum_slug,
-                    museum_id=museum_id,
-                    reason=f"artifact_fetch_failed: {exc}",
-                )
-                logger.exception("chat.image_retrieve_error exception")
                 artifact_docs = []
 
             image_matches = self._build_image_matches(image_hits=image_hits, artifact_docs=artifact_docs)
@@ -1981,29 +1869,14 @@ class ChatService:
                 language=language,
                 artifact_count=len(artifact_docs),
             )
-            self._log(
-                logging.INFO,
-                "chat.image_retrieve",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-                image_hits=len(image_hits),
-                artifact_docs=len(artifact_docs),
-            )
         else:
-            self._log(
-                logging.INFO,
-                "chat.image_retrieve_empty",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-            )
             await self._emit_status(
                 status_cb,
                 "status.artifacts_found",
                 language=language,
                 artifact_count=0,
             )
+        retrieval_latency_ms = (time.monotonic() - retrieval_started_at) * 1000
 
         artifact_results = await self._build_artifact_results(
             museum_slug=payload.museum_slug,
@@ -2023,14 +1896,6 @@ class ChatService:
             artifact_results=artifact_results,
             navigation_targets=navigation_targets,
         )
-        if navigation_targets:
-            self._log(
-                logging.INFO,
-                "chat.navigation_targets",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                targets=[target.model_dump(exclude_none=True) for target in navigation_targets],
-            )
         (
             paged_artifact_results,
             paged_image_matches,
@@ -2055,6 +1920,7 @@ class ChatService:
                 "image_embedding": image_embedding,
                 "retrieval_window_size": image_retrieval_window_size,
                 "results_total": image_results_total,
+                "opensearch_query": image_opensearch_query,
             },
         )
         results_request_id = str(
@@ -2099,6 +1965,7 @@ class ChatService:
         )
         await self._emit_status(status_cb, "status.generating_final_answer", language=language)
 
+        llm_started_at = time.monotonic()
         try:
             llm_response = await self.llm_service.generate(
                 message=final_message,
@@ -2107,16 +1974,37 @@ class ChatService:
                 model_override=payload.model_override,
             )
         except LLMServiceError as exc:
-            self._log(
-                logging.WARNING,
-                "chat.llm_error",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                error=str(exc),
-            )
+            llm_latency_ms = (time.monotonic() - llm_started_at) * 1000
             fallback = translate("error.llm_unavailable", language, error=str(exc))
+            await self._emit_query_log(
+                payload=payload,
+                conversation_id=conversation_id,
+                query_id=query_id,
+                language=language,
+                raw_query=user_message,
+                resolved_query=user_message,
+                lexical_query=None,
+                embedding_query=None,
+                route="image_search",
+                retrieval_mode="image_similarity",
+                filters_applied={"filters": effective_filters, "sort": effective_sort},
+                boosts_applied={"image_in_tour_boost": self.settings.IMAGE_IN_TOUR_BOOST},
+                retrieved_artifacts=self._log_retrieved_artifact_entries(artifact_docs, source="image"),
+                shown_artifacts=self._log_shown_artifact_entries(paged_artifact_results),
+                navigation_targets=self._log_navigation_target_entries(
+                    navigation_targets=paged_navigation_targets,
+                    artifact_results=paged_artifact_results,
+                ),
+                latency_retrieval_ms=retrieval_latency_ms,
+                latency_llm_ms=llm_latency_ms,
+                latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+                status="error",
+                error=str(exc),
+                opensearch_query=image_opensearch_query,
+            )
             return ChatMessageResponse(
                 conversation_id=conversation_id,
+                query_id=query_id,
                 response_format=requested_format,
                 reply=fallback,
                 model_hint=payload.model_override or self.settings.llm_model_resolved,
@@ -2129,38 +2017,19 @@ class ChatService:
                 results_has_more=results_has_more,
                 results_request_id=results_request_id,
             )
+        llm_latency_ms = (time.monotonic() - llm_started_at) * 1000
 
         reply_docs = self._artifact_results_as_prompt_docs(paged_artifact_results) or artifact_docs
-        self._log(
-            logging.INFO,
-            "chat.reply",
-            conversation_id=conversation_id,
-            model=llm_response.model,
-            reply_chars=len(llm_response.text),
-        )
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
             docs=reply_docs,
             language=language,
         )
-        if final_reply_text != llm_response.text:
-            self._log(
-                logging.INFO,
-                "chat.reply_sanitized",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-            )
-        selected_from_reply = self._infer_selected_artifact_from_reply(
-            reply_text=final_reply_text,
-            docs=reply_docs,
-        )
 
         self._apply_router_decision_to_state(state=state, router_decision=router_decision)
-        self._update_result_selection_state(
+        self._update_last_result_ids(
             state=state,
             artifact_docs=artifact_docs,
-            effective_filters=None,
-            hinted_selected_artifact_id=selected_from_reply,
         )
         self.session_store.append_turn(state, role="assistant", text=final_reply_text)
         self._update_rolling_summary(
@@ -2170,11 +2039,38 @@ class ChatService:
             router_decision=router_decision,
         )
         self.session_store.save(state)
-        self._log_state_after_reply(state)
         await self._emit_status(status_cb, "status.answer_ready", language=language)
+
+        await self._emit_query_log(
+            payload=payload,
+            conversation_id=conversation_id,
+            query_id=query_id,
+            language=language,
+            raw_query=user_message,
+            resolved_query=user_message,
+            lexical_query=None,
+            embedding_query=None,
+            route="image_search",
+            retrieval_mode="image_similarity",
+            filters_applied={"filters": effective_filters, "sort": effective_sort},
+            boosts_applied={"image_in_tour_boost": self.settings.IMAGE_IN_TOUR_BOOST},
+            retrieved_artifacts=self._log_retrieved_artifact_entries(artifact_docs, source="image"),
+            shown_artifacts=self._log_shown_artifact_entries(paged_artifact_results),
+            navigation_targets=self._log_navigation_target_entries(
+                navigation_targets=paged_navigation_targets,
+                artifact_results=paged_artifact_results,
+            ),
+            latency_retrieval_ms=retrieval_latency_ms,
+            latency_llm_ms=llm_latency_ms,
+            latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+            status="ok",
+            error=None,
+            opensearch_query=image_opensearch_query,
+        )
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
+            query_id=query_id,
             response_format=llm_response.response_format,
             reply=final_reply_text,
             reply_json=llm_response.parsed_json,
@@ -2200,6 +2096,10 @@ class ChatService:
     ) -> ChatMessageResponse:
         conversation_id = payload.conversation_id or str(uuid4())
         requested_format = payload.response_format or ResponseFormatObject(type="text")
+        query_id = str(uuid4())
+        request_started_at = time.monotonic()
+        retrieval_latency_ms: float | None = None
+        llm_latency_ms: float | None = None
         explicit_museum_id = self._resolve_explicit_museum_id_values(
             museum_id=payload.museum_id,
             metadata=payload.metadata,
@@ -2218,24 +2118,6 @@ class ChatService:
             "message.default_model_query",
             language,
         )
-        self._log(
-            logging.INFO,
-            "chat.receive_model",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            museum_id=museum_id,
-            response_format=requested_format.type,
-            model_filename=model_filename,
-            model_content_type=model_content_type,
-            model_bytes=len(model_bytes),
-        )
-        if self.settings.LOG_CHAT_MESSAGES:
-            self._log(
-                logging.DEBUG,
-                "chat.receive_message",
-                conversation_id=conversation_id,
-                text=user_message,
-            )
 
         self.session_store.append_turn(state, role="user", text=user_message)
         await self._emit_status(status_cb, "status.preparing_model", language=language)
@@ -2247,7 +2129,9 @@ class ChatService:
         file_name = (model_filename or "model.glb").strip() or "model.glb"
         model_results_total = 0
         model_image_embeddings: list[list[float]] = []
+        model_opensearch_query: dict[str, Any] | None = None
 
+        retrieval_started_at = time.monotonic()
         try:
             retrieval_result = await self.model_retrieval_service.retrieve(
                 museum_slug=payload.museum_slug,
@@ -2265,49 +2149,48 @@ class ChatService:
             artifact_docs = retrieval_result.artifact_docs
             model_results_total = retrieval_result.image_hits_total
             model_image_embeddings = retrieval_result.image_embeddings
+            model_opensearch_query = retrieval_result.opensearch_query
             image_matches = self._build_image_matches(
                 image_hits=retrieval_result.image_hits,
                 artifact_docs=artifact_docs,
             )
             if retrieval_result.image_hits:
-                self._log(
-                    logging.INFO,
-                    "chat.model_retrieve",
-                    conversation_id=conversation_id,
-                    museum_slug=payload.museum_slug,
-                    museum_id=museum_id,
-                    image_hits=len(retrieval_result.image_hits),
-                    image_hits_total=retrieval_result.image_hits_total,
-                    artifact_docs=len(artifact_docs),
-                    extra_views_used=retrieval_result.extra_views_used,
-                    top_score=retrieval_result.top_score,
-                )
+                pass
             else:
-                self._log(
-                    logging.INFO,
-                    "chat.model_retrieve_empty",
-                    conversation_id=conversation_id,
-                    museum_slug=payload.museum_slug,
-                    museum_id=museum_id,
-                    extra_views_used=retrieval_result.extra_views_used,
-                )
+                pass
         except Exception as exc:
-            self._log(
-                logging.ERROR,
-                "chat.model_retrieve_error",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-                reason=str(exc),
-            )
-            logger.exception("chat.model_retrieve_error exception")
+            retrieval_latency_ms = (time.monotonic() - retrieval_started_at) * 1000
             fallback = translate("error.model_processing_failed", language)
+            await self._emit_query_log(
+                payload=payload,
+                conversation_id=conversation_id,
+                query_id=query_id,
+                language=language,
+                raw_query=user_message,
+                resolved_query=user_message,
+                lexical_query=None,
+                embedding_query=None,
+                route="model_search",
+                retrieval_mode="model_multiview_similarity",
+                filters_applied={"filters": dict(state.filters), "sort": dict(state.sort)},
+                boosts_applied={"image_in_tour_boost": self.settings.IMAGE_IN_TOUR_BOOST},
+                retrieved_artifacts=[],
+                shown_artifacts=[],
+                navigation_targets=[],
+                latency_retrieval_ms=retrieval_latency_ms,
+                latency_llm_ms=None,
+                latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+                status="error",
+                error=str(exc),
+            )
             return ChatMessageResponse(
                 conversation_id=conversation_id,
+                query_id=query_id,
                 response_format=requested_format,
                 reply=fallback,
                 model_hint=payload.model_override or self.settings.llm_model_resolved,
             )
+        retrieval_latency_ms = (time.monotonic() - retrieval_started_at) * 1000
 
         await self._emit_status(
             status_cb,
@@ -2334,14 +2217,6 @@ class ChatService:
             artifact_results=artifact_results,
             navigation_targets=navigation_targets,
         )
-        if navigation_targets:
-            self._log(
-                logging.INFO,
-                "chat.navigation_targets",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                targets=[target.model_dump(exclude_none=True) for target in navigation_targets],
-            )
         (
             paged_artifact_results,
             paged_image_matches,
@@ -2366,6 +2241,7 @@ class ChatService:
                 "image_embeddings": model_image_embeddings,
                 "retrieval_window_size": retrieval_result.retrieval_window_size,
                 "results_total": model_results_total,
+                "opensearch_query": model_opensearch_query,
             },
         )
         results_request_id = str(
@@ -2410,6 +2286,7 @@ class ChatService:
         )
         await self._emit_status(status_cb, "status.generating_final_answer", language=language)
 
+        llm_started_at = time.monotonic()
         try:
             llm_response = await self.llm_service.generate(
                 message=final_message,
@@ -2418,16 +2295,37 @@ class ChatService:
                 model_override=payload.model_override,
             )
         except LLMServiceError as exc:
-            self._log(
-                logging.WARNING,
-                "chat.llm_error",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                error=str(exc),
-            )
+            llm_latency_ms = (time.monotonic() - llm_started_at) * 1000
             fallback = translate("error.llm_unavailable", language, error=str(exc))
+            await self._emit_query_log(
+                payload=payload,
+                conversation_id=conversation_id,
+                query_id=query_id,
+                language=language,
+                raw_query=user_message,
+                resolved_query=user_message,
+                lexical_query=None,
+                embedding_query=None,
+                route="model_search",
+                retrieval_mode="model_multiview_similarity",
+                filters_applied={"filters": effective_filters, "sort": effective_sort},
+                boosts_applied={"image_in_tour_boost": self.settings.IMAGE_IN_TOUR_BOOST},
+                retrieved_artifacts=self._log_retrieved_artifact_entries(artifact_docs, source="model"),
+                shown_artifacts=self._log_shown_artifact_entries(paged_artifact_results),
+                navigation_targets=self._log_navigation_target_entries(
+                    navigation_targets=paged_navigation_targets,
+                    artifact_results=paged_artifact_results,
+                ),
+                latency_retrieval_ms=retrieval_latency_ms,
+                latency_llm_ms=llm_latency_ms,
+                latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+                status="error",
+                error=str(exc),
+                opensearch_query=model_opensearch_query,
+            )
             return ChatMessageResponse(
                 conversation_id=conversation_id,
+                query_id=query_id,
                 response_format=requested_format,
                 reply=fallback,
                 model_hint=payload.model_override or self.settings.llm_model_resolved,
@@ -2440,38 +2338,19 @@ class ChatService:
                 results_has_more=results_has_more,
                 results_request_id=results_request_id,
             )
+        llm_latency_ms = (time.monotonic() - llm_started_at) * 1000
 
         reply_docs = self._artifact_results_as_prompt_docs(paged_artifact_results) or artifact_docs
-        self._log(
-            logging.INFO,
-            "chat.reply",
-            conversation_id=conversation_id,
-            model=llm_response.model,
-            reply_chars=len(llm_response.text),
-        )
         final_reply_text = self._sanitize_assistant_reply(
             llm_response.text,
             docs=reply_docs,
             language=language,
         )
-        if final_reply_text != llm_response.text:
-            self._log(
-                logging.INFO,
-                "chat.reply_sanitized",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-            )
-        selected_from_reply = self._infer_selected_artifact_from_reply(
-            reply_text=final_reply_text,
-            docs=reply_docs,
-        )
 
         self._apply_router_decision_to_state(state=state, router_decision=router_decision)
-        self._update_result_selection_state(
+        self._update_last_result_ids(
             state=state,
             artifact_docs=artifact_docs,
-            effective_filters=None,
-            hinted_selected_artifact_id=selected_from_reply,
         )
         self.session_store.append_turn(state, role="assistant", text=final_reply_text)
         self._update_rolling_summary(
@@ -2481,11 +2360,38 @@ class ChatService:
             router_decision=router_decision,
         )
         self.session_store.save(state)
-        self._log_state_after_reply(state)
         await self._emit_status(status_cb, "status.answer_ready", language=language)
+
+        await self._emit_query_log(
+            payload=payload,
+            conversation_id=conversation_id,
+            query_id=query_id,
+            language=language,
+            raw_query=user_message,
+            resolved_query=user_message,
+            lexical_query=None,
+            embedding_query=None,
+            route="model_search",
+            retrieval_mode="model_multiview_similarity",
+            filters_applied={"filters": effective_filters, "sort": effective_sort},
+            boosts_applied={"image_in_tour_boost": self.settings.IMAGE_IN_TOUR_BOOST},
+            retrieved_artifacts=self._log_retrieved_artifact_entries(artifact_docs, source="model"),
+            shown_artifacts=self._log_shown_artifact_entries(paged_artifact_results),
+            navigation_targets=self._log_navigation_target_entries(
+                navigation_targets=paged_navigation_targets,
+                artifact_results=paged_artifact_results,
+            ),
+            latency_retrieval_ms=retrieval_latency_ms,
+            latency_llm_ms=llm_latency_ms,
+            latency_total_ms=(time.monotonic() - request_started_at) * 1000,
+            status="ok",
+            error=None,
+            opensearch_query=model_opensearch_query,
+        )
 
         return ChatMessageResponse(
             conversation_id=conversation_id,
+            query_id=query_id,
             response_format=llm_response.response_format,
             reply=final_reply_text,
             reply_json=llm_response.parsed_json,
@@ -2500,370 +2406,72 @@ class ChatService:
             results_request_id=results_request_id,
         )
 
-    def _build_structured_query_schema(self, *, museum_id: str | None) -> QuerySchema:
-        fields = {
-            "artifact_id": QuerySchemaField(type="keyword", facetable=True),
-            "museum_id": QuerySchemaField(type="keyword", facetable=True),
-            "inventory_number": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "inventory_number.text": QuerySchemaField(type="text", text=True),
-            "title": QuerySchemaField(type="text", text=True, semantic=True),
-            "title.keyword": QuerySchemaField(type="keyword", facetable=True),
-            "description": QuerySchemaField(type="text", text=True, semantic=True),
-            "search_text": QuerySchemaField(type="text", text=True, semantic=True),
-            "category": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "category.text": QuerySchemaField(type="text", text=True),
-            "super_category": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "super_category.text": QuerySchemaField(type="text", text=True),
-            "support_or_material": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "support_or_material.text": QuerySchemaField(type="text", text=True),
-            "technique": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "technique.text": QuerySchemaField(type="text", text=True),
-            "creator": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "creator.text": QuerySchemaField(type="text", text=True),
-            "date_or_period": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "date_or_period.text": QuerySchemaField(type="text", text=True),
-            "origin_history": QuerySchemaField(type="text", text=True),
-            "production_center": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "production_center.text": QuerySchemaField(type="text", text=True),
-            "incorporation": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "incorporation.text": QuerySchemaField(type="text", text=True),
-            "museum": QuerySchemaField(type="keyword", facetable=True, text=True),
-            "museum.text": QuerySchemaField(type="text", text=True),
-            "detail_type": QuerySchemaField(type="keyword", facetable=True),
+    def _is_obvious_greeting_or_smalltalk(self, message: str) -> bool:
+        greetings = {
+            "ola",
+            "olá",
+            "oi",
+            "bom dia",
+            "boa tarde",
+            "boa noite",
+            "tudo bem",
+            "como estas",
+            "como estás",
+            "hello",
+            "hi",
+            "hey",
+            "good morning",
+            "good afternoon",
+            "good evening",
+            "how are you",
         }
-        default_filters: list[TermFilter] = []
-        if museum_id:
-            default_filters.append(TermFilter(kind="term", field="museum_id", value=museum_id))
+        folded_message = self._fold_query_text(message)
+        folded_greetings = {
+            self._fold_query_text(greeting)
+            for greeting in greetings
+        }
+        return bool(folded_message and folded_message in folded_greetings)
 
-        return QuerySchema(
-            index_name=self.settings.OPENSEARCH_INDEX_ARTIFACT,
-            fields=fields,
-            facetable_fields=[
-                "museum_id",
-                "museum",
-                "category",
-                "super_category",
-                "support_or_material",
-                "technique",
-                "creator",
-                "date_or_period",
-                "production_center",
-                "incorporation",
-                "detail_type",
-                "title.keyword",
-                "inventory_number",
-            ],
-            text_fields=[
-                "search_text",
-                "title",
-                "description",
-                "inventory_number",
-                "inventory_number.text",
-                "category.text",
-                "super_category.text",
-                "support_or_material.text",
-                "technique.text",
-                "creator.text",
-                "date_or_period.text",
-                "origin_history",
-                "production_center.text",
-                "incorporation.text",
-                "museum.text",
-            ],
-            semantic_fields=["search_text", "title", "description"],
-            default_filters=default_filters,
-        )
-
-    async def _try_handle_structured_query(
+    def _fallback_router_decision(
         self,
+        message: str,
         *,
-        payload: ChatMessageRequest,
-        state: ChatSessionState,
-        conversation_id: str,
-        requested_format: ResponseFormatObject,
-        status_cb: StatusCallback | None,
-    ) -> ChatMessageResponse | None:
-        if not self.settings.CHAT_ENABLE_STRUCTURED_QUERY_PLANNING:
-            return None
+        context_policy: dict[str, object],
+    ) -> dict[str, object]:
+        if self._is_obvious_greeting_or_smalltalk(message):
+            return {
+                "mode": "llm_only",
+                "intent": "fallback",
+                "rewritten_query": message,
+                "needs_retrieval": False,
+                "reason": "router_unavailable_deterministic_fallback_llm_only",
+                "is_follow_up": bool(context_policy.get("is_follow_up", False)),
+                "use_history_for_query": False,
+                "use_history_for_answer": bool(
+                    context_policy.get("use_history_for_answer", False)
+                ),
+                "carry_filters": False,
+                "carry_sort": False,
+                "filters_delta": {},
+                "sort_delta": {},
+            }
 
-        museum_id = self._resolve_museum_id(payload)
-        schema = self._build_structured_query_schema(museum_id=museum_id)
-        mode = classify_query(payload.message, schema)
-        self._log(
-            logging.INFO,
-            "chat.structured.classify",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            mode=mode,
-            question=payload.message,
-        )
-        if mode != "structured":
-            return None
-
-        language = normalize_language(state.language)
-        await self._emit_status(
-            status_cb,
-            "status.interpreting_analytics_request",
-            language=language,
-        )
-        try:
-            plan = await plan_query(
-                payload.message,
-                schema,
-                llm_service=self.llm_service,
-                model_override=payload.model_override,
-            )
-        except QueryPlanningError as exc:
-            self._log(
-                logging.WARNING,
-                "chat.structured.fallback",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                reason=f"planner_error: {exc}",
-            )
-            return None
-
-        self._log(
-            logging.INFO,
-            "chat.structured.plan",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            operation=plan.operation,
-            confidence=plan.confidence,
-            plan=plan.model_dump(mode="json"),
-        )
-        if plan.confidence < self.settings.CHAT_ANALYTICS_PLANNER_MIN_CONFIDENCE:
-            self._log(
-                logging.INFO,
-                "chat.structured.fallback",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                reason=f"low_confidence:{plan.confidence}",
-            )
-            return None
-
-        if plan.operation == "list":
-            if plan.list_spec is None:
-                plan.list_spec = ListSpec(limit=self.settings.CHAT_ANALYTICS_LIST_TOP_K)
-            else:
-                plan.list_spec.limit = min(
-                    plan.list_spec.limit,
-                    max(self.settings.CHAT_ANALYTICS_LIST_TOP_K, 1),
-                )
-
-        try:
-            dsl = compile_query(plan, schema)
-        except QueryCompileError as exc:
-            self._log(
-                logging.WARNING,
-                "chat.structured.fallback",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                reason=f"compile_error: {exc}",
-            )
-            return None
-
-        if plan.operation == "list":
-            dsl = dsl.model_copy(deep=True)
-            dsl.body["track_total_hits"] = True
-
-        await self._emit_status(status_cb, "status.querying_collection", language=language)
-        try:
-            result = await self.opensearch_gateway.execute_structured_query(
-                plan=plan,
-                dsl=dsl,
-            )
-        except Exception as exc:
-            self._log(
-                logging.WARNING,
-                "chat.structured.fallback",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                reason=f"execute_error: {exc}",
-            )
-            return None
-
-        self._log(
-            logging.INFO,
-            "chat.structured.execute",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            operation=plan.operation,
-            total=result.total,
-            count=result.count,
-            exists=result.exists,
-            items=len(result.items),
-            groups=len(result.groups),
-        )
-
-        final_reply_text = self._format_structured_reply(
-            plan=plan,
-            result=result,
-            language=language,
-        )
-        self._log(
-            logging.INFO,
-            "chat.structured.reply",
-            conversation_id=conversation_id,
-            museum_slug=payload.museum_slug,
-            operation=plan.operation,
-            reply_chars=len(final_reply_text),
-        )
-
-        docs_for_navigation = result.items if plan.operation == "list" else []
-        navigation_targets = self._resolve_navigation_targets(
-            museum_slug=payload.museum_slug,
-            museum_id=museum_id,
-            docs=docs_for_navigation,
-        )
-        if navigation_targets:
-            self._log(
-                logging.INFO,
-                "chat.navigation_targets",
-                conversation_id=conversation_id,
-                museum_slug=payload.museum_slug,
-                targets=[target.model_dump(exclude_none=True) for target in navigation_targets],
-            )
-
-        router_decision: dict[str, object] = {
-            "mode": "structured",
-            "intent": f"analytics_{plan.operation}",
+        return {
+            "mode": "rag",
+            "intent": "search",
+            "rewritten_query": message,
+            "needs_retrieval": True,
+            "reason": "router_unavailable_deterministic_fallback_rag",
+            "is_follow_up": bool(context_policy.get("is_follow_up", False)),
+            "use_history_for_query": False,
+            "use_history_for_answer": bool(
+                context_policy.get("use_history_for_answer", False)
+            ),
+            "carry_filters": False,
+            "carry_sort": False,
             "filters_delta": {},
             "sort_delta": {},
         }
-        self._apply_router_decision_to_state(state=state, router_decision=router_decision)
-        if plan.operation == "list":
-            self._update_result_selection_state(
-                state=state,
-                artifact_docs=result.items,
-                effective_filters=None,
-            )
-        self.session_store.append_turn(state, role="assistant", text=final_reply_text)
-        self._update_rolling_summary(
-            state=state,
-            latest_user_message=payload.message,
-            latest_assistant_message=final_reply_text,
-            router_decision=router_decision,
-        )
-        self.session_store.save(state)
-        self._log_state_after_reply(state)
-        await self._emit_status(status_cb, "status.answer_ready", language=language)
-
-        reply_json_payload: dict[str, object] | None = None
-        if requested_format.type == "json_object":
-            reply_json_payload = {
-                "operation": result.operation,
-                "count": result.count,
-                "exists": result.exists,
-                "total": result.total,
-                "items": result.items,
-                "groups": [bucket.model_dump(mode="json") for bucket in result.groups],
-            }
-        artifact_results: list[ArtifactResult] = []
-        if plan.operation == "list":
-            artifact_results = await self._build_artifact_results(
-                museum_slug=payload.museum_slug,
-                museum_id=museum_id,
-                artifact_docs=result.items,
-            )
-        (
-            paged_artifact_results,
-            paged_image_matches,
-            paged_navigation_targets,
-            results_page,
-            results_page_size,
-            results_total,
-            results_has_more,
-        ) = self._build_paged_results(
-            state=state,
-            artifact_results=artifact_results,
-            image_matches=[],
-            navigation_targets=navigation_targets,
-            page=payload.results_page,
-            page_size=payload.results_page_size,
-            default_page_size=max(
-                self.settings.CHAT_ANALYTICS_LIST_TOP_K,
-                self.settings.CHAT_RETRIEVAL_TOP_K,
-                1,
-            ),
-            total_override=(int(result.total or 0) if plan.operation == "list" else None),
-            retrieval_request=(
-                {
-                    "kind": "structured_list",
-                    "museum_id": museum_id,
-                    "plan": plan.model_dump(mode="json"),
-                    "dsl": dsl.model_dump(mode="json"),
-                    "results_total": int(result.total or 0),
-                }
-                if plan.operation == "list"
-                else None
-            ),
-        )
-        results_request_id = str(
-            state.last_paged_retrieval_request.get("results_request_id") or ""
-        ).strip() or None
-        self.session_store.save(state)
-
-        return ChatMessageResponse(
-            conversation_id=conversation_id,
-            response_format=requested_format,
-            reply=final_reply_text,
-            reply_json=reply_json_payload,
-            model_hint="structured_query_executor",
-            image_matches=paged_image_matches,
-            artifact_results=paged_artifact_results,
-            navigation_targets=paged_navigation_targets,
-            results_page=results_page,
-            results_page_size=results_page_size,
-            results_total=results_total,
-            results_has_more=results_has_more,
-            results_request_id=results_request_id,
-        )
-
-    def _format_structured_reply(
-        self,
-        *,
-        plan: QueryPlan,
-        result: QueryExecutionResult,
-        language: str | None = None,
-    ) -> str:
-        if plan.operation == "count":
-            count = int(result.count or 0)
-            return translate("structured.count", language, count=count)
-
-        if plan.operation == "exists":
-            if result.exists:
-                return translate("structured.exists.yes", language)
-            return translate("structured.exists.no", language)
-
-        if plan.operation == "list":
-            if not result.items:
-                return translate("structured.list.empty", language)
-            lines = [translate("structured.list.header", language)]
-            inventory_label = translate("structured.list.inventory_prefix", language)
-            for index, item in enumerate(result.items, start=1):
-                title = str(item.get("title") or "").strip()
-                inventory = self._doc_inventory(item)
-                if title and inventory:
-                    lines.append(f"{index}. {title} ({inventory})")
-                elif title:
-                    lines.append(f"{index}. {title}")
-                elif inventory:
-                    lines.append(f"{index}. {inventory_label} {inventory}")
-                else:
-                    lines.append(f"{index}. {translate('structured.list.untitled', language)}")
-            return "\n".join(lines)
-
-        if plan.operation == "group_by":
-            if not result.groups:
-                return translate("structured.group.empty", language)
-            lines = [translate("structured.group.header", language)]
-            for bucket in result.groups:
-                key = bucket.key.strip() or translate("structured.group.empty_key", language)
-                lines.append(f"- {key}: {bucket.doc_count}")
-            return "\n".join(lines)
-
-        return translate("structured.fallback", language)
 
     async def _route_message(
         self,
@@ -2931,15 +2539,17 @@ class ChatService:
         )
         conversation_state_aux: dict[str, object] = {
             "intent_prev": state.intent,
-            "selected_artifact_id": state.selected_artifact_id,
-            "last_result_ids": state.last_result_ids[:3],
             "history_size": len(state.history),
         }
         router_prompt = build_router_user_prompt(
             museum_slug=payload.museum_slug,
             museum_name=payload.museum_name,
             rolling_summary=state.rolling_summary if include_aux_context else "",
-            filters_state=state.filters,
+            filters_state={
+                key: value
+                for key, value in state.filters.items()
+                if key != "artifact_id"
+            },
             sort_state=state.sort,
             history_lines=history_lines,
             current_user_message=payload.message,
@@ -2987,6 +2597,14 @@ class ChatService:
             filters_delta = {}
         if not isinstance(sort_delta, dict):
             sort_delta = {}
+
+        if self._extract_tour_scope_expression(payload.message):
+            is_follow_up = False
+            use_history_for_query = False
+            carry_filters = False
+            carry_sort = False
+            filters_delta.pop("artifact_id", None)
+            reason = self._append_reason_tag(reason, "guardrail_tour_scope_query")
 
         if mode not in {"rag", "llm_only"}:
             mode = "llm_only"
@@ -3063,7 +2681,7 @@ class ChatService:
         guarded["carry_filters"] = True
         guarded["carry_sort"] = True
 
-        # Referential follow-up should stay in retrieval mode so state filters can be applied.
+        # Follow-up queries can still use non-artifact state filters.
         guarded["mode"] = "rag"
         guarded["needs_retrieval"] = True
 
@@ -3078,6 +2696,165 @@ class ChatService:
         )
         return guarded
 
+    def _inventory_candidate_variants(self, value: str) -> list[str]:
+        folded = self._fold_query_text(value)
+        compact = re.sub(r"[^a-z0-9]+", "", folded, flags=re.UNICODE)
+
+        variants: list[str] = []
+
+        def add(candidate: str) -> None:
+            cleaned = candidate.strip()
+            if cleaned and cleaned not in variants:
+                variants.append(cleaned)
+
+        add(folded)
+        for prefix in sorted(_INVENTORY_PREFIXES, key=len, reverse=True):
+            if not compact.startswith(prefix):
+                continue
+            suffix = compact[len(prefix):]
+            if suffix and re.search(r"\d", suffix):
+                add(f"{prefix} {suffix}")
+                break
+        add(compact)
+        return variants
+
+    def _looks_like_inventory_suffix(self, token: str) -> bool:
+        cleaned = str(token or "").strip()
+        return bool(cleaned and len(cleaned) <= 32 and re.search(r"\d", cleaned))
+
+    def _looks_like_common_year(self, token: str) -> bool:
+        cleaned = str(token or "").strip()
+        if not re.fullmatch(r"\d{4}", cleaned):
+            return False
+        year = int(cleaned)
+        return 1500 <= year <= 2099
+
+    def _add_inventory_candidate(
+        self,
+        candidates: list[str],
+        seen: set[str],
+        value: str,
+    ) -> None:
+        for candidate in self._inventory_candidate_variants(value):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    def _extract_inventory_candidates(self, query: str) -> list[str]:
+        folded = self._fold_query_text(query)
+        if not folded:
+            return []
+
+        tokens = folded.split()
+        prefix_set = set(_INVENTORY_PREFIXES)
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        for index, token in enumerate(tokens):
+            if token in prefix_set and index + 1 < len(tokens):
+                suffix = tokens[index + 1]
+                if self._looks_like_inventory_suffix(suffix):
+                    self._add_inventory_candidate(candidates, seen, f"{token} {suffix}")
+                continue
+
+            for prefix in sorted(_INVENTORY_PREFIXES, key=len, reverse=True):
+                if not token.startswith(prefix) or token == prefix:
+                    continue
+                suffix = token[len(prefix):]
+                if self._looks_like_inventory_suffix(suffix):
+                    self._add_inventory_candidate(candidates, seen, token)
+                break
+
+        for index, token in enumerate(tokens):
+            if token not in _ARTIFACT_REFERENCE_MARKERS:
+                continue
+            value_index = index + 1
+            if (
+                value_index < len(tokens)
+                and tokens[value_index] in _ARTIFACT_REFERENCE_NUMBER_CONNECTORS
+            ):
+                value_index += 1
+            if value_index >= len(tokens):
+                continue
+            value = tokens[value_index]
+            if not self._looks_like_inventory_suffix(value):
+                continue
+            if self._looks_like_common_year(value):
+                continue
+
+            parts = [value]
+            next_index = value_index + 1
+            if (
+                next_index < len(tokens)
+                and re.fullmatch(r"[a-z0-9]{1,6}", tokens[next_index])
+                and re.search(r"\d", tokens[next_index])
+            ):
+                parts.append(tokens[next_index])
+            self._add_inventory_candidate(candidates, seen, " ".join(parts))
+
+        for index in range(len(tokens)):
+            for marker in _EXPLICIT_INVENTORY_MARKERS:
+                marker_size = len(marker)
+                if tuple(tokens[index : index + marker_size]) != marker:
+                    continue
+                window_start = index + marker_size
+                window = tokens[window_start : window_start + 4]
+                for offset, token in enumerate(window):
+                    if token in prefix_set and offset + 1 < len(window):
+                        suffix = window[offset + 1]
+                        if self._looks_like_inventory_suffix(suffix):
+                            self._add_inventory_candidate(
+                                candidates,
+                                seen,
+                                f"{token} {suffix}",
+                            )
+                    elif self._looks_like_inventory_suffix(token):
+                        self._add_inventory_candidate(candidates, seen, token)
+                break
+
+        return candidates
+
+    async def _retrieve_inventory_context(
+        self,
+        *,
+        museum_slug: str,
+        museum_id: str | None,
+        raw_query: str,
+    ) -> tuple[str, int, list[dict[str, object]], dict[str, Any]] | None:
+        inventory_candidates = self._extract_inventory_candidates(raw_query)
+        if not inventory_candidates:
+            return None
+
+        top_k = min(max(self.settings.CHAT_RETRIEVAL_TOP_K, 1), 5)
+        try:
+            docs = await self.opensearch_gateway.search_artifacts_by_inventory_candidates(
+                museum_slug=museum_slug,
+                museum_id=museum_id,
+                inventory_numbers=inventory_candidates,
+                top_k=top_k,
+            )
+        except Exception:
+            return None
+
+        if not docs:
+            return None
+
+        docs_for_context = docs[:top_k]
+        context = self._format_docs_for_prompt(docs=docs_for_context, top_k=top_k)
+        retrieval_request = {
+            "kind": "inventory",
+            "museum_id": museum_id,
+            "original_query": raw_query,
+            "search_query": raw_query,
+            "query_text": raw_query,
+            "inventory_candidates": inventory_candidates,
+            "filters": {},
+            "sort": {},
+            "results_total": len(docs),
+        }
+        return context, len(docs), docs, retrieval_request
+
     async def _retrieve_context(
         self,
         *,
@@ -3089,6 +2866,14 @@ class ChatService:
         result_window_size: int | None = None,
     ) -> tuple[str, int, list[dict[str, object]], dict[str, Any]]:
         raw_query = (query or "").strip()
+        inventory_result = await self._retrieve_inventory_context(
+            museum_slug=museum_slug,
+            museum_id=museum_id,
+            raw_query=raw_query,
+        )
+        if inventory_result is not None:
+            return inventory_result
+
         temporal_query = await self._interpret_temporal_query(raw_query)
         tour_scope_expression = self._extract_tour_scope_expression(raw_query)
         retrieval_filters = self._merge_temporal_filter(filters, temporal_query)
@@ -3103,13 +2888,16 @@ class ChatService:
         )
         if not search_query:
             search_query = "objetos"
+        original_search_query = search_query
         lexical_query_fallback = self._build_lexical_query(
             query=search_query,
             museum_slug=museum_slug,
             museum_id=museum_id,
         )
+        # lexical_query is intentionally short and optimized for BM25.
         lexical_query = lexical_query_fallback
-        embedding_query = search_query
+        # embedding_query keeps the original/resolved natural-language request for semantic retrieval.
+        embedding_query = original_search_query
         query_rewrite_source = "heuristic"
 
         llm_lexical_query, _ = await self._rewrite_retrieval_query_with_llm(
@@ -3130,84 +2918,20 @@ class ChatService:
             )
         if llm_lexical_query:
             lexical_query = llm_lexical_query
-            embedding_query = llm_lexical_query
-            search_query = llm_lexical_query
             query_rewrite_source = "llm"
 
         temporal_filter_payload = self._temporal_query_filter_payload(temporal_query)
-        if temporal_filter_payload:
-            self._log(
-                logging.INFO,
-                "chat.temporal_query",
-                museum_slug=museum_slug,
-                museum_id=museum_id,
-                original_query=raw_query,
-                temporal_query=temporal_filter_payload,
-            )
 
         tour_scope_filter_payload = self._tour_scope_filter_payload(tour_scope_expression)
-        if tour_scope_filter_payload:
-            self._log(
-                logging.INFO,
-                "chat.tour_scope_filter",
-                museum_slug=museum_slug,
-                museum_id=museum_id,
-                original_query=raw_query,
-                tour_scope=tour_scope_filter_payload,
-            )
 
-        self._log(
-            logging.INFO,
-            "chat.retrieve_query_rewrite",
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            source=query_rewrite_source,
-            original_query=raw_query,
-            search_query=search_query,
-            lexical_query=lexical_query,
-            embedding_query=embedding_query,
-        )
-        self._log(
-            logging.INFO,
-            "chat.retrieve_prepare",
-            museum_slug=museum_slug,
-            museum_id=museum_id,
-            original_query=raw_query,
-            search_query=search_query,
-            embedding_query=embedding_query,
-            lexical_query=lexical_query,
-            filters=retrieval_filters,
-            sort=sort,
-        )
         if self.settings.CHAT_USE_QUERY_EMBEDDINGS:
             try:
                 query_embedding = await self.embedding_provider.embed_text(embedding_query)
-                self._log(
-                    logging.INFO,
-                    "chat.retrieve_embedding_ready",
-                    museum_slug=museum_slug,
-                    museum_id=museum_id,
-                    query_embedding_dim=len(query_embedding),
-                )
             except NotImplementedError:
-                self._log(logging.DEBUG, "chat.retrieve_not_implemented", museum_slug=museum_slug)
                 return "", 0, [], {}
             except Exception as exc:
-                self._log(
-                    logging.WARNING,
-                    "chat.retrieve_embedding_error",
-                    museum_slug=museum_slug,
-                    museum_id=museum_id,
-                    reason=str(exc),
-                )
                 return "", 0, [], {}
         else:
-            self._log(
-                logging.INFO,
-                "chat.retrieve_embedding_disabled",
-                museum_slug=museum_slug,
-                museum_id=museum_id,
-            )
             return "", 0, [], {}
 
         final_top_k = max(self.settings.CHAT_RETRIEVAL_TOP_K, 1)
@@ -3221,6 +2945,10 @@ class ChatService:
             retrieval_page_size = max(int(result_window_size), final_top_k, 1)
         retrieval_window_size = self._text_retrieval_window_size(
             minimum=retrieval_page_size,
+        )
+        retrieval_boosts = self._matched_retrieval_boosts_for_log(
+            query_text=embedding_query,
+            lexical_query=lexical_query,
         )
 
         try:
@@ -3237,14 +2965,31 @@ class ChatService:
                 retrieval_window_size=retrieval_window_size,
             )
         except Exception:
-            self._log(logging.ERROR, "chat.retrieve_error", museum_slug=museum_slug)
-            logger.exception("chat.retrieve_error exception")
             return "", 0, [], {}
 
         docs = page_result.results
+        results_total = self._bounded_retrieval_total(page_result.total, retrieval_window_size)
+        retrieval_request = {
+            "kind": "text",
+            "museum_id": museum_id,
+            "original_query": raw_query,
+            "search_query": search_query,
+            "query_text": embedding_query,
+            "lexical_query": lexical_query,
+            "query_rewrite_source": query_rewrite_source,
+            "query_embedding": query_embedding,
+            "filters": dict(retrieval_filters),
+            "sort": dict(sort),
+            "retrieval_boosts": retrieval_boosts,
+            "retrieval_window_size": retrieval_window_size,
+            "results_total": results_total,
+            "temporal_query": temporal_filter_payload,
+            "tour_scope": tour_scope_filter_payload,
+            "opensearch_query": getattr(page_result, "query_body", None),
+        }
 
         if not docs:
-            return "", 0, [], {}
+            return "", results_total, [], retrieval_request
 
         context_top_k = final_top_k
         if result_window_size is not None:
@@ -3257,22 +3002,6 @@ class ChatService:
                 pass
         docs_for_context = docs[:context_top_k]
         context = self._format_docs_for_prompt(docs=docs_for_context, top_k=context_top_k)
-        results_total = self._bounded_retrieval_total(page_result.total, retrieval_window_size)
-        retrieval_request = {
-            "kind": "text",
-            "museum_id": museum_id,
-            "original_query": raw_query,
-            "search_query": search_query,
-            "query_text": embedding_query,
-            "lexical_query": lexical_query,
-            "query_embedding": query_embedding,
-            "filters": dict(retrieval_filters),
-            "sort": dict(sort),
-            "retrieval_window_size": retrieval_window_size,
-            "results_total": results_total,
-            "temporal_query": temporal_filter_payload,
-            "tour_scope": tour_scope_filter_payload,
-        }
         return context, results_total, docs, retrieval_request
 
     def _tokenize_for_language_guardrail(self, text: str) -> list[str]:
@@ -3681,16 +3410,6 @@ class ChatService:
 
         lexical_query = str(payload.get("lexical_query") or "").strip()
         if lexical_query and self._has_query_language_mismatch(raw_query, lexical_query):
-            self._log(
-                logging.INFO,
-                "chat.retrieve_query_rewrite_guardrail",
-                museum_slug=museum_slug,
-                museum_id=museum_id,
-                original_query=raw_query,
-                rejected_field="lexical_query",
-                rejected_value=lexical_query,
-                reason="language_mismatch",
-            )
             lexical_query = ""
         return lexical_query, ""
 
@@ -3917,6 +3636,16 @@ class ChatService:
                 reason="explicit_new_query",
             )
 
+        if self._extract_tour_scope_expression(text):
+            return _policy(
+                is_follow_up=False,
+                use_history_for_query=False,
+                use_history_for_answer=False,
+                carry_filters=False,
+                carry_sort=False,
+                reason="tour_scope_query",
+            )
+
         referential_query_patterns = (
             r"^\s*(e|ent[aã]o|agora)\b",
             r"\b(deste|desta|desses|dessas|disso|nisso|daquilo)\b",
@@ -3986,11 +3715,14 @@ class ChatService:
 
     def _format_docs_for_prompt(self, *, docs: list[dict[str, object]], top_k: int) -> str:
         snippets: list[str] = []
+        excluded_keys = {"artifact_id"}
+        if not self.settings.CHAT_INCLUDE_ORIGIN_HISTORY_IN_LLM_CONTEXT:
+            excluded_keys.update({"origin_history", "historical_origin"})
         for index, doc in enumerate(docs[: max(top_k, 1)], start=1):
             prompt_doc = {
                 key: value
                 for key, value in doc.items()
-                if key != "artifact_id" and value not in (None, "")
+                if key not in excluded_keys and value not in (None, "")
             }
             snippet = json.dumps(prompt_doc, ensure_ascii=True)
             snippets.append(f"[doc_{index}] {snippet}")
@@ -4056,13 +3788,6 @@ class ChatService:
                     max_total=max_total,
                 )
             except Exception as exc:
-                self._log(
-                    logging.WARNING,
-                    "chat.image_retrieve_error",
-                    museum_slug=museum_slug,
-                    museum_id=museum_id,
-                    reason=f"artifact_modal_image_fetch_failed: {exc}",
-                )
                 image_hits = []
 
         images_by_artifact: dict[str, list[dict[str, Any]]] = {}
@@ -4324,13 +4049,6 @@ class ChatService:
                     max_total=max(len(artifact_ids), 1),
                 )
             except Exception as exc:
-                self._log(
-                    logging.WARNING,
-                    "chat.related_image_retrieve_error",
-                    museum_slug=museum_slug,
-                    museum_id=museum_id,
-                    reason=f"related_artifact_image_fetch_failed: {exc}",
-                )
                 image_hits = []
 
         artifact_results = await self._build_artifact_results(
@@ -4865,7 +4583,6 @@ class ChatService:
         }
 
         enriched: list[ImageMatchResult] = []
-        debug_rows: list[dict[str, object]] = []
         for match in image_matches:
             artifact_id = str(match.artifact_id or "").strip()
             inventory = str(match.inventory or "").strip()
@@ -4890,36 +4607,6 @@ class ChatService:
                     }
                 )
             )
-            debug_rows.append(
-                {
-                    "idx": len(debug_rows) + 1,
-                    "match_image": match.original_image_name,
-                    "match_artifact_id": artifact_id or None,
-                    "match_inventory": inventory or None,
-                    "match_title": match.title,
-                    "artifact_found": artifact is not None,
-                    "artifact_id": artifact.artifact_id if artifact else None,
-                    "artifact_inventory": artifact.inventory_number if artifact else None,
-                    "artifact_title": artifact.title if artifact else None,
-                    "artifact_image_count": len(artifact.images) if artifact else 0,
-                    "navigation_found": target is not None,
-                    "navigation_inventory": target.inventory_id if target else None,
-                    "navigation_overlay_id": target.overlay_id if target else None,
-                    "navigation_panorama_key": target.panorama_key if target else None,
-                }
-            )
-
-        self._log(
-            logging.INFO,
-            "chat.image_match_enrichment",
-            context=context,
-            conversation_id=conversation_id,
-            museum_slug=museum_slug,
-            image_matches=len(image_matches),
-            artifact_results=len(artifact_results),
-            navigation_targets=len(navigation_targets),
-            rows=debug_rows,
-        )
 
         return enriched
 
@@ -5196,79 +4883,11 @@ class ChatService:
             ids.append(artifact_id)
         return ids
 
-    def _extract_single_artifact_id_from_filters(
-        self,
-        filters: dict[str, object] | None,
-    ) -> str | None:
-        if not isinstance(filters, dict):
-            return None
-
-        value = filters.get("artifact_id")
-        if isinstance(value, (str, int, float)):
-            cleaned = str(value).strip()
-            return cleaned or None
-
-        if isinstance(value, list):
-            cleaned_values = [str(item).strip() for item in value if str(item).strip()]
-            if len(cleaned_values) == 1:
-                return cleaned_values[0]
-
-        return None
-
-    def _infer_selected_artifact_from_reply(
-        self,
-        *,
-        reply_text: str,
-        docs: list[dict[str, object]],
-    ) -> str | None:
-        reply_normalized = (reply_text or "").strip().casefold()
-        if not reply_normalized or not docs:
-            return None
-
-        first_mention: tuple[int, str] | None = None
-        matched_ids: list[str] = []
-        for doc in docs:
-            artifact_id = str(doc.get("artifact_id") or "").strip()
-            if not artifact_id:
-                continue
-            inventory = self._doc_inventory(doc)
-            title = str(doc.get("title") or "").strip()
-            inventory_match = bool(inventory) and inventory.casefold() in reply_normalized
-            title_match = len(title) >= 8 and title.casefold() in reply_normalized
-            if inventory_match or title_match:
-                matched_ids.append(artifact_id)
-                mention_positions = []
-                if inventory_match:
-                    mention_positions.append(reply_normalized.find(inventory.casefold()))
-                if title_match:
-                    mention_positions.append(reply_normalized.find(title.casefold()))
-                mention_positions = [idx for idx in mention_positions if idx >= 0]
-                if mention_positions:
-                    mention_idx = min(mention_positions)
-                    if first_mention is None or mention_idx < first_mention[0]:
-                        first_mention = (mention_idx, artifact_id)
-
-        unique_ids: list[str] = []
-        seen: set[str] = set()
-        for artifact_id in matched_ids:
-            if artifact_id in seen:
-                continue
-            seen.add(artifact_id)
-            unique_ids.append(artifact_id)
-
-        if len(unique_ids) == 1:
-            return unique_ids[0]
-        if first_mention is not None:
-            return first_mention[1]
-        return None
-
-    def _update_result_selection_state(
+    def _update_last_result_ids(
         self,
         *,
         state: ChatSessionState,
         artifact_docs: list[dict[str, object]],
-        effective_filters: dict[str, object] | None,
-        hinted_selected_artifact_id: str | None = None,
         preserve_existing_when_empty: bool = False,
     ) -> None:
         artifact_ids = self._extract_artifact_ids_from_docs(artifact_docs)
@@ -5276,85 +4895,6 @@ class ChatService:
             state.last_result_ids = artifact_ids
         elif not preserve_existing_when_empty:
             state.last_result_ids = []
-
-        selected_artifact_id = self._extract_single_artifact_id_from_filters(effective_filters)
-        if (
-            not selected_artifact_id
-            and hinted_selected_artifact_id
-            and (not artifact_ids or hinted_selected_artifact_id in artifact_ids)
-        ):
-            selected_artifact_id = hinted_selected_artifact_id
-        if not selected_artifact_id and artifact_ids:
-            # Keep deterministic focus for follow-up singular references.
-            selected_artifact_id = artifact_ids[0]
-
-        if selected_artifact_id:
-            state.selected_artifact_id = selected_artifact_id
-        elif artifact_ids:
-            state.selected_artifact_id = None
-        elif not preserve_existing_when_empty:
-            state.selected_artifact_id = None
-
-    def _apply_follow_up_artifact_scope(
-        self,
-        *,
-        message: str,
-        state: ChatSessionState,
-        router_decision: dict[str, object],
-        filters: dict[str, object],
-    ) -> dict[str, object]:
-        scoped_filters = dict(filters)
-        if str(router_decision.get("mode", "")) != "rag":
-            return scoped_filters
-        if not bool(router_decision.get("use_history_for_query", False)):
-            return scoped_filters
-
-        existing_single = self._extract_single_artifact_id_from_filters(scoped_filters)
-        existing_value = scoped_filters.get("artifact_id")
-        if existing_single or (isinstance(existing_value, list) and existing_value):
-            return scoped_filters
-
-        text = (message or "").strip().lower()
-        singular_referential_patterns = (
-            r"\b(nele|nela|dele|dela|nisto|nisso|disto|disso)\b",
-            r"\b(deste|desta|desse|dessa|este|esta|esse|essa)\b",
-            r"\b(neste|nesta|nesse|nessa)\b",
-            r"\b(o mesmo|a mesma)\b",
-            r"\b(este azulejo|esta peca|este objeto|essa peca|esse objeto|neste azulejo|nessa peca)\b",
-            r"\b(fala mais sobre isso|detalha isso|explica isso)\b",
-        )
-        plural_referential_patterns = (
-            r"\b(desses|dessas|esses|essas|deles|delas|neles|nelas)\b",
-            r"\b(nestes|nestas|nesses|nessas)\b",
-            r"\b(os mesmos|as mesmas)\b",
-            r"\b(esses azulejos|desses azulejos|esses objetos|desses objetos)\b",
-        )
-        has_plural_reference = any(
-            re.search(pattern, text, flags=re.IGNORECASE)
-            for pattern in plural_referential_patterns
-        )
-        has_singular_reference = any(
-            re.search(pattern, text, flags=re.IGNORECASE)
-            for pattern in singular_referential_patterns
-        )
-        if not has_singular_reference and not has_plural_reference:
-            return scoped_filters
-
-        if has_plural_reference:
-            candidate_ids = [artifact_id.strip() for artifact_id in state.last_result_ids if artifact_id.strip()]
-            if not candidate_ids:
-                return scoped_filters
-            scoped_filters["artifact_id"] = candidate_ids
-            return scoped_filters
-
-        candidate_artifact_id = (state.selected_artifact_id or "").strip() or None
-        if not candidate_artifact_id and state.last_result_ids:
-            candidate_artifact_id = state.last_result_ids[0]
-        if not candidate_artifact_id:
-            return scoped_filters
-
-        scoped_filters["artifact_id"] = candidate_artifact_id
-        return scoped_filters
 
     def _merge_state_with_delta(
         self,
@@ -5387,6 +4927,8 @@ class ChatService:
         filters_delta = router_decision.get("filters_delta")
         if isinstance(filters_delta, dict):
             for key, value in filters_delta.items():
+                if key == "artifact_id":
+                    continue
                 if value is None:
                     state.filters.pop(key, None)
                 else:
@@ -5421,32 +4963,6 @@ class ChatService:
             candidate = candidate[-max_chars:]
         state.rolling_summary = candidate
 
-    def _log_state_after_reply(self, state: ChatSessionState) -> None:
-        history_preview = [
-            {"role": turn.role, "text": turn.text[:160]}
-            for turn in state.history[-self.settings.CHAT_HISTORY_WINDOW :]
-        ]
-        payload: dict[str, object] = {
-            "conversation_id": state.conversation_id,
-            "museum_slug": state.museum_slug,
-            "language": state.language,
-            "intent": state.intent,
-            "filters": state.filters,
-            "sort": state.sort,
-            "selected_artifact_id": state.selected_artifact_id,
-            "last_result_ids": state.last_result_ids,
-            "rolling_summary": state.rolling_summary,
-            "history_size": len(state.history),
-            "history_preview": history_preview,
-        }
-
-        if self.settings.LOG_CHAT_STATE_HISTORY:
-            payload["history_full"] = [
-                {"role": turn.role, "text": turn.text}
-                for turn in state.history
-            ]
-
-        self._log(logging.INFO, "chat.state_after_reply", **payload)
 
 
 @lru_cache(maxsize=1)
@@ -5460,4 +4976,5 @@ def get_chat_service() -> ChatService:
         tour_navigation_service=get_tour_navigation_service(),
         llm_service=get_llm_service(),
         session_store=get_chat_session_store(),
+        query_logger=get_query_logger(),
     )

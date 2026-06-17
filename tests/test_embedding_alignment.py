@@ -173,7 +173,6 @@ class EmbeddingAlignmentTests(unittest.TestCase):
             {
                 "text_embedding_model_resolved": "BAAI/bge-m3",
                 "multimodal_embedding_model_resolved": "Qwen/Qwen3-VL-Embedding-2B",
-                "DEBUG_EMBEDDINGS": False,
                 "EMBEDDING_MAX_LENGTH": 2048,
                 "EMBEDDING_PREFER_BF16": True,
                 "TEXT_EMBEDDING_BATCH_SIZE": 2,
@@ -186,11 +185,10 @@ class EmbeddingAlignmentTests(unittest.TestCase):
             },
         )()
 
-        with patch("app.services.embeddings._log_runtime_versions_once", return_value=None):
-            with patch("app.services.embeddings._import_flag_embedding", return_value=_FakeBGEM3Model):
-                with patch("app.services.embeddings._import_torch", side_effect=EmbeddingProviderError("no torch")):
-                    provider = EmbeddingProvider(settings)
-                    embedder = provider._get_text_embedder()
+        with patch("app.services.embeddings._import_flag_embedding", return_value=_FakeBGEM3Model):
+            with patch("app.services.embeddings._import_torch", side_effect=EmbeddingProviderError("no torch")):
+                provider = EmbeddingProvider(settings)
+                embedder = provider._get_text_embedder()
 
         self.assertIsInstance(embedder, BGEM3TextEmbedder)
 
@@ -243,7 +241,6 @@ class EmbeddingAlignmentTests(unittest.TestCase):
             {
                 "text_embedding_model_resolved": "BAAI/bge-m3",
                 "multimodal_embedding_model_resolved": "Qwen/Qwen3-VL-Embedding-2B",
-                "DEBUG_EMBEDDINGS": False,
                 "EMBEDDING_MAX_LENGTH": 2048,
                 "EMBEDDING_PREFER_BF16": True,
                 "TEXT_EMBEDDING_BATCH_SIZE": 2,
@@ -256,10 +253,9 @@ class EmbeddingAlignmentTests(unittest.TestCase):
             },
         )()
 
-        with patch("app.services.embeddings._log_runtime_versions_once", return_value=None):
-            provider = EmbeddingProvider(settings)
-            with self.assertRaises(EmbeddingProviderError) as ctx:
-                provider._get_text_embedder()
+        provider = EmbeddingProvider(settings)
+        with self.assertRaises(EmbeddingProviderError) as ctx:
+            provider._get_text_embedder()
 
         self.assertIn("OPENROUTER_API_KEY", str(ctx.exception))
 
@@ -270,7 +266,6 @@ class EmbeddingAlignmentTests(unittest.TestCase):
             {
                 "text_embedding_model_resolved": "BAAI/bge-m3",
                 "multimodal_embedding_model_resolved": "Qwen/Qwen3-VL-Embedding-2B",
-                "DEBUG_EMBEDDINGS": False,
                 "EMBEDDING_MAX_LENGTH": 2048,
                 "EMBEDDING_PREFER_BF16": True,
                 "TEXT_EMBEDDING_BATCH_SIZE": 2,
@@ -283,9 +278,8 @@ class EmbeddingAlignmentTests(unittest.TestCase):
             },
         )()
 
-        with patch("app.services.embeddings._log_runtime_versions_once", return_value=None):
-            provider = EmbeddingProvider(settings)
-            embedder = provider._get_text_embedder()
+        provider = EmbeddingProvider(settings)
+        embedder = provider._get_text_embedder()
 
         self.assertIsInstance(embedder, OpenRouterBGETextEmbedder)
 

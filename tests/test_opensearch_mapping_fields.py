@@ -22,9 +22,6 @@ from app.services.opensearch_client import OpenSearchGateway
 
 def _settings() -> SimpleNamespace:
     return SimpleNamespace(
-        LOG_JSON=False,
-        LOG_JSON_PRETTY=False,
-        LOG_JSON_INDENT=2,
         CHAT_IN_TOUR_BOOST=1.75,
         IMAGE_IN_TOUR_BOOST=1.75,
         CHAT_RETRIEVAL_EMBEDDING_ONLY=False,
@@ -234,34 +231,302 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
 
         self.assertEqual(payload["description"], description.strip())
 
-    def test_lexical_multi_match_uses_text_subfields(self) -> None:
+    def test_lexical_query_uses_no_stem_precision_fields(self) -> None:
         gateway = OpenSearchGateway(_settings())
         body = gateway._build_query_body(
             museum_slug="museum_1",
             museum_id="museum_1",
-            query_text="azulejos religiosos",
-            lexical_query="azulejos religiosos",
+            query_text="retrato de senhores",
+            lexical_query="retrato de senhores",
             query_embedding=[0.1, 0.2, 0.3],
             top_k=5,
             filters=None,
             sort=None,
         )
         queries = body["query"]["hybrid"]["queries"]
-        multi_match = next(
-            q["bool"]["must"][0]["multi_match"]
+        lexical_bool = next(
+            q["bool"]["must"][0]["bool"]
             for q in queries
-            if "bool" in q and "multi_match" in q["bool"]["must"][0]
+            if "bool" in q and "bool" in q["bool"]["must"][0]
         )
-        fields = multi_match["fields"]
-        self.assertIn("search_text^4", fields)
-        self.assertIn("inventory_number^1.8", fields)
-        self.assertIn("inventory_number.text^1.8", fields)
-        self.assertIn("category.text^1.5", fields)
-        self.assertIn("support_or_material.text^1.2", fields)
-        self.assertIn("technique.text^1.2", fields)
-        self.assertIn("origin_history^1.1", fields)
-        self.assertIn("production_center.text^1.1", fields)
-        self.assertIn("incorporation.text^1.1", fields)
+        self.assertEqual(lexical_bool["minimum_should_match"], 1)
+        should = lexical_bool["should"]
+        self.assertEqual(len(should), 3)
+
+        best_and = should[0]["multi_match"]
+        self.assertEqual(best_and["query"], "retrato de senhores")
+        self.assertEqual(best_and["fields"], ["title.no_stem^10", "description.no_stem^3"])
+        self.assertEqual(best_and["type"], "best_fields")
+        self.assertEqual(best_and["operator"], "and")
+        self.assertEqual(best_and["boost"], 5)
+
+        phrase = should[1]["multi_match"]
+        self.assertEqual(phrase["query"], "retrato de senhores")
+        self.assertEqual(phrase["fields"], ["title.no_stem^8", "description.no_stem^2"])
+        self.assertEqual(phrase["type"], "phrase")
+        self.assertEqual(phrase["boost"], 4)
+
+        best_or = should[2]["multi_match"]
+        self.assertEqual(best_or["fields"], ["title.no_stem^3", "description.no_stem^1"])
+        self.assertEqual(best_or["type"], "best_fields")
+        self.assertEqual(best_or["operator"], "or")
+        self.assertEqual(best_or["minimum_should_match"], "2<75%")
+        self.assertEqual(best_or["boost"], 0.3)
+
+        field_lists = [clause["multi_match"]["fields"] for clause in should]
+        flattened_fields = [field for fields in field_lists for field in fields]
+        self.assertNotIn("title^6", flattened_fields)
+        self.assertNotIn("description^2.5", flattened_fields)
+
+    def _lexical_wrapper_bool(self, body: dict[str, object]) -> dict[str, object]:
+        queries = body["query"]["hybrid"]["queries"]
+        return next(
+            q["bool"]
+            for q in queries
+            if "bool" in q and "bool" in q["bool"]["must"][0]
+        )
+
+    def _retrieval_boost_clauses(self, body: dict[str, object]) -> list[dict[str, object]]:
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        should = lexical_wrapper.get("should") or []
+        return [
+            clause
+            for clause in should
+            if (
+                "term" in clause
+                and isinstance(clause["term"], dict)
+                and "category" in clause["term"]
+            )
+            or (
+                "match" in clause
+                and isinstance(clause["match"], dict)
+                and (
+                    "support_or_material.text" in clause["match"]
+                    or "technique.text" in clause["match"]
+                )
+            )
+        ]
+
+    def test_category_alias_adds_non_mandatory_category_boost(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="show me ceramic pieces",
+            lexical_query="show me ceramic pieces",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"term": {"category": {"value": "ceramica", "boost": 2.0}}},
+            lexical_wrapper["should"],
+        )
+        self.assertNotIn(
+            {"term": {"category": {"value": "ceramica", "boost": 2.0}}},
+            lexical_wrapper.get("filter", []),
+        )
+
+    def test_category_and_material_aliases_add_only_should_boosts(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="show me silk dresses",
+            lexical_query="show me silk dresses",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"term": {"category": {"value": "traje e aderecos", "boost": 2.0}}},
+            lexical_wrapper["should"],
+        )
+        self.assertIn(
+            {"term": {"category": {"value": "traje", "boost": 2.0}}},
+            lexical_wrapper["should"],
+        )
+        self.assertIn(
+            {"match": {"support_or_material.text": {"query": "seda", "boost": 1.5}}},
+            lexical_wrapper["should"],
+        )
+        self.assertIn(
+            {"match": {"technique.text": {"query": "seda", "boost": 1.3}}},
+            lexical_wrapper["should"],
+        )
+        self.assertEqual(
+            lexical_wrapper["filter"],
+            [{"term": {"museum_id": "museum_1"}}],
+        )
+
+    def test_retrieval_boost_metadata_matches_alias_boosts(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+
+        self.assertEqual(
+            gateway.matched_retrieval_boosts(
+                query_text="show me silk dresses",
+                lexical_query="show me silk dresses",
+            ),
+            [
+                {
+                    "group": "category",
+                    "kind": "term",
+                    "field": "category",
+                    "value": "traje e aderecos",
+                    "boost": 2.0,
+                    "matched_alias": "dresses",
+                },
+                {
+                    "group": "category",
+                    "kind": "term",
+                    "field": "category",
+                    "value": "traje",
+                    "boost": 2.0,
+                    "matched_alias": "dresses",
+                },
+                {
+                    "group": "support_or_material",
+                    "kind": "match",
+                    "field": "support_or_material.text",
+                    "query": "seda",
+                    "boost": 1.5,
+                    "matched_alias": "silk",
+                },
+                {
+                    "group": "technique",
+                    "kind": "match",
+                    "field": "technique.text",
+                    "query": "seda",
+                    "boost": 1.3,
+                    "matched_alias": "silk",
+                },
+            ],
+        )
+
+    def test_category_boost_keeps_tour_scope_filter_unchanged(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="show me tiles",
+            lexical_query="show me tiles",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters={"in_tour": True},
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"term": {"category": {"value": "ceramica", "boost": 2.0}}},
+            lexical_wrapper["should"],
+        )
+        self.assertIn({"term": {"in_tour": True}}, lexical_wrapper["filter"])
+        self.assertNotIn(
+            {"term": {"category": {"value": "ceramica", "boost": 2.0}}},
+            lexical_wrapper["filter"],
+        )
+
+    def test_material_alias_adds_support_material_text_match_boost(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="objetos em madeira",
+            lexical_query="objetos em madeira",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"match": {"support_or_material.text": {"query": "madeira", "boost": 1.4}}},
+            lexical_wrapper["should"],
+        )
+
+    def test_cetim_alias_adds_technique_text_match_boost(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="vestidos de cetim",
+            lexical_query="vestidos de cetim",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"match": {"technique.text": {"query": "cetim", "boost": 1.3}}},
+            lexical_wrapper["should"],
+        )
+        self.assertNotIn(
+            {"match": {"technique.text": {"query": "cetim", "boost": 1.3}}},
+            lexical_wrapper.get("filter", []),
+        )
+
+    def test_taffeta_alias_adds_technique_text_match_boost(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="taffeta dress",
+            lexical_query="taffeta dress",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"match": {"technique.text": {"query": "tafeta", "boost": 1.3}}},
+            lexical_wrapper["should"],
+        )
+
+    def test_accent_folded_category_alias_adds_boost(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="mostra pe\u00e7as de cer\u00e2mica",
+            lexical_query="mostra pe\u00e7as de cer\u00e2mica",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        lexical_wrapper = self._lexical_wrapper_bool(body)
+        self.assertIn(
+            {"term": {"category": {"value": "ceramica", "boost": 2.0}}},
+            lexical_wrapper["should"],
+        )
+
+    def test_query_without_known_aliases_adds_no_category_or_material_boost(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        body = gateway._build_query_body(
+            museum_slug="museum_1",
+            museum_id="museum_1",
+            query_text="objetos bonitos para ver",
+            lexical_query="objetos bonitos para ver",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_k=5,
+            filters=None,
+            sort=None,
+        )
+
+        self.assertEqual(self._retrieval_boost_clauses(body), [])
 
     def test_image_search_uses_visual_embedding_knn_with_in_tour_boost(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -343,6 +608,29 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertEqual(bool_query["filter"], [{"term": {"museum_id": "8"}}])
         should = bool_query["should"]
         self.assertIn({"terms": {"inventory_number": ["967"]}}, should)
+
+    def test_inventory_candidate_lookup_uses_keyword_and_text_inventory_fields(self) -> None:
+        gateway = OpenSearchGateway(_settings())
+        dummy = _DummyClient()
+
+        gateway._search_artifacts_by_inventory_candidates_once(
+            client=dummy,
+            inventory_numbers=["mnaz 1234", "mnaz1234"],
+            top_k=3,
+            museum_id="mnaz",
+        )
+
+        assert dummy.last_search is not None
+        body = dummy.last_search["body"]
+        assert isinstance(body, dict)
+        bool_query = body["query"]["bool"]
+        self.assertEqual(bool_query["filter"], [{"term": {"museum_id": "mnaz"}}])
+        inventory_bool = bool_query["must"][0]["bool"]
+        self.assertEqual(inventory_bool["minimum_should_match"], 1)
+        should = inventory_bool["should"]
+        self.assertIn({"term": {"inventory_number": "mnaz 1234"}}, should)
+        self.assertIn({"term": {"inventory_number": "mnaz1234"}}, should)
+        self.assertIn({"match": {"inventory_number.text": "mnaz 1234"}}, should)
 
     def test_author_name_fetch_uses_authors_index(self) -> None:
         gateway = OpenSearchGateway(_settings())
@@ -438,6 +726,7 @@ class OpenSearchFieldMappingTests(unittest.TestCase):
         self.assertTrue(body["track_total_hits"])
         self.assertEqual(body["query"]["hybrid"]["pagination_depth"], 15)
         self.assertEqual(dummy.last_kwargs["search_pipeline"], "nlp-search-pipeline")
+        self.assertEqual(page.query_body, dummy.last_kwargs)
         queries = body["query"]["hybrid"]["queries"]
         knn_query = next(
             q["bool"]["must"][0]["knn"]

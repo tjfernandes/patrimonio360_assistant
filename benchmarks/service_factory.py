@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 from typing import Any
 
 from app.core.config import Settings, get_settings
@@ -17,7 +16,6 @@ from app.services.tour_navigation import TourNavigationService
 from app.services.warmup import warmup_chat_stack
 from benchmarks.variants import VariantSpec
 
-logger = logging.getLogger(__name__)
 
 
 class BenchmarkLLMService:
@@ -90,10 +88,6 @@ def build_service_bundle(
     enable_assistant_selection: bool = True,
 ) -> BenchmarkServiceBundle:
     settings = _clone_settings()
-    logger.info(
-        "Building benchmark service bundle for variant=%s with current production retrieval settings",
-        variant.name,
-    )
 
     opensearch_gateway = OpenSearchGateway(settings)
     embedding_provider = EmbeddingProvider(settings)

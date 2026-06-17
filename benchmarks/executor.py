@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 import re
 import time
@@ -14,7 +13,6 @@ from benchmarks.runner import build_skip_result
 from benchmarks.service_factory import BenchmarkServiceBundle
 from benchmarks.variants import VariantSpec
 
-logger = logging.getLogger(__name__)
 
 _SELECTOR_SYSTEM_PROMPT = (
     "És um avaliador offline de retrieval para um assistente de museu.\n"
