@@ -15,7 +15,6 @@ export async function copyStaticTours({
   destination = defaultDestination,
 } = {}) {
   if (!existsSync(source)) {
-    console.warn(`[copy-static-tours] skipped: ${source} does not exist.`)
     return false
   }
 
@@ -23,7 +22,6 @@ export async function copyStaticTours({
   const tourDirs = entries.filter((entry) => entry.isDirectory())
 
   if (tourDirs.length === 0) {
-    console.warn(`[copy-static-tours] skipped: no tour directories in ${source}.`)
     return false
   }
 
@@ -36,7 +34,6 @@ export async function copyStaticTours({
     })
   }
 
-  console.log(`[copy-static-tours] copied ${tourDirs.length} tour directories to ${destination}.`)
   return true
 }
 

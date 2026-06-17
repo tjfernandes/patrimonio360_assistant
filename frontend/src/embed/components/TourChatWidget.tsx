@@ -4,6 +4,11 @@ import { createPortal } from 'react-dom'
 import amaliaLogoText from '../../assets/amalia_logo_text.png'
 import { resolveEmbedLanguage, t } from '../i18n'
 import {
+  createInteractionSessionId,
+  logFrontendEvent,
+  type FrontendInteractionEventType,
+} from '../services/interactionLogger'
+import {
   fetchArtifactDetailContext,
   fetchArtifactFull,
   fetchChatResultsPage,
@@ -24,6 +29,7 @@ import type {
   ChatNavigationTarget,
   ChatUploadKind,
   RelatedArtifact,
+  TourNavigationCommandContext,
 } from '../types'
 import MessageMarkdown from './MessageMarkdown'
 
@@ -33,12 +39,17 @@ interface TourChatWidgetProps {
   museumId: string
   backendBaseUrl?: string
   initialLanguage?: ChatLanguage
-  onNavigateToTarget?: (target: ChatNavigationTarget) => void
-  isFullscreen?: boolean
-  onToggleFullscreen?: () => void
+  sessionId?: string
+  participantId?: string | null
+  taskId?: string | null
+  onNavigateToTarget?: (
+    target: ChatNavigationTarget,
+    context: TourNavigationCommandContext,
+  ) => void
+  onAssistantClosed?: () => void
 }
 
-const DEFAULT_PANEL_SIZE = { width: 650, height: 800 }
+const DEFAULT_PANEL_SIZE = { width: 900, height: 1050 }
 const CHAT_PANEL_CLOSE_ANIMATION_MS = 300
 const ARTIFACT_MODAL_CLOSE_ANIMATION_MS = 260
 const SUPPORTED_MODEL_EXTENSIONS = new Set(['glb', 'gltf', 'obj'])
@@ -50,6 +61,14 @@ const RELATED_ARTIFACTS_PAGE_SIZE = 10
 const LazyModelAttachmentViewer = lazy(() => import('./ModelAttachmentViewer'))
 
 type RelatedArtifactGroupKind = 'conjunto' | 'exposicao'
+type NavigationClickOptions = {
+  artifact?: ChatArtifactResult | RelatedArtifact | null
+  queryId?: string | null
+  source: string
+  title?: string | null
+  inventoryNumber?: string | null
+  artifactId?: string | null
+}
 
 function detectModelFormatFromName(fileName: string): ChatModelFormat | null {
   const extension = fileName.split('.').pop()?.toLowerCase() || ''
@@ -136,10 +155,52 @@ function IconButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#cbb1ac] bg-white/95 text-[#5a2730] transition-colors hover:bg-white"
+      className="inline-flex h-15 w-15 items-center justify-center rounded-4xl border border-[#cbb1ac] bg-white/95 text-[#5a2730] transition-colors hover:bg-white"
     >
       {children}
     </button>
+  )
+}
+
+function HeaderActionButton({
+  children,
+  label,
+  onClick,
+  variant = 'default',
+}: {
+  children: ReactNode
+  label: string
+  onClick: () => void
+  variant?: 'default' | 'danger'
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border shadow-[0_12px_24px_-20px_rgba(64,19,28,0.95)] transition-[background-color,border-color,color,transform,box-shadow] hover:-translate-y-0.5 hover:shadow-[0_18px_30px_-22px_rgba(64,19,28,1)] ${
+        variant === 'danger'
+          ? 'border-[#6d0b1b]/20 bg-[#6d0b1b]/10 text-[#6d0b1b] hover:border-[#6d0b1b] hover:bg-[#6d0b1b] hover:text-white'
+          : 'border-[#ccb1ab] bg-white/90 text-[#5a2730] hover:border-[#b8938b] hover:bg-white'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function CloseIcon({ className = 'h-5.5 w-5.5' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden="true">
+      <path
+        d="M18 6L6 18M6 6l12 12"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   )
 }
 
@@ -157,9 +218,11 @@ function TourChatWidget({
   museumId,
   backendBaseUrl,
   initialLanguage = 'pt',
+  sessionId,
+  participantId,
+  taskId,
   onNavigateToTarget,
-  isFullscreen = false,
-  onToggleFullscreen,
+  onAssistantClosed,
 }: TourChatWidgetProps) {
   const [language, setLanguage] = useState<ChatLanguage>(resolveEmbedLanguage(initialLanguage))
   const [isOpen, setIsOpen] = useState(false)
@@ -180,6 +243,7 @@ function TourChatWidget({
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
   const [selectedArtifactNavigationTarget, setSelectedArtifactNavigationTarget] = useState<ChatNavigationTarget | null>(null)
+  const [selectedArtifactQueryId, setSelectedArtifactQueryId] = useState<string | null>(null)
   const [selectedArtifactImageIndex, setSelectedArtifactImageIndex] = useState(0)
   const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
   // Contexto relacional do artefacto aberto no modal (autores/conjuntos/exposicoes).
@@ -201,9 +265,16 @@ function TourChatWidget({
   const artifactModalCloseTimerRef = useRef<number | null>(null)
   const objectUrlsRef = useRef<string[]>([])
   const dragCounterRef = useRef(0)
+  const sessionIdRef = useRef(sessionId || createInteractionSessionId())
   const normalizedBackendBaseUrl = normalizeBaseUrl(backendBaseUrl)
   const tt = (key: string, params?: Record<string, string | number>) =>
     t(language, `chatWidget.${key}`, params)
+
+  useEffect(() => {
+    if (sessionId) {
+      sessionIdRef.current = sessionId
+    }
+  }, [sessionId])
   const formatDetailType = (value?: string) => {
     const normalized = String(value || '').trim().toUpperCase()
     if (normalized === 'OBJ' || normalized === 'DOC') {
@@ -214,6 +285,74 @@ function TourChatWidget({
   const latestAssistantMessageId = [...messages]
     .reverse()
     .find((message) => message.role === 'assistant' && !message.isCenteredNotice)?.id
+
+  const logInteraction = (
+    eventType: FrontendInteractionEventType,
+    fields: {
+      conversationId?: string | null
+      queryId?: string | null
+      artifact?: ChatArtifactResult | RelatedArtifact | null
+      navigationTarget?: ChatNavigationTarget | null
+      metadata?: Record<string, unknown>
+      title?: string | null
+      inventoryNumber?: string | null
+      artifactId?: string | null
+      status?: string | null
+      source?: string | null
+      error?: string | null
+    } = {},
+  ) => {
+    const artifact = fields.artifact
+    logFrontendEvent({
+      eventType,
+      backendBaseUrl,
+      sessionId: sessionIdRef.current,
+      conversationId: fields.conversationId ?? conversationId,
+      queryId: fields.queryId ?? null,
+      participantId: participantId ?? null,
+      taskId: taskId ?? null,
+      tourId: museumSlug,
+      language,
+      artifactId:
+        fields.artifactId ??
+        (artifact && 'artifactId' in artifact ? artifact.artifactId : null),
+      inventoryNumber:
+        fields.inventoryNumber ??
+        (artifact && 'inventoryNumber' in artifact ? artifact.inventoryNumber ?? null : null),
+      title:
+        fields.title ??
+        (artifact && 'title' in artifact ? artifact.title ?? null : null),
+      navigationTarget: fields.navigationTarget ?? null,
+      status: fields.status,
+      source: fields.source,
+      error: fields.error,
+      metadata: fields.metadata,
+    })
+  }
+
+  const buildNavigationCommandContext = (
+    target: ChatNavigationTarget,
+    options: NavigationClickOptions,
+  ): TourNavigationCommandContext => {
+    const artifact = options.artifact
+    const artifactId = options.artifactId ?? artifact?.artifactId ?? null
+    const inventoryNumber = options.inventoryNumber ?? artifact?.inventoryNumber ?? target.inventoryId
+    const title = options.title ?? artifact?.title ?? target.title ?? null
+
+    return {
+      sessionId: sessionIdRef.current,
+      conversationId,
+      queryId: options.queryId ?? null,
+      participantId: participantId ?? null,
+      taskId: taskId ?? null,
+      tourId: museumSlug,
+      language,
+      artifactId,
+      inventoryNumber,
+      title,
+      source: options.source,
+    }
+  }
 
   const registerMessageElement = useCallback((messageId: string, element: HTMLElement | null) => {
     if (element) {
@@ -246,6 +385,7 @@ function TourChatWidget({
     }
     setIsChatClosing(false)
     setIsOpen(true)
+    logInteraction('assistant_opened')
   }
 
   const closeChat = () => {
@@ -254,6 +394,8 @@ function TourChatWidget({
     }
 
     setIsChatClosing(true)
+    logInteraction('assistant_closed')
+    onAssistantClosed?.()
     if (chatCloseTimerRef.current !== null) {
       window.clearTimeout(chatCloseTimerRef.current)
     }
@@ -267,6 +409,8 @@ function TourChatWidget({
   const openArtifactModal = (
     artifact: ChatArtifactResult,
     navigationTarget: ChatNavigationTarget | null = null,
+    queryId: string | null = null,
+    source: string = 'result_card',
   ) => {
     if (artifactModalCloseTimerRef.current !== null) {
       window.clearTimeout(artifactModalCloseTimerRef.current)
@@ -276,6 +420,13 @@ function TourChatWidget({
     setSelectedArtifactImageIndex(0)
     setSelectedArtifactResult(artifact)
     setSelectedArtifactNavigationTarget(navigationTarget)
+    setSelectedArtifactQueryId(queryId)
+    logInteraction('artifact_card_opened', {
+      queryId,
+      artifact,
+      navigationTarget,
+      metadata: { source },
+    })
     // Reset do contexto relacional; o useEffect carrega o novo.
     setDetailContext(null)
     setDetailContextError(null)
@@ -294,6 +445,7 @@ function TourChatWidget({
     artifactModalCloseTimerRef.current = window.setTimeout(() => {
       setSelectedArtifactResult(null)
       setSelectedArtifactNavigationTarget(null)
+      setSelectedArtifactQueryId(null)
       setSelectedArtifactImageIndex(0)
       setIsArtifactModalClosing(false)
       setDetailContext(null)
@@ -307,7 +459,20 @@ function TourChatWidget({
     if (!selectedArtifactNavigationTarget || !onNavigateToTarget) {
       return
     }
-    onNavigateToTarget(selectedArtifactNavigationTarget)
+    const navigationContext = buildNavigationCommandContext(selectedArtifactNavigationTarget, {
+      queryId: selectedArtifactQueryId,
+      artifact: selectedArtifactResult,
+      source: 'artifact_modal',
+    })
+    logInteraction('see_in_tour_clicked', {
+      queryId: selectedArtifactQueryId,
+      artifact: selectedArtifactResult,
+      navigationTarget: selectedArtifactNavigationTarget,
+      status: 'clicked',
+      source: 'artifact_modal',
+      metadata: { source: 'artifact_modal' },
+    })
+    onNavigateToTarget(selectedArtifactNavigationTarget, navigationContext)
     closeArtifactModal()
   }
 
@@ -530,6 +695,14 @@ function TourChatWidget({
     const uploadKind = detectUploadKind(file)
     if (!uploadKind) {
       setUploadUiError(tt('unsupportedFormat'))
+      logInteraction('error_shown', {
+        metadata: {
+          source: 'upload_validation',
+          error: 'unsupported_format',
+          file_name: file.name,
+          file_type: file.type,
+        },
+      })
       return false
     }
     const maxBytes =
@@ -538,6 +711,15 @@ function TourChatWidget({
     if (file.size > maxBytes) {
       const itemLabel = uploadKind === 'model' ? tt('modelLabel') : tt('imageLabel')
       setUploadUiError(tt('tooLarge', { itemLabel, maxMb }))
+      logInteraction('error_shown', {
+        metadata: {
+          source: 'upload_validation',
+          error: 'file_too_large',
+          upload_kind: uploadKind,
+          file_size: file.size,
+          max_bytes: maxBytes,
+        },
+      })
       return false
     }
 
@@ -571,6 +753,7 @@ function TourChatWidget({
     }
     setIsArtifactModalClosing(false)
     setSelectedArtifactResult(null)
+    setSelectedArtifactQueryId(null)
     setSelectedArtifactImageIndex(0)
     setMessages([buildStarterMessage()])
   }
@@ -713,6 +896,13 @@ function TourChatWidget({
     setIsAssistantLoading(true)
     setStatusMessages([tt('preparingRequest')])
     clearSelectedUpload()
+    logInteraction('message_sent', {
+      metadata: {
+        has_upload: hasUpload,
+        upload_kind: selectedUploadKindSnapshot,
+        message_length: submittedText.length,
+      },
+    })
 
     const chatResponse = await sendChatMessage({
       backendBaseUrl,
@@ -720,6 +910,9 @@ function TourChatWidget({
       museumId,
       museumName,
       language,
+      sessionId: sessionIdRef.current,
+      participantId,
+      taskId,
       text: submittedText,
       conversationId: conversationId ?? undefined,
       uploadFile: selectedUploadFileSnapshot,
@@ -741,6 +934,8 @@ function TourChatWidget({
     if (chatResponse?.conversationId) {
       setConversationId(chatResponse.conversationId)
     }
+    const responseConversationId = chatResponse?.conversationId ?? conversationId
+    const responseQueryId = chatResponse?.queryId ?? null
 
     if (chatResponse?.reply) {
       setMessages((previous) => [
@@ -749,6 +944,7 @@ function TourChatWidget({
           id: createId(),
           role: 'assistant',
           text: chatResponse.reply,
+          queryId: responseQueryId,
           imageMatches: dedupeImageMatches(chatResponse.imageMatches),
           artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
           navigationTargets: chatResponse.navigationTargets,
@@ -761,6 +957,16 @@ function TourChatWidget({
           loadMoreResultsError: null,
         },
       ])
+      logInteraction('answer_received', {
+        conversationId: responseConversationId,
+        queryId: responseQueryId,
+        metadata: {
+          artifact_count: chatResponse.artifactResults?.length ?? 0,
+          image_match_count: chatResponse.imageMatches?.length ?? 0,
+          navigation_target_count: chatResponse.navigationTargets?.length ?? 0,
+          results_total: chatResponse.resultsTotal,
+        },
+      })
     } else if (chatResponse?.error) {
       setMessages((previous) => [
         ...previous,
@@ -768,6 +974,7 @@ function TourChatWidget({
           id: createId(),
           role: 'assistant',
           text: `${tt('errorPrefix')}: ${chatResponse.error}`,
+          queryId: responseQueryId,
           imageMatches: dedupeImageMatches(chatResponse.imageMatches),
           artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
           navigationTargets: chatResponse.navigationTargets,
@@ -780,6 +987,14 @@ function TourChatWidget({
           loadMoreResultsError: null,
         },
       ])
+      logInteraction('error_shown', {
+        conversationId: responseConversationId,
+        queryId: responseQueryId,
+        metadata: {
+          source: 'send_message',
+          error: chatResponse.error,
+        },
+      })
     } else {
       setMessages((previous) => [
         ...previous,
@@ -787,8 +1002,14 @@ function TourChatWidget({
           id: createId(),
           role: 'assistant',
           text: tt('backendNoReply'),
+          queryId: responseQueryId,
         },
       ])
+      logInteraction('error_shown', {
+        conversationId: responseConversationId,
+        queryId: responseQueryId,
+        metadata: { source: 'send_message', error: 'backend_no_reply' },
+      })
     }
 
     setIsAssistantLoading(false)
@@ -823,6 +1044,9 @@ function TourChatWidget({
       museumId,
       museumName,
       language,
+      sessionId: sessionIdRef.current,
+      participantId,
+      taskId,
       conversationId,
       onStatus: (message) => {
         const normalized = message.trim()
@@ -841,6 +1065,8 @@ function TourChatWidget({
     if (chatResponse?.conversationId) {
       setConversationId(chatResponse.conversationId)
     }
+    const responseConversationId = chatResponse?.conversationId ?? conversationId
+    const responseQueryId = chatResponse?.queryId ?? null
 
     if (chatResponse?.reply) {
       setMessages((previous) =>
@@ -849,6 +1075,7 @@ function TourChatWidget({
             ? {
                 ...message,
                 text: chatResponse.reply,
+                queryId: responseQueryId,
                 imageMatches: dedupeImageMatches(chatResponse.imageMatches),
                 artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
                 navigationTargets: chatResponse.navigationTargets,
@@ -863,6 +1090,17 @@ function TourChatWidget({
             : message,
         ),
       )
+      logInteraction('answer_received', {
+        conversationId: responseConversationId,
+        queryId: responseQueryId,
+        metadata: {
+          source: 'regenerate',
+          artifact_count: chatResponse.artifactResults?.length ?? 0,
+          image_match_count: chatResponse.imageMatches?.length ?? 0,
+          navigation_target_count: chatResponse.navigationTargets?.length ?? 0,
+          results_total: chatResponse.resultsTotal,
+        },
+      })
     } else if (chatResponse?.error) {
       setMessages((previous) =>
         previous.map((message) =>
@@ -870,6 +1108,7 @@ function TourChatWidget({
             ? {
                 ...message,
                 text: `${tt('errorPrefix')}: ${chatResponse.error}`,
+                queryId: responseQueryId,
                 imageMatches: dedupeImageMatches(chatResponse.imageMatches),
                 artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
                 navigationTargets: chatResponse.navigationTargets ?? [],
@@ -884,6 +1123,14 @@ function TourChatWidget({
             : message,
         ),
       )
+      logInteraction('error_shown', {
+        conversationId: responseConversationId,
+        queryId: responseQueryId,
+        metadata: {
+          source: 'regenerate',
+          error: chatResponse.error,
+        },
+      })
     }
 
     setIsAssistantLoading(false)
@@ -947,6 +1194,13 @@ function TourChatWidget({
             : message,
         ),
       )
+      logInteraction('error_shown', {
+        queryId: targetMessage.queryId ?? null,
+        metadata: {
+          source: 'load_more_results',
+          error: errorMessage,
+        },
+      })
       return
     }
 
@@ -959,6 +1213,7 @@ function TourChatWidget({
       id: createId(),
       role: 'assistant',
       text: resultsPage.reply || tt('moreResultsFallback'),
+      queryId: targetMessage.queryId ?? null,
       imageMatches: dedupeImageMatches(resultsPage.imageMatches),
       artifactResults: dedupeArtifactResults(resultsPage.artifactResults),
       navigationTargets,
@@ -983,6 +1238,17 @@ function TourChatWidget({
       ),
       nextAssistantMessage,
     ])
+    logInteraction('answer_received', {
+      queryId: targetMessage.queryId ?? null,
+      metadata: {
+        source: 'load_more_results',
+        artifact_count: resultsPage.artifactResults?.length ?? 0,
+        image_match_count: resultsPage.imageMatches?.length ?? 0,
+        navigation_target_count: resultsPage.navigationTargets?.length ?? 0,
+        results_total: resultsPage.resultsTotal,
+        results_page: resultsPage.resultsPage,
+      },
+    })
   }
 
   const handlePickImage = () => {
@@ -1150,6 +1416,25 @@ function TourChatWidget({
     return null
   }
 
+  const handleNavigateToTargetClick = (
+    target: ChatNavigationTarget,
+    options: NavigationClickOptions,
+  ) => {
+    const navigationContext = buildNavigationCommandContext(target, options)
+    logInteraction('see_in_tour_clicked', {
+      queryId: options.queryId ?? null,
+      artifact: options.artifact ?? null,
+      navigationTarget: target,
+      title: options.title,
+      inventoryNumber: options.inventoryNumber,
+      artifactId: options.artifactId,
+      status: 'clicked',
+      source: options.source,
+      metadata: { source: options.source },
+    })
+    onNavigateToTarget?.(target, navigationContext)
+  }
+
   const handleDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!hasDraggedFiles(event)) {
       return
@@ -1203,6 +1488,7 @@ function TourChatWidget({
     imageMatches: ChatImageMatch[] | undefined,
     artifactResults: ChatArtifactResult[] | undefined,
     navigationTargets: ChatNavigationTarget[] | undefined,
+    queryId?: string | null,
   ) => {
     const visibleImageMatches = dedupeImageMatches(imageMatches)
     if (visibleImageMatches.length === 0) {
@@ -1225,45 +1511,6 @@ function TourChatWidget({
             embeddedNavigationTarget ||
             resolveNavigationTargetForArtifact(linkedArtifact, navigationTargets) ||
             resolveNavigationTargetForImageMatch(match, navigationTargets)
-          console.info('[p360-chat] result-card mapping', {
-            index,
-            match: {
-              originalImageName: match.originalImageName,
-              artifactId: match.artifactId,
-              inventory: match.inventory,
-              title: match.title,
-              hasEmbeddedArtifact: Boolean(match.artifact),
-              hasEmbeddedNavigationTarget: Boolean(match.navigationTarget),
-            },
-            resolvedArtifact: linkedArtifact
-              ? {
-                  artifactId: linkedArtifact.artifactId,
-                  inventoryNumber: linkedArtifact.inventoryNumber,
-                  title: linkedArtifact.title,
-                  imageCount: linkedArtifact.images.length,
-                }
-              : null,
-            resolvedNavigationTarget: linkedTarget
-              ? {
-                  inventoryId: linkedTarget.inventoryId,
-                  overlayId: linkedTarget.overlayId,
-                  panoramaKey: linkedTarget.panoramaKey,
-                  title: linkedTarget.title,
-                }
-              : null,
-            availableArtifactResults: artifactResults?.map((artifact) => ({
-              artifactId: artifact.artifactId,
-              inventoryNumber: artifact.inventoryNumber,
-              title: artifact.title,
-              imageCount: artifact.images.length,
-            })),
-            availableNavigationTargets: navigationTargets?.map((target) => ({
-              inventoryId: target.inventoryId,
-              overlayId: target.overlayId,
-              panoramaKey: target.panoramaKey,
-              title: target.title,
-            })),
-          })
           return (
             <article
               key={`${match.originalImageName}-${index}`}
@@ -1278,18 +1525,8 @@ function TourChatWidget({
                 <button
                   type="button"
                   onClick={() => {
-                    console.info('[p360-chat] result-card image click', {
-                      index,
-                      action: linkedArtifact ? 'open_artifact_modal' : 'open_image_lightbox',
-                      matchArtifactId: match.artifactId,
-                      matchInventory: match.inventory,
-                      matchImage: match.originalImageName,
-                      resolvedArtifactId: linkedArtifact?.artifactId,
-                      resolvedArtifactInventory: linkedArtifact?.inventoryNumber,
-                      resolvedNavigationInventory: linkedTarget?.inventoryId,
-                    })
                     if (linkedArtifact) {
-                      openArtifactModal(linkedArtifact, linkedTarget)
+                      openArtifactModal(linkedArtifact, linkedTarget, queryId ?? null, 'image_match_card')
                       return
                     }
                     setLightboxImage({
@@ -1311,17 +1548,26 @@ function TourChatWidget({
                 </button>
               ) : null}
               <div className="space-y-1 px-2 py-1.5">
-                <p className="truncate text-[11px] font-semibold uppercase tracking-[0.08em] text-[#5a2730]">
+                <p className="truncate text-sm font-semibold uppercase tracking-[0.08em] text-[#5a2730]">
                   {match.inventory || match.title || tt('visualResult')}
                 </p>
-                {match.title ? <p className="truncate text-xs text-[#341d22]">{match.title}</p> : null}
+                {match.title ? <p className="truncate text-sm text-[#341d22]">{match.title}</p> : null}
                 {/* <p className="truncate text-[11px] text-[#6e5a5f]">{match.originalImageName}</p> */}
                 {linkedTarget ? (
                   <button
                     type="button"
-                    onClick={() => onNavigateToTarget?.(linkedTarget)}
+                    onClick={() =>
+                      handleNavigateToTargetClick(linkedTarget, {
+                        artifact: linkedArtifact,
+                        queryId: queryId ?? null,
+                        source: 'image_match_card',
+                        title: match.title,
+                        inventoryNumber: match.inventory,
+                        artifactId: match.artifactId,
+                      })
+                    }
                     disabled={!onNavigateToTarget}
-                  className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-[#18304a] bg-[#13283f] px-2 py-1 text-[11px] font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-[#18304a] bg-[#13283f] px-2 py-1 text-sm font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     {tt('viewInTour')}
                   </button>
@@ -1498,7 +1744,12 @@ function TourChatWidget({
       imageCount: related.imageCount,
       images: related.images,
     }
-    openArtifactModal(optimistic, related.navigationTarget ?? null)
+    openArtifactModal(
+      optimistic,
+      related.navigationTarget ?? null,
+      selectedArtifactQueryId,
+      'related_artifact_card',
+    )
     const { artifact, error } = await fetchArtifactFull({
       backendBaseUrl,
       museumSlug,
@@ -1591,7 +1842,13 @@ function TourChatWidget({
                 {art.navigationTarget ? (
                   <button
                     type="button"
-                    onClick={() => onNavigateToTarget?.(art.navigationTarget!)}
+                    onClick={() =>
+                      handleNavigateToTargetClick(art.navigationTarget!, {
+                        artifact: art,
+                        queryId: selectedArtifactQueryId,
+                        source: 'related_artifact_card',
+                      })
+                    }
                     disabled={!onNavigateToTarget}
                     className="block w-full border-t border-[#18304a] bg-[#13283f] px-2 py-1 text-[11px] font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -1801,6 +2058,7 @@ function TourChatWidget({
   const renderNavigationTargets = (
     navigationTargets: ChatNavigationTarget[] | undefined,
     imageMatches: ChatImageMatch[] | undefined,
+    queryId?: string | null,
   ) => {
     if (!navigationTargets || navigationTargets.length === 0) {
       return null
@@ -1827,7 +2085,14 @@ function TourChatWidget({
             <button
               key={`${target.overlayId}-${target.panoramaKey}-${index}`}
               type="button"
-              onClick={() => onNavigateToTarget?.(target)}
+              onClick={() =>
+                handleNavigateToTargetClick(target, {
+                  queryId: queryId ?? null,
+                  source: 'navigation_targets',
+                  title: target.title,
+                  inventoryNumber: target.inventoryId,
+                })
+              }
               disabled={!onNavigateToTarget}
               className={`${isChatClosing ? 'p360-chat-result-card-exit' : 'p360-chat-result-card'} flex w-full items-center justify-between rounded-lg border border-[#18304a] bg-[#13283f] px-2.5 py-1.5 text-left text-xs text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60`}
               style={{
@@ -1845,7 +2110,7 @@ function TourChatWidget({
                   <span className="block truncate text-[11px] text-[#c9e6ff]">{target.location}</span>
                 ) : null}
               </span>
-              <span className="shrink-0 text-[11px] font-semibold text-[#e7f4ff]">{tt('viewInTour')}</span>
+              <span className="shrink-0 text-2xl font-semibold text-[#e7f4ff]">{tt('viewInTour')}</span>
             </button>
           ))}
         </div>
@@ -1855,14 +2120,16 @@ function TourChatWidget({
 
   if (!isOpen) {
     return (
-      <button
-        type="button"
-        onClick={openChat}
-        aria-label={tt('assistant')}
-        className="absolute bottom-4 left-4  inline-flex max-w-[30px] items-center justify-center gap-3 rounded-4xl border border-[#5c0a17] bg-[#6d0b1b] text-base font-semibold text-white shadow-[0_18px_42px_-20px_rgba(63,13,24,1)] transition-colors hover:bg-[#4f0814] sm:min-w-[250px] sm:px-10 sm:py-3 sm:text-sm"
-      >
-        <img src={amaliaLogoText} alt="" className="h-full w-full object-cover object-center" />
-      </button>
+      <div className="absolute bottom-4 left-4 z-[600] flex items-center gap-2">
+        <button
+          type="button"
+          onClick={openChat}
+          aria-label={tt('assistant')}
+          className="inline-flex h-14 max-w-[48px] items-center justify-center gap-3 rounded-2xl border border-[#5c0a17] bg-[#6d0b1b] px-2 text-base font-semibold text-white shadow-[0_18px_42px_-20px_rgba(63,13,24,1)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_24px_46px_-22px_rgba(63,13,24,1)] sm:min-w-[250px] sm:px-10 sm:py-3 sm:text-sm"
+        >
+          <img src={amaliaLogoText} alt="" className="h-full w-full object-contain object-center" />
+        </button>
+      </div>
     )
   }
 
@@ -1888,37 +2155,6 @@ function TourChatWidget({
           <p className="text-sm font-semibold text-[#1f1215]">{museumName}</p>
         </div>
         <div className="flex items-center gap-2">
-          {onToggleFullscreen ? (
-            <button
-              type="button"
-              onClick={onToggleFullscreen}
-              aria-label={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
-              title={isFullscreen ? tt('exitFullscreen') : tt('enterFullscreen')}
-              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-[#6d0b1b] bg-[#6d0b1b] text-white shadow-[0_12px_28px_-18px_rgba(109,11,27,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_18px_34px_-20px_rgba(109,11,27,1)]"
-            >
-              {isFullscreen ? (
-                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" aria-hidden="true">
-                  <path
-                    d="M9 4v5H4m16 0h-5V4M4 15h5v5m6 0v-5h5"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" aria-hidden="true">
-                  <path
-                    d="M4 9V4h5m11 5V4h-5M9 20H4v-5m16 0v5h-5"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              )}
-            </button>
-          ) : null}
           <div className="inline-flex overflow-hidden rounded-lg border border-[#ccb1ab] bg-white/90">
             {(['pt', 'en'] as const).map((option) => (
               <button
@@ -1936,20 +2172,20 @@ function TourChatWidget({
               </button>
             ))}
           </div>
-          <button
-            type="button"
-            onClick={resetConversation}
-            className="rounded-lg border border-[#ccb1ab] bg-white/90 px-2.5 py-1 text-xs font-semibold text-[#5a2730] transition-colors hover:bg-white"
-          >
-            {tt('newConversation')}
-          </button>
-          <button
-            type="button"
-            onClick={closeChat}
-            className="rounded-lg border border-[#ccb1ab] bg-white/90 px-2.5 py-1 text-xs font-semibold text-[#5a2730] transition-colors hover:bg-white"
-          >
-            {tt('close')}
-          </button>
+          <HeaderActionButton label={tt('newConversation')} onClick={resetConversation}>
+            <svg viewBox="0 0 24 24" className="h-5.5 w-5.5" fill="none" aria-hidden="true">
+              <path
+                d="M5 10a7 7 0 0111.7-3.2L19 9m0-5v5h-5M19 14a7 7 0 01-11.7 3.2L5 15m0 5v-5h5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </HeaderActionButton>
+          <HeaderActionButton label={tt('close')} onClick={closeChat} variant="danger">
+            <CloseIcon />
+          </HeaderActionButton>
         </div>
       </div>
 
@@ -1967,7 +2203,7 @@ function TourChatWidget({
                 </div>
               </div>
             ) : message.role === 'assistant' ? (
-              <article key={message.id} className="p360-chat-text-scale p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
+              <article key={message.id} className="text-2xl p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
                 <div className="mb-2 flex items-center gap-2">
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#6d0b1b]/12 text-[#6d0b1b]">
                     <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
@@ -1984,8 +2220,9 @@ function TourChatWidget({
                     message.imageMatches,
                     message.artifactResults,
                     message.navigationTargets,
+                    message.queryId,
                   )}
-                  {renderNavigationTargets(message.navigationTargets, message.imageMatches)}
+                  {renderNavigationTargets(message.navigationTargets, message.imageMatches, message.queryId)}
                 </div>
                 {message.id === latestAssistantMessageId && message.resultsHasMore ? (
                   <div className="p360-chat-results-enter mt-3">
@@ -2064,7 +2301,7 @@ function TourChatWidget({
               <div
                 key={message.id}
                 ref={(element) => registerMessageElement(message.id, element)}
-                className="p360-chat-text-scale p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
+                className="text-2xl p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
               >
                 <p>{message.text}</p>
                 {message.uploadedImageUrl ? (
@@ -2240,7 +2477,7 @@ function TourChatWidget({
         ) : null}
         <div className="flex items-center gap-2">
           <IconButton label={tt('attachFile')} onClick={handlePickImage}>
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+            <svg viewBox="0 0 24 24" className="h-9 w-9" fill="none" aria-hidden="true">
               <path
                 d="M8.5 12.5l5.8-5.8a3 3 0 114.2 4.2l-7.3 7.3a5 5 0 11-7.1-7.1l7.8-7.8"
                 stroke="currentColor"
@@ -2255,11 +2492,11 @@ function TourChatWidget({
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             placeholder={tt('inputPlaceholder')}
-            className="h-9 flex-1 rounded-xl border border-[#cbb2ad] bg-white/95 px-3 text-sm text-[#2d1b1f] outline-none transition-colors placeholder:text-[#816c6f] focus:border-[#6d0b1b]"
+            className="h-15 flex-1 rounded-xl border border-[#cbb2ad] bg-white/95 px-3 text-sm text-[#2d1b1f] outline-none transition-colors placeholder:text-[#816c6f] focus:border-[#6d0b1b]"
           />
 
           {/* <IconButton label={tt('microphoneSoon')} onClick={() => {}}>
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+            <svg viewBox="0 0 24 24" className="h-9 w-9" fill="none" aria-hidden="true">
               <path
                 d="M12 4a3 3 0 00-3 3v4a3 3 0 006 0V7a3 3 0 00-3-3zm6 7a6 6 0 11-12 0M12 17v3M9 20h6"
                 stroke="currentColor"
@@ -2273,9 +2510,23 @@ function TourChatWidget({
           <button
             type="submit"
             disabled={isSending}
-            className="inline-flex h-9 items-center justify-center rounded-xl bg-[#6d0b1b] px-3 text-sm font-semibold text-white transition-colors hover:bg-[#4f0814]"
+            aria-label={isSending ? tt('sending') : tt('send')}
+            title={isSending ? tt('sending') : tt('send')}
+            className="inline-flex h-15 w-15 shrink-0 items-center justify-center rounded-xl bg-[#6d0b1b] text-white shadow-[0_14px_30px_-20px_rgba(109,11,27,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_20px_34px_-22px_rgba(109,11,27,1)] disabled:cursor-not-allowed disabled:opacity-65 disabled:hover:translate-y-0"
           >
-            {isSending ? tt('sending') : tt('send')}
+            {isSending ? (
+              <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/35 border-t-white" />
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h13M13 6l6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
           </button>
         </div>
       </form>
@@ -2310,7 +2561,7 @@ function TourChatWidget({
               onClick={closeArtifactModal}
             >
               <article
-                className={`${isArtifactModalClosing ? 'p360-chat-modal-card-exit' : 'p360-chat-modal-card-enter'} flex max-h-[92vh] w-[94vw] max-w-[1280px] flex-col overflow-hidden rounded-2xl border border-[#d8c4be] bg-[rgba(252,246,244,0.98)] shadow-2xl`}
+                className={`${isArtifactModalClosing ? 'p360-chat-modal-card-exit' : 'p360-chat-modal-card-enter'} p360-chat-info-modal-scale flex max-h-[92vh] w-[94vw] max-w-[1580px] flex-col overflow-hidden rounded-2xl border border-[#d8c4be] bg-[rgba(252,246,244,0.98)] shadow-2xl`}
                 onClick={(event) => event.stopPropagation()}
               >
                 <div className="flex items-start justify-between border-b border-[#e3ceca] px-4 py-3">
@@ -2328,9 +2579,11 @@ function TourChatWidget({
                   <button
                     type="button"
                     onClick={closeArtifactModal}
-                    className="rounded-lg border border-[#ccb1ab] bg-white/90 px-3 py-1.5 text-sm font-semibold text-[#5a2730] transition-colors hover:bg-white lg:text-base"
+                    aria-label={tt('close')}
+                    title={tt('close')}
+                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-[#6d0b1b]/20 bg-[#6d0b1b]/10 text-[#6d0b1b] shadow-[0_12px_24px_-20px_rgba(64,19,28,0.95)] transition-[background-color,border-color,color,transform,box-shadow] hover:-translate-y-0.5 hover:border-[#6d0b1b] hover:bg-[#6d0b1b] hover:text-white hover:shadow-[0_18px_30px_-22px_rgba(64,19,28,1)]"
                   >
-                    {tt('close')}
+                    <CloseIcon />
                   </button>
                 </div>
 
@@ -2477,9 +2730,11 @@ function TourChatWidget({
                   event.stopPropagation()
                   setLightboxImage(null)
                 }}
-                className="absolute right-4 top-4 rounded-lg border border-white/30 bg-black/40 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-black/60"
+                aria-label={tt('close')}
+                title={tt('close')}
+                className="absolute right-4 top-4 inline-flex h-11 w-11 items-center justify-center rounded-xl border border-white/30 bg-black/40 text-white shadow-[0_16px_34px_-22px_rgba(0,0,0,1)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-black/60 hover:shadow-[0_22px_38px_-24px_rgba(0,0,0,1)]"
               >
-                {tt('close')}
+                <CloseIcon />
               </button>
               <img
                 src={lightboxImage.src}

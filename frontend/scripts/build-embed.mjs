@@ -18,7 +18,6 @@ function run(command, args, env) {
   })
 
   if (result.error) {
-    console.error(`[build-embed] failed to run ${command}: ${result.error.message}`)
     process.exit(1)
   }
 
@@ -38,7 +37,6 @@ if (
   process.env.COPY_TOURS === 'false' &&
   !process.env.VITE_TOURS_BASE_URL?.trim()
 ) {
-  console.error('[build-embed] set the VITE_TOURS_BASE_URL GitHub variable or allow COPY_TOURS in CI.')
   process.exit(1)
 }
 
@@ -53,6 +51,4 @@ const shouldCopyTours =
 
 if (shouldCopyTours) {
   await copyStaticTours()
-} else {
-  console.log(`[build-embed] skipped tour copy for VITE_TOURS_BASE_URL=${toursBaseUrl}.`)
 }

@@ -19,6 +19,9 @@ interface ChatApiRequest {
   museumId?: string
   museumName?: string
   language?: ChatLanguage
+  sessionId?: string | null
+  participantId?: string | null
+  taskId?: string | null
 }
 
 interface SendChatMessageRequest extends ChatApiRequest {
@@ -48,6 +51,7 @@ export interface SendChatMessageResult {
   responseFormat: 'text' | 'json_object'
   replyJson?: Record<string, unknown> | unknown[] | null
   conversationId?: string
+  queryId?: string | null
   imageMatches?: ChatImageMatch[]
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
@@ -75,6 +79,7 @@ export interface ChatResultsPageResult {
 
 interface RawChatPayload {
   conversation_id?: string
+  query_id?: string | null
   reply?: string
   response_format?: { type?: 'text' | 'json_object' }
   reply_json?: Record<string, unknown> | unknown[] | null
@@ -163,6 +168,34 @@ function normalizeBackendBaseUrl(baseUrl?: string) {
 
 function getChatApiBaseUrl(baseUrl: string) {
   return `${baseUrl}/api/v1/chat`
+}
+
+function optionalMetadataString(value: string | null | undefined) {
+  const text = String(value ?? '').trim()
+  return text || undefined
+}
+
+function buildChatRequestMetadata(request: ChatApiRequest) {
+  const sessionId = optionalMetadataString(request.sessionId)
+  const participantId = optionalMetadataString(request.participantId)
+  const taskId = optionalMetadataString(request.taskId)
+  const metadata: Record<string, string> = {}
+  if (sessionId) {
+    metadata.session_id = sessionId
+  }
+  if (participantId) {
+    metadata.participant_id = participantId
+  }
+  if (taskId) {
+    metadata.task_id = taskId
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined
+}
+
+function attachChatRequestMetadata(form: FormData, metadata: Record<string, string> | undefined) {
+  if (metadata) {
+    form.set('metadata', JSON.stringify(metadata))
+  }
 }
 
 function normalizeNavigationTargetEntry(target: RawNavigationTarget | undefined): ChatNavigationTarget | null {
@@ -475,6 +508,7 @@ function buildResultFromPayload(
       navigationTargets,
       ...meta,
       error: t(language, 'chatApi.emptyReply'),
+      queryId: typeof payload.query_id === 'string' ? payload.query_id : null,
     }
   }
 
@@ -483,6 +517,7 @@ function buildResultFromPayload(
     responseFormat: payload.response_format?.type ?? 'text',
     replyJson: payload.reply_json ?? null,
     conversationId: payload.conversation_id,
+    queryId: typeof payload.query_id === 'string' ? payload.query_id : null,
     imageMatches,
     artifactResults,
     navigationTargets,
@@ -671,6 +706,7 @@ export async function sendChatMessage(
     typeof request.resultsPageSize === 'number' && Number.isFinite(request.resultsPageSize)
       ? Math.max(1, Math.min(50, Math.trunc(request.resultsPageSize)))
       : undefined
+  const metadata = buildChatRequestMetadata(request)
 
   try {
     let response: Response
@@ -695,6 +731,7 @@ export async function sendChatMessage(
         form.set('results_page_size', String(resultsPageSize))
       }
       form.set('response_format', 'text')
+      attachChatRequestMetadata(form, metadata)
       form.set('image', request.uploadFile)
 
       response = await fetch(
@@ -726,6 +763,7 @@ export async function sendChatMessage(
         form.set('results_page_size', String(resultsPageSize))
       }
       form.set('response_format', 'text')
+      attachChatRequestMetadata(form, metadata)
       form.set('model_file', request.uploadFile)
 
       response = await fetch(
@@ -755,6 +793,7 @@ export async function sendChatMessage(
             results_page: resultsPage,
             results_page_size: resultsPageSize,
             response_format: { type: 'text' },
+            metadata,
           }),
         },
       )
@@ -877,6 +916,7 @@ export async function regenerateAssistantMessage(
   }
 
   const useStreaming = typeof request.onStatus === 'function'
+  const metadata = buildChatRequestMetadata(request)
 
   try {
     const response = await fetch(
@@ -894,6 +934,7 @@ export async function regenerateAssistantMessage(
           language,
           conversation_id: request.conversationId,
           response_format: { type: 'text' },
+          metadata,
         }),
       },
     )

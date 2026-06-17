@@ -245,34 +245,109 @@ body {
   animation: p360ChatModalCardOut 260ms cubic-bezier(0.7, 0, 0.84, 0) both;
 }
 
+.p360-tour-fullscreen-mask {
+  right: clamp(8.25rem, 9.7vw, 12.25rem);
+  bottom: clamp(1.25rem, 3.2vh, 2.25rem);
+  width: clamp(4.5rem, 4.8vw, 5.75rem);
+  height: clamp(3.5rem, 3.8vw, 4.75rem);
+}
+
+@media (max-width: 900px) {
+  .p360-tour-fullscreen-mask {
+    right: clamp(6.25rem, 13vw, 8.75rem);
+    bottom: clamp(1rem, 2.8vh, 1.75rem);
+    width: clamp(4rem, 8vw, 5rem);
+    height: clamp(3.25rem, 7vw, 4.5rem);
+  }
+}
+
+@media (max-width: 560px) {
+  .p360-tour-fullscreen-mask {
+    right: clamp(4.75rem, 18vw, 6.5rem);
+    width: clamp(3.5rem, 12vw, 4.5rem);
+  }
+}
+
 .p360-chat-text-scale {
-  font-size: 1.125rem;
-  line-height: 1.75rem;
+  font-size: 1.75rem;
+  line-height: 2.35rem;
 }
 
 .p360-chat-text-scale :where(.text-\[10px\]) {
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+}
+
+.p360-chat-text-scale :where(.text-\[11px\]) {
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+}
+
+.p360-chat-text-scale :where(.text-xs) {
+  font-size: 1.375rem;
+  line-height: 1.875rem;
+}
+
+.p360-chat-text-scale :where(.text-sm) {
+  font-size: 1.5rem;
+  line-height: 2rem;
+}
+
+.p360-chat-text-scale :where(.text-base, .text-md) {
+  font-size: 1.75rem;
+  line-height: 2.35rem;
+}
+
+.p360-chat-info-modal-scale :where(.text-\[10px\]) {
+  font-size: 0.6875rem;
+  line-height: 0.95rem;
+}
+
+.p360-chat-info-modal-scale :where(.text-\[11px\]) {
   font-size: 0.75rem;
   line-height: 1rem;
 }
 
-.p360-chat-text-scale :where(.text-\[11px\]) {
-  font-size: 0.8125rem;
-  line-height: 1.125rem;
+.p360-chat-info-modal-scale :where(.text-xs) {
+  font-size: 0.9375rem;
+  line-height: 1.375rem;
 }
 
-.p360-chat-text-scale :where(.text-xs) {
-  font-size: 0.875rem;
-  line-height: 1.25rem;
+.p360-chat-info-modal-scale :where(.text-sm) {
+  font-size: 1.0625rem;
+  line-height: 1.625rem;
 }
 
-.p360-chat-text-scale :where(.text-sm) {
-  font-size: 1rem;
-  line-height: 1.5rem;
-}
-
-.p360-chat-text-scale :where(.text-base, .text-md) {
+.p360-chat-info-modal-scale :where(.text-base, .text-md) {
   font-size: 1.125rem;
   line-height: 1.75rem;
+}
+
+.p360-chat-info-modal-scale :where(.text-lg) {
+  font-size: 1.25rem;
+  line-height: 1.875rem;
+}
+
+.p360-chat-info-modal-scale :where(.text-2xl) {
+  font-size: 1.625rem;
+  line-height: 2rem;
+}
+
+@media (min-width: 1024px) {
+  .p360-chat-info-modal-scale :where(.lg\:text-sm) {
+    font-size: 0.9375rem;
+    line-height: 1.375rem;
+  }
+
+  .p360-chat-info-modal-scale :where(.lg\:text-base) {
+    font-size: 1.125rem;
+    line-height: 1.75rem;
+  }
+
+  .p360-chat-info-modal-scale :where(.lg\:text-2xl) {
+    font-size: 1.625rem;
+    line-height: 2rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

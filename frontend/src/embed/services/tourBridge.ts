@@ -10,9 +10,10 @@ interface NavigateToArtifactPayload {
 export function syncTourContext(
   iframe: HTMLIFrameElement | null,
   payload: TourContextPayload,
+  targetOrigin: string = '*',
 ) {
   if (!iframe?.contentWindow) {
-    return
+    return false
   }
 
   iframe.contentWindow.postMessage(
@@ -20,16 +21,18 @@ export function syncTourContext(
       type: 'patrimonio360:tour-context',
       payload,
     },
-    '*',
+    targetOrigin,
   )
+  return true
 }
 
 export function navigateToArtifactInTour(
   iframe: HTMLIFrameElement | null,
   payload: NavigateToArtifactPayload,
+  targetOrigin: string = '*',
 ) {
   if (!iframe?.contentWindow) {
-    return
+    return false
   }
 
   iframe.contentWindow.postMessage(
@@ -38,6 +41,7 @@ export function navigateToArtifactInTour(
       overlayId: payload.overlayId,
       panoramaKey: payload.panoramaKey,
     },
-    '*',
+    targetOrigin,
   )
+  return true
 }

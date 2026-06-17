@@ -137,10 +137,25 @@ export interface ChatNavigationTarget {
   title?: string
 }
 
+export interface TourNavigationCommandContext {
+  sessionId: string
+  conversationId?: string | null
+  queryId?: string | null
+  participantId?: string | null
+  taskId?: string | null
+  tourId?: string | null
+  language?: ChatLanguage
+  artifactId?: string | null
+  inventoryNumber?: string | null
+  title?: string | null
+  source?: string | null
+}
+
 export interface ChatMessage {
   id: string
   role: 'assistant' | 'user'
   text: string
+  queryId?: string | null
   isCenteredNotice?: boolean
   imageMatches?: ChatImageMatch[]
   artifactResults?: ChatArtifactResult[]
