@@ -5,6 +5,8 @@ interface TourContextPayload {
 interface NavigateToArtifactPayload {
   overlayId: string
   panoramaKey: string
+  inventoryId?: string | null
+  requestId?: string | null
 }
 
 export function syncTourContext(
@@ -40,6 +42,8 @@ export function navigateToArtifactInTour(
       type: 'navigateToArtifact',
       overlayId: payload.overlayId,
       panoramaKey: payload.panoramaKey,
+      inventoryId: payload.inventoryId ?? null,
+      requestId: payload.requestId ?? null,
     },
     targetOrigin,
   )

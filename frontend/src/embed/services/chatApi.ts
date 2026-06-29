@@ -8,6 +8,8 @@ import type {
   ChatImageMatch,
   ChatLanguage,
   ChatNavigationTarget,
+  ChatSearchScope,
+  ChatSelectedArtifactContext,
   ChatUploadKind,
   RelatedArtifact,
 } from '../types'
@@ -22,6 +24,7 @@ interface ChatApiRequest {
   sessionId?: string | null
   participantId?: string | null
   taskId?: string | null
+  selectedArtifact?: ChatSelectedArtifactContext | null
 }
 
 interface SendChatMessageRequest extends ChatApiRequest {
@@ -60,6 +63,7 @@ export interface SendChatMessageResult {
   resultsTotal: number
   resultsHasMore: boolean
   resultsRequestId?: string | null
+  searchScope?: ChatSearchScope | null
   error?: string
 }
 
@@ -74,6 +78,7 @@ export interface ChatResultsPageResult {
   resultsTotal: number
   resultsHasMore: boolean
   resultsRequestId?: string | null
+  searchScope?: ChatSearchScope | null
   error?: string
 }
 
@@ -99,6 +104,7 @@ interface RawChatPayload {
   results_total?: number
   results_has_more?: boolean
   results_request_id?: string | null
+  search_scope?: RawSearchScope | null
 }
 
 interface RawArtifactResult {
@@ -158,6 +164,13 @@ interface RawNavigationTarget {
   title?: string
 }
 
+interface RawSearchScope {
+  museum_id?: string | null
+  museum_slug?: string | null
+  museum_name?: string | null
+  is_cross_museum?: boolean | null
+}
+
 function normalizeBackendBaseUrl(baseUrl?: string) {
   if (!baseUrl) {
     return null
@@ -179,7 +192,8 @@ function buildChatRequestMetadata(request: ChatApiRequest) {
   const sessionId = optionalMetadataString(request.sessionId)
   const participantId = optionalMetadataString(request.participantId)
   const taskId = optionalMetadataString(request.taskId)
-  const metadata: Record<string, string> = {}
+  const selectedArtifactId = optionalMetadataString(request.selectedArtifact?.artifactId)
+  const metadata: Record<string, unknown> = {}
   if (sessionId) {
     metadata.session_id = sessionId
   }
@@ -189,10 +203,24 @@ function buildChatRequestMetadata(request: ChatApiRequest) {
   if (taskId) {
     metadata.task_id = taskId
   }
+  if (selectedArtifactId) {
+    const selectedArtifact = request.selectedArtifact
+    metadata.selected_artifact_id = selectedArtifactId
+    metadata.selected_artifact = {
+      artifact_id: selectedArtifactId,
+      inventory_number: optionalMetadataString(selectedArtifact?.inventoryNumber) ?? null,
+      title: optionalMetadataString(selectedArtifact?.title) ?? null,
+      source_query_id: optionalMetadataString(selectedArtifact?.queryId) ?? null,
+      source: optionalMetadataString(selectedArtifact?.source) ?? null,
+      museum_id: optionalMetadataString(selectedArtifact?.museumId) ?? null,
+      museum_slug: optionalMetadataString(selectedArtifact?.museumSlug) ?? null,
+      museum_name: optionalMetadataString(selectedArtifact?.museumName) ?? null,
+    }
+  }
   return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
-function attachChatRequestMetadata(form: FormData, metadata: Record<string, string> | undefined) {
+function attachChatRequestMetadata(form: FormData, metadata: Record<string, unknown> | undefined) {
   if (metadata) {
     form.set('metadata', JSON.stringify(metadata))
   }
@@ -214,6 +242,22 @@ function normalizeNavigationTargetEntry(target: RawNavigationTarget | undefined)
     inventoryId,
     location: typeof target.location === 'string' ? target.location : undefined,
     title: typeof target.title === 'string' ? target.title : undefined,
+  }
+}
+
+function normalizeSearchScope(scope: RawSearchScope | null | undefined): ChatSearchScope | null {
+  if (!scope) {
+    return null
+  }
+  const museumSlug = String(scope.museum_slug || '').trim()
+  if (!museumSlug) {
+    return null
+  }
+  return {
+    museumId: String(scope.museum_id || '').trim() || null,
+    museumSlug,
+    museumName: String(scope.museum_name || '').trim() || null,
+    isCrossMuseum: Boolean(scope.is_cross_museum),
   }
 }
 
@@ -493,6 +537,7 @@ function buildResultFromPayload(
     artifactResults,
   )
   const navigationTargets = normalizeNavigationTargets(payload)
+  const searchScope = normalizeSearchScope(payload.search_scope)
   const meta = normalizeResultsMeta(
     payload,
     Math.max(artifactResults.length, imageMatches.length),
@@ -506,6 +551,7 @@ function buildResultFromPayload(
       imageMatches,
       artifactResults,
       navigationTargets,
+      searchScope,
       ...meta,
       error: t(language, 'chatApi.emptyReply'),
       queryId: typeof payload.query_id === 'string' ? payload.query_id : null,
@@ -521,6 +567,7 @@ function buildResultFromPayload(
     imageMatches,
     artifactResults,
     navigationTargets,
+    searchScope,
     ...meta,
   }
 }
@@ -532,6 +579,7 @@ function buildResultsPageFromPayload(payload: RawChatPayload): ChatResultsPageRe
     artifactResults,
   )
   const navigationTargets = normalizeNavigationTargets(payload)
+  const searchScope = normalizeSearchScope(payload.search_scope)
   const meta = normalizeResultsMeta(
     payload,
     Math.max(artifactResults.length, imageMatches.length),
@@ -542,6 +590,7 @@ function buildResultsPageFromPayload(payload: RawChatPayload): ChatResultsPageRe
     imageMatches,
     artifactResults,
     navigationTargets,
+    searchScope,
     ...meta,
   }
 }
@@ -1274,6 +1323,10 @@ export interface FetchArtifactFullRequest extends ChatApiRequest {
   artifactId: string
 }
 
+export interface FetchArtifactFullByInventoryRequest extends ChatApiRequest {
+  inventoryNumber: string
+}
+
 export interface FetchArtifactFullResult {
   artifact?: ChatArtifactResult
   error?: string
@@ -1296,6 +1349,42 @@ export async function fetchArtifactFull(
   try {
     const response = await fetch(
       `${getChatApiBaseUrl(backendBaseUrl)}/artifacts/${encodeURIComponent(artifactId)}/full?${params}`,
+      { method: 'GET' },
+    )
+    if (!response.ok) {
+      return { error: await parseErrorResponse(response, language) }
+    }
+    const payload = (await response.json()) as RawArtifactResult
+    const artifact = normalizeArtifactResultEntry(payload)
+    if (!artifact) {
+      return { error: t(language, 'chatApi.emptyReply') }
+    }
+    return { artifact }
+  } catch {
+    return { error: t(language, 'chatApi.networkError') }
+  }
+}
+
+export async function fetchArtifactFullByInventory(
+  request: FetchArtifactFullByInventoryRequest,
+): Promise<FetchArtifactFullResult> {
+  const language = resolveEmbedLanguage(request.language)
+  const backendBaseUrl = normalizeBackendBaseUrl(request.backendBaseUrl)
+  if (!backendBaseUrl) {
+    return { error: t(language, 'chatApi.backendNotConfigured') }
+  }
+  const inventoryNumber = (request.inventoryNumber || '').trim()
+  if (!inventoryNumber) {
+    return { error: 'inventory_number obrigatorio.' }
+  }
+  const params = new URLSearchParams({
+    museum_slug: request.museumSlug,
+    inventory_number: inventoryNumber,
+  })
+  if (request.museumId) params.set('museum_id', request.museumId)
+  try {
+    const response = await fetch(
+      `${getChatApiBaseUrl(backendBaseUrl)}/artifacts/by-inventory/full?${params}`,
       { method: 'GET' },
     )
     if (!response.ok) {

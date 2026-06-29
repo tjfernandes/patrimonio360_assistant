@@ -6,6 +6,8 @@ export type FrontendInteractionEventType =
   | 'message_sent'
   | 'answer_received'
   | 'artifact_card_opened'
+  | 'artifact_context_selected'
+  | 'artifact_context_cleared'
   | 'see_in_tour_clicked'
   | 'navigation_command_sent'
   | 'navigation_completed'
@@ -76,12 +78,30 @@ export function createInteractionSessionId() {
 
 const SESSION_ID_KEY = 'p360_session_id'
 
+function readSessionIdFromUrl() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  try {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('session_id')?.trim() || params.get(SESSION_ID_KEY)?.trim() || null
+  } catch {
+    return null
+  }
+}
+
 export function getOrCreateInteractionSessionId() {
   if (typeof window === 'undefined') {
     return createInteractionSessionId()
   }
 
   try {
+    const urlSessionId = readSessionIdFromUrl()
+    if (urlSessionId) {
+      window.sessionStorage.setItem(SESSION_ID_KEY, urlSessionId)
+      return urlSessionId
+    }
+
     const existing = window.sessionStorage.getItem(SESSION_ID_KEY)
     if (existing) {
       return existing

@@ -137,6 +137,13 @@ export interface ChatNavigationTarget {
   title?: string
 }
 
+export interface ChatSearchScope {
+  museumId?: string | null
+  museumSlug: string
+  museumName?: string | null
+  isCrossMuseum: boolean
+}
+
 export interface TourNavigationCommandContext {
   sessionId: string
   conversationId?: string | null
@@ -149,6 +156,35 @@ export interface TourNavigationCommandContext {
   inventoryNumber?: string | null
   title?: string | null
   source?: string | null
+  targetMuseumId?: string | null
+  targetMuseumSlug?: string | null
+  targetMuseumName?: string | null
+  isCrossMuseum?: boolean
+}
+
+export interface ChatSelectedArtifactContext {
+  artifactId: string
+  inventoryNumber?: string | null
+  title?: string | null
+  queryId?: string | null
+  source?: string | null
+  museumId?: string | null
+  museumSlug?: string | null
+  museumName?: string | null
+}
+
+export interface TourOpenArtifactContext {
+  artifactId?: string | null
+  inventoryNumber?: string | null
+  title?: string | null
+  location?: string | null
+  navigationTarget?: Partial<ChatNavigationTarget> | null
+  openedAt: number
+}
+
+export interface TourArtifactModalRequest extends TourOpenArtifactContext {
+  requestId: string
+  source: string
 }
 
 export interface ChatMessage {
@@ -165,11 +201,13 @@ export interface ChatMessage {
   uploadedImageUrl?: string
   uploadedModelUrl?: string
   uploadedModelFormat?: ChatModelFormat
+  selectedArtifactContext?: ChatSelectedArtifactContext | null
   resultsPage?: number
   resultsPageSize?: number
   resultsTotal?: number
   resultsHasMore?: boolean
   resultsRequestId?: string | null
+  searchScope?: ChatSearchScope | null
   isLoadingMoreResults?: boolean
   loadMoreResultsError?: string | null
 }

@@ -191,6 +191,30 @@ body {
   }
 }
 
+@keyframes p360TourArtifactFocusPulse {
+  0%,
+  100% {
+    opacity: 0.24;
+    transform: scale(0.98);
+  }
+
+  45% {
+    opacity: 0.78;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes p360TourArtifactFocusNudge {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
 .p360-chat-panel-enter {
   animation: p360ChatPanelIn 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -243,6 +267,15 @@ body {
 
 .p360-chat-modal-card-exit {
   animation: p360ChatModalCardOut 260ms cubic-bezier(0.7, 0, 0.84, 0) both;
+}
+
+.p360-tour-artifact-focus-button {
+  animation: p360TourArtifactFocusNudge 2.8s ease-in-out infinite;
+}
+
+.p360-tour-artifact-focus-pulse {
+  animation: p360TourArtifactFocusPulse 2.8s ease-in-out infinite;
+  pointer-events: none;
 }
 
 .p360-tour-fullscreen-mask {
@@ -361,7 +394,9 @@ body {
   .p360-chat-modal-backdrop-enter,
   .p360-chat-modal-backdrop-exit,
   .p360-chat-modal-card-enter,
-  .p360-chat-modal-card-exit {
+  .p360-chat-modal-card-exit,
+  .p360-tour-artifact-focus-button,
+  .p360-tour-artifact-focus-pulse {
     animation: none;
   }
 }

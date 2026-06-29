@@ -11,6 +11,7 @@ import {
 import {
   fetchArtifactDetailContext,
   fetchArtifactFull,
+  fetchArtifactFullByInventory,
   fetchChatResultsPage,
   fetchRelatedArtifactsPage,
   regenerateAssistantMessage,
@@ -27,8 +28,11 @@ import type {
   ChatModelFormat,
   ChatMessage,
   ChatNavigationTarget,
+  ChatSearchScope,
+  ChatSelectedArtifactContext,
   ChatUploadKind,
   RelatedArtifact,
+  TourArtifactModalRequest,
   TourNavigationCommandContext,
 } from '../types'
 import MessageMarkdown from './MessageMarkdown'
@@ -47,6 +51,8 @@ interface TourChatWidgetProps {
     context: TourNavigationCommandContext,
   ) => void
   onAssistantClosed?: () => void
+  onOpenChange?: (isOpen: boolean) => void
+  externalArtifactModalRequest?: TourArtifactModalRequest | null
 }
 
 const DEFAULT_PANEL_SIZE = { width: 900, height: 1050 }
@@ -68,6 +74,7 @@ type NavigationClickOptions = {
   title?: string | null
   inventoryNumber?: string | null
   artifactId?: string | null
+  searchScope?: ChatSearchScope | null
 }
 
 function detectModelFormatFromName(fileName: string): ChatModelFormat | null {
@@ -223,6 +230,8 @@ function TourChatWidget({
   taskId,
   onNavigateToTarget,
   onAssistantClosed,
+  onOpenChange,
+  externalArtifactModalRequest,
 }: TourChatWidgetProps) {
   const [language, setLanguage] = useState<ChatLanguage>(resolveEmbedLanguage(initialLanguage))
   const [isOpen, setIsOpen] = useState(false)
@@ -244,6 +253,8 @@ function TourChatWidget({
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
   const [selectedArtifactNavigationTarget, setSelectedArtifactNavigationTarget] = useState<ChatNavigationTarget | null>(null)
   const [selectedArtifactQueryId, setSelectedArtifactQueryId] = useState<string | null>(null)
+  const [selectedArtifactSearchScope, setSelectedArtifactSearchScope] = useState<ChatSearchScope | null>(null)
+  const [focusedArtifact, setFocusedArtifact] = useState<ChatSelectedArtifactContext | null>(null)
   const [selectedArtifactImageIndex, setSelectedArtifactImageIndex] = useState(0)
   const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
   // Contexto relacional do artefacto aberto no modal (autores/conjuntos/exposicoes).
@@ -257,12 +268,14 @@ function TourChatWidget({
   const [messages, setMessages] = useState<ChatMessage[]>([
     buildStarterMessage(),
   ])
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const messageElementsRef = useRef<Map<string, HTMLElement>>(new Map())
   const activeTurnTopMessageIdRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const chatCloseTimerRef = useRef<number | null>(null)
   const artifactModalCloseTimerRef = useRef<number | null>(null)
+  const externalArtifactModalRequestIdRef = useRef<string | null>(null)
   const objectUrlsRef = useRef<string[]>([])
   const dragCounterRef = useRef(0)
   const sessionIdRef = useRef(sessionId || createInteractionSessionId())
@@ -300,9 +313,11 @@ function TourChatWidget({
       status?: string | null
       source?: string | null
       error?: string | null
+      searchScope?: ChatSearchScope | null
     } = {},
   ) => {
     const artifact = fields.artifact
+    const targetScope = fields.searchScope?.isCrossMuseum ? fields.searchScope : null
     logFrontendEvent({
       eventType,
       backendBaseUrl,
@@ -311,7 +326,7 @@ function TourChatWidget({
       queryId: fields.queryId ?? null,
       participantId: participantId ?? null,
       taskId: taskId ?? null,
-      tourId: museumSlug,
+      tourId: targetScope?.museumSlug ?? museumSlug,
       language,
       artifactId:
         fields.artifactId ??
@@ -326,7 +341,88 @@ function TourChatWidget({
       status: fields.status,
       source: fields.source,
       error: fields.error,
-      metadata: fields.metadata,
+      metadata: {
+        ...(fields.metadata ?? {}),
+        target_museum_id: targetScope?.museumId ?? null,
+        target_museum_slug: targetScope?.museumSlug ?? null,
+        target_museum_name: targetScope?.museumName ?? null,
+        is_cross_museum: targetScope ? true : false,
+      },
+    })
+  }
+
+  const buildFocusedArtifactContext = (options: NavigationClickOptions): ChatSelectedArtifactContext | null => {
+    const artifact = options.artifact
+    const artifactId = String(options.artifactId ?? artifact?.artifactId ?? '').trim()
+    if (!artifactId) {
+      return null
+    }
+    const sourceScope = options.searchScope?.museumSlug
+      ? options.searchScope
+      : {
+          museumId,
+          museumSlug,
+          museumName,
+          isCrossMuseum: false,
+        }
+
+    return {
+      artifactId,
+      inventoryNumber: options.inventoryNumber ?? artifact?.inventoryNumber ?? null,
+      title: options.title ?? artifact?.title ?? null,
+      queryId: options.queryId ?? null,
+      source: options.source,
+      museumId: sourceScope.museumId ?? null,
+      museumSlug: sourceScope.museumSlug ?? null,
+      museumName: sourceScope.museumName ?? null,
+    }
+  }
+
+  const selectFocusedArtifact = (options: NavigationClickOptions) => {
+    const context = buildFocusedArtifactContext(options)
+    if (!context) {
+      return
+    }
+    if (focusedArtifact?.artifactId === context.artifactId) {
+      setFocusedArtifact(context)
+      return
+    }
+    setFocusedArtifact(context)
+    logInteraction('artifact_context_selected', {
+      queryId: context.queryId ?? null,
+      artifact: options.artifact ?? null,
+      title: context.title,
+      inventoryNumber: context.inventoryNumber,
+      artifactId: context.artifactId,
+      status: 'selected',
+      source: context.source,
+      metadata: {
+        source: context.source,
+        selected_artifact_id: context.artifactId,
+        selected_museum_id: context.museumId,
+        selected_museum_slug: context.museumSlug,
+        selected_museum_name: context.museumName,
+      },
+    })
+  }
+
+  const clearFocusedArtifact = (source: string = 'composer') => {
+    if (!focusedArtifact) {
+      return
+    }
+    const cleared = focusedArtifact
+    setFocusedArtifact(null)
+    logInteraction('artifact_context_cleared', {
+      queryId: cleared.queryId ?? null,
+      title: cleared.title,
+      inventoryNumber: cleared.inventoryNumber,
+      artifactId: cleared.artifactId,
+      status: 'cleared',
+      source,
+      metadata: {
+        source,
+        selected_artifact_id: cleared.artifactId,
+      },
     })
   }
 
@@ -338,6 +434,7 @@ function TourChatWidget({
     const artifactId = options.artifactId ?? artifact?.artifactId ?? null
     const inventoryNumber = options.inventoryNumber ?? artifact?.inventoryNumber ?? target.inventoryId
     const title = options.title ?? artifact?.title ?? target.title ?? null
+    const targetScope = options.searchScope?.isCrossMuseum ? options.searchScope : null
 
     return {
       sessionId: sessionIdRef.current,
@@ -345,12 +442,16 @@ function TourChatWidget({
       queryId: options.queryId ?? null,
       participantId: participantId ?? null,
       taskId: taskId ?? null,
-      tourId: museumSlug,
+      tourId: targetScope?.museumSlug ?? museumSlug,
       language,
       artifactId,
       inventoryNumber,
       title,
       source: options.source,
+      targetMuseumId: targetScope?.museumId ?? null,
+      targetMuseumSlug: targetScope?.museumSlug ?? null,
+      targetMuseumName: targetScope?.museumName ?? null,
+      isCrossMuseum: Boolean(targetScope),
     }
   }
 
@@ -362,6 +463,22 @@ function TourChatWidget({
     messageElementsRef.current.delete(messageId)
   }, [])
 
+  const scrollChatElementIntoView = useCallback((target: HTMLElement, block: 'start' | 'end') => {
+    const container = messagesScrollRef.current
+    if (!container) {
+      return false
+    }
+
+    const containerRect = container.getBoundingClientRect()
+    const targetRect = target.getBoundingClientRect()
+    const targetTop = targetRect.top - containerRect.top + container.scrollTop
+    const targetBottom = targetRect.bottom - containerRect.top + container.scrollTop
+    const top = block === 'end' ? targetBottom - container.clientHeight : targetTop
+
+    container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
+    return true
+  }, [])
+
   const scrollActiveTurnToTop = useCallback(() => {
     const messageId = activeTurnTopMessageIdRef.current
     if (!messageId) {
@@ -371,9 +488,8 @@ function TourChatWidget({
     if (!target) {
       return false
     }
-    target.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    return true
-  }, [])
+    return scrollChatElementIntoView(target, 'start')
+  }, [scrollChatElementIntoView])
 
   const stripStarterNotice = (items: ChatMessage[]) =>
     items.filter((item) => !item.isCenteredNotice)
@@ -385,6 +501,7 @@ function TourChatWidget({
     }
     setIsChatClosing(false)
     setIsOpen(true)
+    onOpenChange?.(true)
     logInteraction('assistant_opened')
   }
 
@@ -401,6 +518,7 @@ function TourChatWidget({
     }
     chatCloseTimerRef.current = window.setTimeout(() => {
       setIsOpen(false)
+      onOpenChange?.(false)
       setIsChatClosing(false)
       chatCloseTimerRef.current = null
     }, CHAT_PANEL_CLOSE_ANIMATION_MS)
@@ -411,6 +529,7 @@ function TourChatWidget({
     navigationTarget: ChatNavigationTarget | null = null,
     queryId: string | null = null,
     source: string = 'result_card',
+    searchScope: ChatSearchScope | null = null,
   ) => {
     if (artifactModalCloseTimerRef.current !== null) {
       window.clearTimeout(artifactModalCloseTimerRef.current)
@@ -421,10 +540,12 @@ function TourChatWidget({
     setSelectedArtifactResult(artifact)
     setSelectedArtifactNavigationTarget(navigationTarget)
     setSelectedArtifactQueryId(queryId)
+    setSelectedArtifactSearchScope(searchScope)
     logInteraction('artifact_card_opened', {
       queryId,
       artifact,
       navigationTarget,
+      searchScope,
       metadata: { source },
     })
     // Reset do contexto relacional; o useEffect carrega o novo.
@@ -432,6 +553,116 @@ function TourChatWidget({
     setDetailContextError(null)
     setIsDetailContextLoading(true)
   }
+
+  const buildNavigationTargetFromModalRequest = (
+    request: TourArtifactModalRequest,
+    inventoryNumber?: string | null,
+    title?: string | null,
+  ): ChatNavigationTarget | null => {
+    const target = request.navigationTarget
+    const overlayId = String(target?.overlayId || '').trim()
+    const panoramaKey = String(target?.panoramaKey || '').trim()
+    const inventoryId = String(target?.inventoryId || inventoryNumber || '').trim()
+    if (!overlayId || !panoramaKey || !inventoryId) {
+      return null
+    }
+    const location = String(target?.location || request.location || '').trim()
+    const targetTitle = String(target?.title || title || request.title || '').trim()
+    return {
+      overlayId,
+      panoramaKey,
+      inventoryId,
+      location: location || undefined,
+      title: targetTitle || undefined,
+    }
+  }
+
+  const openExternalArtifactModal = async (request: TourArtifactModalRequest) => {
+    openChat()
+
+    const requestedArtifactId = String(request.artifactId || '').trim()
+    const requestedInventoryNumber =
+      String(request.inventoryNumber || request.navigationTarget?.inventoryId || '').trim() || null
+    const requestedTitle =
+      String(request.title || request.navigationTarget?.title || '').trim() || null
+    let artifact: ChatArtifactResult | null = null
+    let resolutionError: string | null = null
+
+    if (requestedInventoryNumber) {
+      const result = await fetchArtifactFullByInventory({
+        backendBaseUrl,
+        museumSlug,
+        museumId,
+        language,
+        inventoryNumber: requestedInventoryNumber,
+      })
+      artifact = result.artifact ?? null
+      resolutionError = result.error ?? null
+    } else if (requestedArtifactId) {
+      const result = await fetchArtifactFull({
+        backendBaseUrl,
+        museumSlug,
+        museumId,
+        language,
+        artifactId: requestedArtifactId,
+      })
+      artifact = result.artifact ?? null
+      resolutionError = result.error ?? null
+    }
+
+    if (!artifact && requestedArtifactId) {
+      artifact = {
+        artifactId: requestedArtifactId,
+        inventoryNumber: requestedInventoryNumber ?? undefined,
+        title: requestedTitle ?? undefined,
+        creators: [],
+        creatorIds: [],
+        sets: [],
+        setIds: [],
+        setNumbers: [],
+        exhibitions: [],
+        exhibitionIds: [],
+        exhibitionTypes: [],
+        images: [],
+      }
+    }
+
+    if (!artifact) {
+      logInteraction('error_shown', {
+        inventoryNumber: requestedInventoryNumber,
+        title: requestedTitle,
+        status: 'not_opened',
+        source: request.source,
+        error: resolutionError ?? 'artifact_resolution_failed',
+        metadata: {
+          source: request.source,
+          reason: resolutionError ?? 'artifact_resolution_failed',
+          inventory_number: requestedInventoryNumber,
+        },
+      })
+      return
+    }
+
+    const navigationTarget = buildNavigationTargetFromModalRequest(
+      request,
+      artifact.inventoryNumber ?? requestedInventoryNumber,
+      artifact.title ?? requestedTitle,
+    )
+    openArtifactModal(artifact, navigationTarget, null, request.source, null)
+  }
+
+  useEffect(() => {
+    if (!externalArtifactModalRequest) {
+      return
+    }
+    if (externalArtifactModalRequestIdRef.current === externalArtifactModalRequest.requestId) {
+      return
+    }
+    externalArtifactModalRequestIdRef.current = externalArtifactModalRequest.requestId
+    void openExternalArtifactModal(externalArtifactModalRequest)
+    // The request object is an imperative bridge from the tour shell.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalArtifactModalRequest])
 
   const closeArtifactModal = useCallback(() => {
     if (!selectedArtifactResult || isArtifactModalClosing) {
@@ -446,6 +677,7 @@ function TourChatWidget({
       setSelectedArtifactResult(null)
       setSelectedArtifactNavigationTarget(null)
       setSelectedArtifactQueryId(null)
+      setSelectedArtifactSearchScope(null)
       setSelectedArtifactImageIndex(0)
       setIsArtifactModalClosing(false)
       setDetailContext(null)
@@ -463,6 +695,7 @@ function TourChatWidget({
       queryId: selectedArtifactQueryId,
       artifact: selectedArtifactResult,
       source: 'artifact_modal',
+      searchScope: selectedArtifactSearchScope,
     })
     logInteraction('see_in_tour_clicked', {
       queryId: selectedArtifactQueryId,
@@ -470,10 +703,25 @@ function TourChatWidget({
       navigationTarget: selectedArtifactNavigationTarget,
       status: 'clicked',
       source: 'artifact_modal',
+      searchScope: selectedArtifactSearchScope,
       metadata: { source: 'artifact_modal' },
     })
     onNavigateToTarget(selectedArtifactNavigationTarget, navigationContext)
     closeArtifactModal()
+  }
+
+  const handleAskAboutSelectedArtifact = () => {
+    if (!selectedArtifactResult) {
+      return
+    }
+    selectFocusedArtifact({
+      artifact: selectedArtifactResult,
+      queryId: selectedArtifactQueryId,
+      source: 'artifact_modal',
+      searchScope: selectedArtifactSearchScope,
+    })
+    closeArtifactModal()
+    openChat()
   }
 
   // Carrega contexto relacional quando o modal abre (lazy).
@@ -493,10 +741,12 @@ function TourChatWidget({
     relatedLoadingKeysRef.current = new Set()
     setRelatedLoadingKeys(new Set())
     setRelatedLoadErrors({})
+    const detailMuseumSlug = selectedArtifactSearchScope?.museumSlug ?? museumSlug
+    const detailMuseumId = selectedArtifactSearchScope?.museumId ?? museumId
     fetchArtifactDetailContext({
       backendBaseUrl,
-      museumSlug,
-      museumId,
+      museumSlug: detailMuseumSlug,
+      museumId: detailMuseumId ?? undefined,
       language,
       artifactId,
     })
@@ -612,10 +862,12 @@ function TourChatWidget({
     })
     setRelatedLoadErrors((current) => ({ ...current, [groupKey]: null }))
 
+    const relatedMuseumSlug = selectedArtifactSearchScope?.museumSlug ?? museumSlug
+    const relatedMuseumId = selectedArtifactSearchScope?.museumId ?? museumId
     const result = await fetchRelatedArtifactsPage({
       backendBaseUrl,
-      museumSlug,
-      museumId,
+      museumSlug: relatedMuseumSlug,
+      museumId: relatedMuseumId ?? undefined,
       language,
       artifactId: selectedArtifactResult.artifactId,
       tipo: kind,
@@ -755,6 +1007,7 @@ function TourChatWidget({
     setSelectedArtifactResult(null)
     setSelectedArtifactQueryId(null)
     setSelectedArtifactImageIndex(0)
+    setFocusedArtifact(null)
     setMessages([buildStarterMessage()])
   }
 
@@ -773,8 +1026,10 @@ function TourChatWidget({
       }
       return
     }
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [messages, isAssistantLoading, statusMessages, scrollActiveTurnToTop])
+    if (messagesEndRef.current) {
+      scrollChatElementIntoView(messagesEndRef.current, 'end')
+    }
+  }, [messages, isAssistantLoading, statusMessages, scrollActiveTurnToTop, scrollChatElementIntoView])
 
   useEffect(() => {
     void warmChatSession({ backendBaseUrl, museumSlug })
@@ -872,6 +1127,7 @@ function TourChatWidget({
     const selectedImagePreviewUrlSnapshot = selectedImagePreviewUrl
     const selectedModelPreviewUrlSnapshot = selectedModelPreviewUrl
     const selectedModelFormatSnapshot = selectedModelFormat
+    const focusedArtifactSnapshot = focusedArtifact ? { ...focusedArtifact } : null
 
     const userMessageId = createId()
     activeTurnTopMessageIdRef.current = userMessageId
@@ -889,6 +1145,7 @@ function TourChatWidget({
           selectedUploadKindSnapshot === 'model' ? selectedModelPreviewUrlSnapshot ?? undefined : undefined,
         uploadedModelFormat:
           selectedUploadKindSnapshot === 'model' ? selectedModelFormatSnapshot ?? undefined : undefined,
+        selectedArtifactContext: focusedArtifactSnapshot,
       },
     ])
     setDraft('')
@@ -901,6 +1158,8 @@ function TourChatWidget({
         has_upload: hasUpload,
         upload_kind: selectedUploadKindSnapshot,
         message_length: submittedText.length,
+        selected_artifact_id: focusedArtifactSnapshot?.artifactId ?? null,
+        selected_context_mode: focusedArtifactSnapshot ? 'auto' : null,
       },
     })
 
@@ -913,6 +1172,7 @@ function TourChatWidget({
       sessionId: sessionIdRef.current,
       participantId,
       taskId,
+      selectedArtifact: focusedArtifactSnapshot,
       text: submittedText,
       conversationId: conversationId ?? undefined,
       uploadFile: selectedUploadFileSnapshot,
@@ -953,6 +1213,7 @@ function TourChatWidget({
           resultsTotal: chatResponse.resultsTotal,
           resultsHasMore: chatResponse.resultsHasMore,
           resultsRequestId: chatResponse.resultsRequestId,
+          searchScope: chatResponse.searchScope,
           isLoadingMoreResults: false,
           loadMoreResultsError: null,
         },
@@ -965,6 +1226,10 @@ function TourChatWidget({
           image_match_count: chatResponse.imageMatches?.length ?? 0,
           navigation_target_count: chatResponse.navigationTargets?.length ?? 0,
           results_total: chatResponse.resultsTotal,
+          target_museum_id: chatResponse.searchScope?.museumId ?? null,
+          target_museum_slug: chatResponse.searchScope?.museumSlug ?? null,
+          target_museum_name: chatResponse.searchScope?.museumName ?? null,
+          is_cross_museum: chatResponse.searchScope?.isCrossMuseum ?? false,
         },
       })
     } else if (chatResponse?.error) {
@@ -983,6 +1248,7 @@ function TourChatWidget({
           resultsTotal: chatResponse.resultsTotal,
           resultsHasMore: chatResponse.resultsHasMore,
           resultsRequestId: chatResponse.resultsRequestId,
+          searchScope: chatResponse.searchScope,
           isLoadingMoreResults: false,
           loadMoreResultsError: null,
         },
@@ -1047,6 +1313,7 @@ function TourChatWidget({
       sessionId: sessionIdRef.current,
       participantId,
       taskId,
+      selectedArtifact: focusedArtifact,
       conversationId,
       onStatus: (message) => {
         const normalized = message.trim()
@@ -1084,6 +1351,7 @@ function TourChatWidget({
                 resultsTotal: chatResponse.resultsTotal,
                 resultsHasMore: chatResponse.resultsHasMore,
                 resultsRequestId: chatResponse.resultsRequestId,
+                searchScope: chatResponse.searchScope,
                 isLoadingMoreResults: false,
                 loadMoreResultsError: null,
               }
@@ -1099,6 +1367,10 @@ function TourChatWidget({
           image_match_count: chatResponse.imageMatches?.length ?? 0,
           navigation_target_count: chatResponse.navigationTargets?.length ?? 0,
           results_total: chatResponse.resultsTotal,
+          target_museum_id: chatResponse.searchScope?.museumId ?? null,
+          target_museum_slug: chatResponse.searchScope?.museumSlug ?? null,
+          target_museum_name: chatResponse.searchScope?.museumName ?? null,
+          is_cross_museum: chatResponse.searchScope?.isCrossMuseum ?? false,
         },
       })
     } else if (chatResponse?.error) {
@@ -1117,6 +1389,7 @@ function TourChatWidget({
                 resultsTotal: chatResponse.resultsTotal,
                 resultsHasMore: chatResponse.resultsHasMore,
                 resultsRequestId: chatResponse.resultsRequestId,
+                searchScope: chatResponse.searchScope,
                 isLoadingMoreResults: false,
                 loadMoreResultsError: null,
               }
@@ -1222,6 +1495,7 @@ function TourChatWidget({
       resultsTotal: resultsPage.resultsTotal,
       resultsHasMore: resultsPage.resultsHasMore,
       resultsRequestId: resultsPage.resultsRequestId || targetMessage.resultsRequestId,
+      searchScope: resultsPage.searchScope ?? targetMessage.searchScope,
       isLoadingMoreResults: false,
       loadMoreResultsError: null,
     }
@@ -1247,6 +1521,10 @@ function TourChatWidget({
         navigation_target_count: resultsPage.navigationTargets?.length ?? 0,
         results_total: resultsPage.resultsTotal,
         results_page: resultsPage.resultsPage,
+        target_museum_id: resultsPage.searchScope?.museumId ?? targetMessage.searchScope?.museumId ?? null,
+        target_museum_slug: resultsPage.searchScope?.museumSlug ?? targetMessage.searchScope?.museumSlug ?? null,
+        target_museum_name: resultsPage.searchScope?.museumName ?? targetMessage.searchScope?.museumName ?? null,
+        is_cross_museum: resultsPage.searchScope?.isCrossMuseum ?? targetMessage.searchScope?.isCrossMuseum ?? false,
       },
     })
   }
@@ -1430,6 +1708,7 @@ function TourChatWidget({
       artifactId: options.artifactId,
       status: 'clicked',
       source: options.source,
+      searchScope: options.searchScope,
       metadata: { source: options.source },
     })
     onNavigateToTarget?.(target, navigationContext)
@@ -1484,11 +1763,50 @@ function TourChatWidget({
     void applySelectedFile(preferredFile)
   }
 
+  const renderSearchScopeNotice = (searchScope?: ChatSearchScope | null) => {
+    if (!searchScope?.isCrossMuseum) {
+      return null
+    }
+    const museumLabel = searchScope.museumName || searchScope.museumSlug
+    return (
+      <div className="p360-chat-results-enter mt-2 inline-flex max-w-full items-center gap-2 rounded-full border border-[#b8ccd8] bg-[#f3f9fb] px-2.5 py-1 text-[11px] font-semibold text-[#18304a] shadow-[0_8px_18px_-16px_rgba(24,48,74,0.5)]">
+        <span className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6d8c]" />
+        <span className="truncate">{tt('crossMuseumResultsNotice', { museum: museumLabel })}</span>
+      </div>
+    )
+  }
+
+  const renderUserMessageReference = (context?: ChatSelectedArtifactContext | null) => {
+    if (!context?.artifactId) {
+      return null
+    }
+    const label = [context.inventoryNumber, context.title || context.artifactId]
+      .filter(Boolean)
+      .join(' · ')
+    const museumLabel = context.museumName || context.museumSlug || null
+    return (
+      <div className="mb-1.5 flex max-w-full flex-wrap items-center gap-1.5 text-[10px] leading-tight text-[#5d4448]">
+        <span className="inline-flex items-center rounded-full border border-[#c7b3ae] bg-white/55 px-2 py-0.5 font-semibold uppercase tracking-[0.08em] text-[#6d0b1b]">
+          {tt('artifactContextLabel')}
+        </span>
+        <span className="min-w-0 max-w-[260px] truncate rounded-full bg-white/45 px-2 py-0.5 font-medium">
+          {label}
+        </span>
+        {museumLabel ? (
+          <span className="max-w-[180px] truncate rounded-full bg-white/35 px-2 py-0.5">
+            {museumLabel}
+          </span>
+        ) : null}
+      </div>
+    )
+  }
+
   const renderImageMatches = (
     imageMatches: ChatImageMatch[] | undefined,
     artifactResults: ChatArtifactResult[] | undefined,
     navigationTargets: ChatNavigationTarget[] | undefined,
     queryId?: string | null,
+    searchScope?: ChatSearchScope | null,
   ) => {
     const visibleImageMatches = dedupeImageMatches(imageMatches)
     if (visibleImageMatches.length === 0) {
@@ -1511,10 +1829,21 @@ function TourChatWidget({
             embeddedNavigationTarget ||
             resolveNavigationTargetForArtifact(linkedArtifact, navigationTargets) ||
             resolveNavigationTargetForImageMatch(match, navigationTargets)
+          const focusArtifactId = String(linkedArtifact?.artifactId || match.artifactId || '').trim()
+          const focusInventoryNumber = linkedArtifact?.inventoryNumber || match.inventory || null
+          const focusTitle = linkedArtifact?.title || match.title || null
+          const canFocusArtifact = Boolean(focusArtifactId)
+          const isFocusedArtifact = Boolean(
+            focusArtifactId && focusedArtifact?.artifactId === focusArtifactId,
+          )
           return (
             <article
               key={`${match.originalImageName}-${index}`}
-              className={`${isChatClosing ? 'p360-chat-result-card-exit' : 'p360-chat-result-card'} overflow-hidden rounded-xl border border-[#d9c0bc] bg-white/80`}
+              className={`${isChatClosing ? 'p360-chat-result-card-exit' : 'p360-chat-result-card'} overflow-hidden rounded-xl border bg-white/80 transition-[border-color,box-shadow,background-color] ${
+                isFocusedArtifact
+                  ? 'border-[#6d0b1b] bg-[#fff8f5] shadow-[0_14px_28px_-24px_rgba(109,11,27,0.9)] ring-2 ring-[#6d0b1b]/20'
+                  : 'border-[#d9c0bc]'
+              }`}
               style={{
                 animationDelay: isChatClosing
                   ? `${Math.min((visibleImageMatches.length - index - 1) * 30, 180)}ms`
@@ -1526,7 +1855,7 @@ function TourChatWidget({
                   type="button"
                   onClick={() => {
                     if (linkedArtifact) {
-                      openArtifactModal(linkedArtifact, linkedTarget, queryId ?? null, 'image_match_card')
+                      openArtifactModal(linkedArtifact, linkedTarget, queryId ?? null, 'image_match_card', searchScope ?? null)
                       return
                     }
                     setLightboxImage({
@@ -1553,24 +1882,65 @@ function TourChatWidget({
                 </p>
                 {match.title ? <p className="truncate text-sm text-[#341d22]">{match.title}</p> : null}
                 {/* <p className="truncate text-[11px] text-[#6e5a5f]">{match.originalImageName}</p> */}
-                {linkedTarget ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleNavigateToTargetClick(linkedTarget, {
-                        artifact: linkedArtifact,
-                        queryId: queryId ?? null,
-                        source: 'image_match_card',
-                        title: match.title,
-                        inventoryNumber: match.inventory,
-                        artifactId: match.artifactId,
-                      })
-                    }
-                    disabled={!onNavigateToTarget}
-                  className="mt-1 inline-flex w-full items-center justify-center rounded-md border border-[#18304a] bg-[#13283f] px-2 py-1 text-sm font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                    {tt('viewInTour')}
-                  </button>
+                {canFocusArtifact || linkedTarget ? (
+                  <div className="mt-1.5 flex gap-1.5">
+                    {canFocusArtifact ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          selectFocusedArtifact({
+                            artifact: linkedArtifact,
+                            queryId: queryId ?? null,
+                            source: 'image_match_card',
+                            title: focusTitle,
+                            inventoryNumber: focusInventoryNumber,
+                            artifactId: focusArtifactId,
+                            searchScope,
+                          })
+                        }
+                        title={tt('askAboutThisTitle')}
+                        aria-label={tt('askAboutThisTitle')}
+                        className={`inline-flex cursor-pointer active:scale-95 transition-transform duration-100 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-sm font-semibold transition-[background-color,border-color,color,box-shadow] ${
+                          isFocusedArtifact
+                            ? 'border-[#6d0b1b] bg-[#6d0b1b] text-white shadow-[0_12px_24px_-20px_rgba(109,11,27,0.95)]'
+                            : 'border-[#c8ada7] bg-white/90 text-[#5a2730] hover:border-[#6d0b1b]/45 hover:bg-white'
+                        }`}
+                      >
+                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" aria-hidden="true">
+                          <path
+                            d="M8 12h8M12 8v8M5.5 5.5h13v10h-5L10 19v-3.5H5.5z"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        <span className="truncate">
+                          {isFocusedArtifact ? tt('artifactContextSelectedAction') : tt('askAboutThis')}
+                        </span>
+                      </button>
+                    ) : null}
+                    {linkedTarget ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleNavigateToTargetClick(linkedTarget, {
+                            artifact: linkedArtifact,
+                            queryId: queryId ?? null,
+                            source: 'image_match_card',
+                            title: match.title,
+                            inventoryNumber: match.inventory,
+                            artifactId: match.artifactId,
+                            searchScope,
+                          })
+                        }
+                        disabled={!onNavigateToTarget}
+                        className="inline-flex min-w-0 flex-1 items-center justify-center rounded-md border border-[#18304a] bg-[#13283f] px-2 py-1 text-sm font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer active:scale-95 transition-transform duration-100"
+                      >
+                        <span className="truncate">{tt('viewInTour')}</span>
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             </article>
@@ -1749,11 +2119,14 @@ function TourChatWidget({
       related.navigationTarget ?? null,
       selectedArtifactQueryId,
       'related_artifact_card',
+      selectedArtifactSearchScope,
     )
+    const detailMuseumSlug = selectedArtifactSearchScope?.museumSlug ?? museumSlug
+    const detailMuseumId = selectedArtifactSearchScope?.museumId ?? museumId
     const { artifact, error } = await fetchArtifactFull({
       backendBaseUrl,
-      museumSlug,
-      museumId,
+      museumSlug: detailMuseumSlug,
+      museumId: detailMuseumId ?? undefined,
       language,
       artifactId: related.artifactId,
     })
@@ -1847,6 +2220,7 @@ function TourChatWidget({
                         artifact: art,
                         queryId: selectedArtifactQueryId,
                         source: 'related_artifact_card',
+                        searchScope: selectedArtifactSearchScope,
                       })
                     }
                     disabled={!onNavigateToTarget}
@@ -2059,6 +2433,7 @@ function TourChatWidget({
     navigationTargets: ChatNavigationTarget[] | undefined,
     imageMatches: ChatImageMatch[] | undefined,
     queryId?: string | null,
+    searchScope?: ChatSearchScope | null,
   ) => {
     if (!navigationTargets || navigationTargets.length === 0) {
       return null
@@ -2091,6 +2466,7 @@ function TourChatWidget({
                   source: 'navigation_targets',
                   title: target.title,
                   inventoryNumber: target.inventoryId,
+                  searchScope,
                 })
               }
               disabled={!onNavigateToTarget}
@@ -2189,7 +2565,7 @@ function TourChatWidget({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2.5">
+      <div ref={messagesScrollRef} className="flex-1 overflow-y-auto px-3 py-2.5">
         <div className="space-y-2.5">
           {messages.map((message) =>
             message.isCenteredNotice ? (
@@ -2216,13 +2592,15 @@ function TourChatWidget({
                 </div>
                 <div className="space-y-2">
                   <MessageMarkdown messageId={message.id} text={message.text} />
+                  {renderSearchScopeNotice(message.searchScope)}
                   {renderImageMatches(
                     message.imageMatches,
                     message.artifactResults,
                     message.navigationTargets,
                     message.queryId,
+                    message.searchScope,
                   )}
-                  {renderNavigationTargets(message.navigationTargets, message.imageMatches, message.queryId)}
+                  {renderNavigationTargets(message.navigationTargets, message.imageMatches, message.queryId, message.searchScope)}
                 </div>
                 {message.id === latestAssistantMessageId && message.resultsHasMore ? (
                   <div className="p360-chat-results-enter mt-3">
@@ -2303,6 +2681,7 @@ function TourChatWidget({
                 ref={(element) => registerMessageElement(message.id, element)}
                 className="text-2xl p360-chat-message-enter p360-chat-message-enter-user ml-auto w-fit max-w-[88%] rounded-2xl bg-[rgba(223,208,201,0.96)] px-3 py-2.5 text-md leading-relaxed text-[#2f1f22] shadow-sm"
               >
+                {renderUserMessageReference(message.selectedArtifactContext)}
                 <p>{message.text}</p>
                 {message.uploadedImageUrl ? (
                   <figure className="mt-2 overflow-hidden rounded-lg border border-[#d8bfc0] bg-white/70">
@@ -2406,6 +2785,40 @@ function TourChatWidget({
           <p className="mb-2 rounded-lg border border-[#d08f93] bg-[#fff0f1] px-2.5 py-1.5 text-[11px] font-medium text-[#8a1f2e]">
             {uploadUiError}
           </p>
+        ) : null}
+        {focusedArtifact ? (
+          <div className="mb-2 flex items-center gap-2 rounded-xl border border-[#6d0b1b]/20 bg-[#fff8f5] px-2.5 py-2 shadow-[0_12px_28px_-26px_rgba(109,11,27,0.85)]">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#6d0b1b]/10 text-[#6d0b1b]">
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
+                <path
+                  d="M8 12h8M12 8v8M5.5 5.5h13v10h-5L10 19v-3.5H5.5z"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6d0b1b]">
+                {tt('artifactContextLabel')}
+              </p>
+              <p className="truncate text-xs font-semibold text-[#2d1b1f]">
+                {[focusedArtifact.inventoryNumber, focusedArtifact.title || focusedArtifact.artifactId]
+                  .filter(Boolean)
+                  .join(' - ')}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => clearFocusedArtifact('composer')}
+              aria-label={tt('clearArtifactContext')}
+              title={tt('clearArtifactContext')}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#c8ada7] bg-white/90 text-[#5a2730] transition-colors hover:border-[#6d0b1b]/45 hover:bg-white"
+            >
+              <CloseIcon className="h-4 w-4" />
+            </button>
+          </div>
         ) : null}
         {!selectedUploadFile ? (
           <div className="mb-2 rounded-xl border border-dashed border-[#ccb2ad] bg-white/50 px-3 py-2 text-[11px] text-[#6f5a5d]">
@@ -2616,8 +3029,29 @@ function TourChatWidget({
                         </div>
                       ))}
 
-                    {(selectedArtifactNavigationTarget && onNavigateToTarget) || selectedArtifactResult.detailUrl ? (
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleAskAboutSelectedArtifact}
+                          className={`inline-flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-bold text-white shadow-[0_18px_34px_-20px_rgba(109,11,27,0.95)] ring-2 ring-[#6d0b1b]/10 transition-[background-color,border-color,color,transform,box-shadow,ring-color] hover:-translate-y-0.5 hover:shadow-[0_22px_38px_-22px_rgba(109,11,27,1)] focus-visible:outline-none focus-visible:ring-[#6d0b1b]/35 lg:text-base ${
+                            focusedArtifact?.artifactId === selectedArtifactResult.artifactId
+                              ? 'border-[#4f0814] bg-[#4f0814] hover:bg-[#3f0610]'
+                              : 'border-[#6d0b1b] bg-[#6d0b1b] hover:bg-[#4f0814]'
+                          }`}
+                        >
+                          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+                            <path
+                              d="M8 12h8M12 8v8M5.5 5.5h13v10h-5L10 19v-3.5H5.5z"
+                              stroke="currentColor"
+                              strokeWidth="1.9"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                          {focusedArtifact?.artifactId === selectedArtifactResult.artifactId
+                            ? tt('artifactContextSelectedAction')
+                            : tt('askAboutThisTitle')}
+                        </button>
                         {selectedArtifactNavigationTarget && onNavigateToTarget ? (
                           <button
                             type="button"
@@ -2653,8 +3087,7 @@ function TourChatWidget({
                             {tt('openDetailUrl')}
                           </a>
                         ) : null}
-                      </div>
-                    ) : null}
+                    </div>
 
                     {selectedArtifactResult.description ? (
                       <div className="mt-2 rounded-lg bg-[rgba(255,255,255,0.55)] p-2.5">

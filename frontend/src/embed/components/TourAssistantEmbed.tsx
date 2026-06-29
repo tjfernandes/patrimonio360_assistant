@@ -7,15 +7,28 @@ import {
   type FrontendInteractionEventType,
 } from '../services/interactionLogger'
 import { navigateToArtifactInTour, syncTourContext } from '../services/tourBridge'
+import { getMuseumEmbedPath } from '../../services/museumService'
 import type {
   ChatNavigationTarget,
   TourAssistantEmbedProps,
+  TourArtifactModalRequest,
   TourNavigationCommandContext,
+  TourOpenArtifactContext,
 } from '../types'
 import TourChatWidget from './TourChatWidget'
 
-const PENDING_NAVIGATION_TTL_MS = 15_000
+const PENDING_NAVIGATION_TTL_MS = 75_000
 const ASSISTANT_LOCATION_MATCH_WINDOW_MS = 3_000
+const INITIAL_NAVIGATION_RETRY_DELAYS_MS = [
+  4_000,
+  7_500,
+  12_000,
+  18_000,
+  25_000,
+  34_000,
+  46_000,
+  60_000,
+]
 const PARTICIPANT_ID_KEY = 'participant_id'
 const TASK_ID_KEY = 'task_id'
 const TOUR_IFRAME_EVENT_TYPES = new Set([
@@ -28,6 +41,15 @@ const TOUR_IFRAME_EVENT_TYPES = new Set([
 ])
 
 type RawTourEvent = Record<string, unknown>
+
+interface InitialNavigationCommand {
+  target: ChatNavigationTarget
+  queryId: string | null
+  conversationId: string | null
+  artifactId: string | null
+  inventoryNumber: string | null
+  title: string | null
+}
 
 interface PendingNavigationContext {
   queryId: string | null
@@ -84,6 +106,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function readEnvFlag(value: unknown) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value !== 'string') {
+    return false
+  }
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
 }
 
 function readStoredValue(key: string) {
@@ -166,6 +198,65 @@ function updateStudyUrl(participantId: string | null, taskId: string | null) {
   }
 }
 
+function readInitialNavigationCommand(): InitialNavigationCommand | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const params = new URLSearchParams(window.location.search)
+  const overlayId = readString(params.get('overlay_id')) || readString(params.get('overlayId'))
+  const panoramaKey =
+    readString(params.get('panorama_key')) ||
+    readString(params.get('panorama_id')) ||
+    readString(params.get('panoramaKey'))
+  const inventoryId =
+    readString(params.get('inventory_id')) ||
+    readString(params.get('inventory_number')) ||
+    readString(params.get('inventoryId'))
+  if (!overlayId || !panoramaKey || !inventoryId) {
+    return null
+  }
+  return {
+    target: {
+      overlayId,
+      panoramaKey,
+      inventoryId,
+      location: readString(params.get('location')) ?? undefined,
+      title: readString(params.get('title')) ?? undefined,
+    },
+    queryId: readString(params.get('query_id')),
+    conversationId: readString(params.get('conversation_id')),
+    artifactId: readString(params.get('artifact_id')),
+    inventoryNumber: readString(params.get('inventory_number')) || inventoryId,
+    title: readString(params.get('title')),
+  }
+}
+
+function buildCrossMuseumEmbedUrl(
+  targetMuseumSlug: string,
+  target: ChatNavigationTarget,
+  context: TourNavigationCommandContext,
+) {
+  if (typeof window === 'undefined') {
+    return getMuseumEmbedPath(targetMuseumSlug)
+  }
+  const url = new URL(getMuseumEmbedPath(targetMuseumSlug), window.location.origin)
+  url.searchParams.set('panorama_key', target.panoramaKey)
+  url.searchParams.set('overlay_id', target.overlayId)
+  url.searchParams.set('inventory_id', target.inventoryId)
+  url.searchParams.set('source', 'assistant_navigation')
+  if (context.sessionId) url.searchParams.set('session_id', context.sessionId)
+  if (context.conversationId) url.searchParams.set('conversation_id', context.conversationId)
+  if (context.queryId) url.searchParams.set('query_id', context.queryId)
+  if (context.participantId) url.searchParams.set('participant_id', context.participantId)
+  if (context.taskId) url.searchParams.set('task_id', context.taskId)
+  if (context.language) url.searchParams.set('lang', context.language)
+  if (context.artifactId) url.searchParams.set('artifact_id', context.artifactId)
+  if (context.inventoryNumber) url.searchParams.set('inventory_number', context.inventoryNumber)
+  if (context.title) url.searchParams.set('title', context.title)
+  if (target.location) url.searchParams.set('location', target.location)
+  return url.toString()
+}
+
 function readStringArray(value: unknown) {
   if (!Array.isArray(value)) {
     return null
@@ -196,9 +287,16 @@ function isPendingNavigationFresh(pending: PendingNavigationContext | null) {
 }
 
 function getTourEventInventory(data: RawTourEvent) {
-  const direct = readString(data.inventory_number) || readString(data.inventoryId)
+  const direct =
+    readString(data.inventory_number) ||
+    readString(data.inventoryId) ||
+    readString(data.inventory_id)
   if (direct) {
     return direct
+  }
+
+  if (Array.isArray(data.inventoryIds)) {
+    return readString(data.inventoryIds[0])
   }
 
   if (Array.isArray(data.inventory_numbers)) {
@@ -209,7 +307,7 @@ function getTourEventInventory(data: RawTourEvent) {
 }
 
 function getTourEventInventoryNumbers(data: RawTourEvent) {
-  const values = readStringArray(data.inventory_numbers)
+  const values = readStringArray(data.inventory_numbers) || readStringArray(data.inventoryIds)
   const direct = getTourEventInventory(data)
   if (values) {
     return values
@@ -313,6 +411,10 @@ function TourAssistantEmbed({
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const pendingNavigationRef = useRef<PendingNavigationContext | null>(null)
   const currentOpenArtifactRef = useRef<CurrentOpenArtifactContext | null>(null)
+  const initialNavigationCommandRef = useRef<InitialNavigationCommand | null>(
+    readInitialNavigationCommand(),
+  )
+  const initialNavigationRetryTimersRef = useRef<number[]>([])
   const initialTaskStartedLoggedRef = useRef(false)
   const initialStudyContext = useMemo(() => readInitialStudyContext(), [])
   const [sessionId, setSessionId] = useState(() => getOrCreateInteractionSessionId())
@@ -323,10 +425,14 @@ function TourAssistantEmbed({
   const [participantDraft, setParticipantDraft] = useState(initialStudyContext.participantId ?? '')
   const [taskDraft, setTaskDraft] = useState(initialStudyContext.taskId ?? '')
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isChatWidgetOpen, setIsChatWidgetOpen] = useState(false)
+  const [openTourArtifact, setOpenTourArtifact] = useState<TourOpenArtifactContext | null>(null)
+  const [tourArtifactModalRequest, setTourArtifactModalRequest] =
+    useState<TourArtifactModalRequest | null>(null)
   const language = resolveEmbedLanguage(initialLanguage)
   const tourOrigin = useMemo(() => resolveTourOrigin(tourUrl), [tourUrl])
   const tourTargetOrigin = tourOrigin || '*'
-  const showStudyControls = initialStudyContext.studyMode || import.meta.env.DEV
+  const showStudyControls = readEnvFlag(import.meta.env.VITE_ENABLE_STUDY_CONTROLS)
 
   const getFreshPendingNavigation = () => {
     const pending = pendingNavigationRef.current
@@ -338,6 +444,11 @@ function TourAssistantEmbed({
       return null
     }
     return pending
+  }
+
+  const clearInitialNavigationRetries = () => {
+    initialNavigationRetryTimersRef.current.forEach((timer) => window.clearTimeout(timer))
+    initialNavigationRetryTimersRef.current = []
   }
 
   const logTaskEvent = (
@@ -375,6 +486,7 @@ function TourAssistantEmbed({
     if (previousTaskId !== nextTaskId) {
       pendingNavigationRef.current = null
       currentOpenArtifactRef.current = null
+      setOpenTourArtifact(null)
       if (previousTaskId) {
         logTaskEvent('task_completed', previousTaskId, 'completed', 'study_controls')
       }
@@ -406,6 +518,7 @@ function TourAssistantEmbed({
     setTaskDraft('')
     pendingNavigationRef.current = null
     currentOpenArtifactRef.current = null
+    setOpenTourArtifact(null)
     updateStudyUrl(null, null)
   }
 
@@ -420,6 +533,8 @@ function TourAssistantEmbed({
       document.removeEventListener('fullscreenchange', handleFullscreenChange)
     }
   }, [])
+
+  useEffect(() => clearInitialNavigationRetries, [])
 
   useEffect(() => {
     if (initialTaskStartedLoggedRef.current || !taskId) {
@@ -440,7 +555,54 @@ function TourAssistantEmbed({
       if (event.origin !== tourOrigin) {
         return
       }
-      if (!isRecord(event.data) || event.data.type !== 'tour_event') {
+      if (!isRecord(event.data)) {
+        return
+      }
+
+      if (event.data.type === 'selectedArtifacts') {
+        const data = event.data as RawTourEvent
+        const inventoryNumber = getTourEventInventory(data)
+        const eventTitle = readString(data.title)
+        const eventLocation = readString(data.location)
+        if (inventoryNumber || eventTitle) {
+          const navigationTarget: Partial<ChatNavigationTarget> = {
+            inventoryId: inventoryNumber ?? undefined,
+            title: eventTitle ?? undefined,
+            location: eventLocation ?? undefined,
+          }
+          currentOpenArtifactRef.current = {
+            inventoryNumber,
+            title: eventTitle,
+            location: eventLocation,
+            queryId: null,
+            conversationId: null,
+            participantId,
+            taskId,
+            tourId: museumSlug,
+            language,
+            artifactId: null,
+            navigationTarget,
+            linkedToAssistantNavigation: false,
+            openedAt: Date.now(),
+          }
+          setOpenTourArtifact({
+            inventoryNumber,
+            title: eventTitle,
+            location: eventLocation,
+            navigationTarget,
+            openedAt: Date.now(),
+          })
+        }
+        return
+      }
+
+      if (event.data.type === 'deselectedArtifacts') {
+        currentOpenArtifactRef.current = null
+        setOpenTourArtifact(null)
+        return
+      }
+
+      if (event.data.type !== 'tour_event') {
         return
       }
       const eventType = readString(event.data.event_type)
@@ -477,6 +639,7 @@ function TourAssistantEmbed({
         readString(data.overlayId) ||
         undefined
       const eventInventoryNumber = getTourEventInventory(data)
+      const eventArtifactId = readString(data.artifact_id) || readString(data.artifactId)
       const inventoryNumber =
         eventInventoryNumber ||
         (attachPending ? pending?.inventoryNumber ?? pending?.navigationTarget.inventoryId : null) ||
@@ -554,7 +717,9 @@ function TourAssistantEmbed({
         language:
           (attachPending ? pending?.language : openArtifactForClose?.language) ?? language,
         artifactId:
-          (attachPending ? pending?.artifactId : openArtifactForClose?.artifactId) ?? null,
+          eventArtifactId ||
+          (attachPending ? pending?.artifactId : openArtifactForClose?.artifactId) ||
+          null,
         inventoryNumber,
         title:
           eventTitle ||
@@ -590,10 +755,11 @@ function TourAssistantEmbed({
           ...pending,
           completedAt: Date.now(),
         }
+        clearInitialNavigationRetries()
       }
 
       if (eventType === 'artifact_info_opened') {
-        currentOpenArtifactRef.current = {
+        const openedArtifact: CurrentOpenArtifactContext = {
           inventoryNumber,
           title: eventTitle || (attachPending ? pending?.title ?? null : null),
           location: eventLocation,
@@ -603,10 +769,26 @@ function TourAssistantEmbed({
           taskId: attachPending ? pending?.taskId ?? taskId : taskId,
           tourId: attachPending ? pending?.tourId ?? museumSlug : museumSlug,
           language: attachPending ? pending?.language ?? language : language,
-          artifactId: attachPending ? pending?.artifactId ?? null : null,
+          artifactId: eventArtifactId || (attachPending ? pending?.artifactId ?? null : null),
           navigationTarget,
           linkedToAssistantNavigation: attachPending,
           openedAt: Date.now(),
+        }
+        const hasOpenArtifactIdentity = Boolean(
+          openedArtifact.artifactId ||
+            openedArtifact.inventoryNumber ||
+            openedArtifact.title,
+        )
+        if (hasOpenArtifactIdentity) {
+          currentOpenArtifactRef.current = openedArtifact
+          setOpenTourArtifact({
+            artifactId: openedArtifact.artifactId,
+            inventoryNumber: openedArtifact.inventoryNumber,
+            title: openedArtifact.title,
+            location: openedArtifact.location,
+            navigationTarget,
+            openedAt: openedArtifact.openedAt,
+          })
         }
 
         if (
@@ -615,11 +797,13 @@ function TourAssistantEmbed({
           inventoriesMatch(inventoryNumber, pending.inventoryNumber)
         ) {
           pendingNavigationRef.current = null
+          clearInitialNavigationRetries()
         }
       }
 
       if (eventType === 'artifact_info_closed') {
         currentOpenArtifactRef.current = null
+        setOpenTourArtifact(null)
       }
     }
 
@@ -649,12 +833,143 @@ function TourAssistantEmbed({
 
   const handleTourLoad = () => {
     syncTourContext(iframeRef.current, { museumSlug }, tourTargetOrigin)
+    const initialCommand = initialNavigationCommandRef.current
+    if (!initialCommand || initialNavigationRetryTimersRef.current.length > 0) {
+      return
+    }
+    const context: TourNavigationCommandContext = {
+        sessionId,
+        conversationId: initialCommand.conversationId,
+        queryId: initialCommand.queryId,
+        participantId,
+        taskId,
+        tourId: museumSlug,
+        language,
+        artifactId: initialCommand.artifactId,
+        inventoryNumber: initialCommand.inventoryNumber ?? initialCommand.target.inventoryId,
+        title: initialCommand.title ?? initialCommand.target.title ?? null,
+        source: 'cross_museum_deep_link',
+    }
+    const requestId = `deep-link-${Date.now()}`
+    pendingNavigationRef.current = {
+      queryId: context.queryId ?? null,
+      conversationId: context.conversationId ?? null,
+      participantId: context.participantId ?? participantId,
+      taskId: context.taskId ?? taskId,
+      tourId: museumSlug,
+      language,
+      artifactId: context.artifactId ?? null,
+      inventoryNumber: context.inventoryNumber ?? initialCommand.target.inventoryId ?? null,
+      title: context.title ?? initialCommand.target.title ?? null,
+      source: context.source ?? null,
+      navigationTarget: initialCommand.target,
+      createdAt: Date.now(),
+    }
+    INITIAL_NAVIGATION_RETRY_DELAYS_MS.forEach((delay, index) => {
+      const timer = window.setTimeout(() => {
+        navigateToArtifactInTour(
+          iframeRef.current,
+          {
+            overlayId: initialCommand.target.overlayId,
+            panoramaKey: initialCommand.target.panoramaKey,
+            inventoryId: initialCommand.target.inventoryId,
+            requestId,
+          },
+          tourTargetOrigin,
+        )
+        if (index === 0) {
+          logFrontendEvent({
+            eventType: 'navigation_command_sent',
+            backendBaseUrl,
+            sessionId,
+            conversationId: context.conversationId ?? null,
+            queryId: context.queryId ?? null,
+            participantId,
+            taskId,
+            tourId: museumSlug,
+            language,
+            artifactId: context.artifactId ?? null,
+            inventoryNumber: context.inventoryNumber ?? initialCommand.target.inventoryId,
+            title: context.title ?? initialCommand.target.title ?? null,
+            navigationTarget: initialCommand.target,
+            status: 'sent',
+            source: 'cross_museum_deep_link',
+            error: null,
+            metadata: {
+              post_message_type: 'navigateToArtifact',
+              retry_count: INITIAL_NAVIGATION_RETRY_DELAYS_MS.length,
+              target_origin: tourTargetOrigin === '*' ? null : tourTargetOrigin,
+            },
+          })
+        }
+      }, delay)
+      initialNavigationRetryTimersRef.current.push(timer)
+    })
   }
 
   const handleNavigateToTarget = (
     target: ChatNavigationTarget,
     context: TourNavigationCommandContext,
   ) => {
+    const targetMuseumSlug = context.targetMuseumSlug?.trim()
+    const isCrossMuseumNavigation = Boolean(
+      context.isCrossMuseum &&
+        targetMuseumSlug &&
+        targetMuseumSlug !== museumSlug,
+    )
+    if (isCrossMuseumNavigation && targetMuseumSlug) {
+      let status = 'opened_new_tab'
+      let error: string | null = null
+      const url = buildCrossMuseumEmbedUrl(targetMuseumSlug, target, {
+        ...context,
+        sessionId: context.sessionId || sessionId,
+        participantId: context.participantId ?? participantId,
+        taskId: context.taskId ?? taskId,
+        language: context.language ?? language,
+      })
+      try {
+        const opened = window.open(url, '_blank')
+        if (!opened) {
+          status = 'error'
+          error = 'new_tab_blocked'
+        } else {
+          opened.opener = null
+        }
+      } catch (err) {
+        status = 'error'
+        error = err instanceof Error ? err.message : 'open_new_tab_failed'
+      }
+
+      logFrontendEvent({
+        eventType: 'navigation_command_sent',
+        backendBaseUrl,
+        sessionId: context.sessionId || sessionId,
+        conversationId: context.conversationId ?? null,
+        queryId: context.queryId ?? null,
+        participantId: context.participantId ?? participantId,
+        taskId: context.taskId ?? taskId,
+        tourId: targetMuseumSlug,
+        language: context.language ?? language,
+        artifactId: context.artifactId ?? null,
+        inventoryNumber: context.inventoryNumber ?? target.inventoryId,
+        title: context.title ?? target.title ?? null,
+        navigationTarget: target,
+        status,
+        source: 'parent_frontend',
+        error,
+        metadata: {
+          click_source: context.source ?? null,
+          post_message_type: null,
+          open_mode: 'new_tab',
+          target_museum_id: context.targetMuseumId ?? null,
+          target_museum_slug: targetMuseumSlug,
+          target_museum_name: context.targetMuseumName ?? null,
+          target_url: url,
+        },
+      })
+      return
+    }
+
     let status = 'sent'
     let error: string | null = null
     try {
@@ -663,6 +978,7 @@ function TourAssistantEmbed({
         {
           overlayId: target.overlayId,
           panoramaKey: target.panoramaKey,
+          inventoryId: context.inventoryNumber ?? target.inventoryId,
         },
         tourTargetOrigin,
       )
@@ -713,13 +1029,27 @@ function TourAssistantEmbed({
         click_source: context.source ?? null,
         post_message_type: 'navigateToArtifact',
         target_origin: tourTargetOrigin === '*' ? null : tourTargetOrigin,
+        target_museum_id: context.targetMuseumId ?? null,
+        target_museum_slug: context.targetMuseumSlug ?? museumSlug,
+        target_museum_name: context.targetMuseumName ?? museumName,
       },
     })
   }
 
   const handleAssistantClosed = () => {
     pendingNavigationRef.current = null
-    currentOpenArtifactRef.current = null
+  }
+
+  const handleOpenTourArtifactModal = () => {
+    if (!openTourArtifact) {
+      return
+    }
+    setTourArtifactModalRequest({
+      ...openTourArtifact,
+      requestId: `tour-info-window-${Date.now()}`,
+      source: 'tour_info_window_button',
+    })
+    setIsChatWidgetOpen(true)
   }
 
   return (
@@ -811,6 +1141,40 @@ function TourAssistantEmbed({
         </form>
       ) : null}
 
+      {openTourArtifact && !isChatWidgetOpen ? (
+        <button
+          type="button"
+          onClick={handleOpenTourArtifactModal}
+          aria-label={t(language, 'assistantEmbed.openArtifactDetailsTitle')}
+          title={t(language, 'assistantEmbed.openArtifactDetailsTitle')}
+          className="p360-tour-artifact-focus-button absolute bottom-4 left-20 z-[610] inline-flex h-14 max-w-[calc(100%-6rem)] items-center gap-2 rounded-2xl border border-[#6d0b1b]/25 bg-white/95 px-2.5 text-[#5a2730] shadow-[0_18px_42px_-22px_rgba(63,13,24,0.95)] backdrop-blur-sm transition-[background-color,border-color,box-shadow,transform] hover:-translate-y-0.5 hover:border-[#6d0b1b]/45 hover:bg-white hover:shadow-[0_24px_48px_-24px_rgba(63,13,24,1)] sm:left-[17.5rem] sm:max-w-[360px] sm:px-3"
+        >
+          <span className="p360-tour-artifact-focus-pulse absolute -inset-1 rounded-[1.15rem] border border-[#6d0b1b]/25" />
+          <span className="relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#6d0b1b] text-white shadow-[0_12px_24px_-18px_rgba(109,11,27,0.95)]">
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.8" />
+              <path
+                d="M12 10.5V16M12 7.75h.01"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+          <span className="relative flex min-w-0 flex-col text-left leading-tight">
+            <span className="truncate text-xs font-bold text-[#2d1b1f] sm:text-sm">
+              {[openTourArtifact.inventoryNumber, openTourArtifact.title]
+                .filter(Boolean)
+                .join(' - ') || t(language, 'assistantEmbed.openTourArtifact')}
+            </span>
+            <span className="truncate text-[10px] font-bold uppercase tracking-[0.12em] text-[#6d0b1b]">
+              {t(language, 'assistantEmbed.openArtifactDetails')}
+            </span>
+          </span>
+        </button>
+      ) : null}
+
       <TourChatWidget
         key={`chat-${museumSlug}`}
         museumName={museumName}
@@ -823,6 +1187,8 @@ function TourAssistantEmbed({
         taskId={taskId}
         onNavigateToTarget={handleNavigateToTarget}
         onAssistantClosed={handleAssistantClosed}
+        onOpenChange={setIsChatWidgetOpen}
+        externalArtifactModalRequest={tourArtifactModalRequest}
       />
     </div>
   )
