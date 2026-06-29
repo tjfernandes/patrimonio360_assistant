@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import type { DragEvent as ReactDragEvent, ReactNode, SyntheticEvent } from 'react'
+import type { DragEvent as ReactDragEvent, ImgHTMLAttributes, ReactNode, SyntheticEvent } from 'react'
 import { createPortal } from 'react-dom'
 import amaliaLogoText from '../../assets/amalia_logo_text.png'
 import { resolveEmbedLanguage, t } from '../i18n'
@@ -75,6 +75,79 @@ type NavigationClickOptions = {
   inventoryNumber?: string | null
   artifactId?: string | null
   searchScope?: ChatSearchScope | null
+}
+
+type LoadingImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, 'src' | 'alt'> & {
+  src: string
+  alt: string
+  wrapperClassName?: string
+}
+
+function LoadingImage({
+  src,
+  alt,
+  wrapperClassName = '',
+  className = '',
+  onLoad,
+  onError,
+  ...props
+}: LoadingImageProps) {
+  const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
+  const hasDisplayClass = /\b(?:block|inline-block|inline|flex|inline-flex|grid|inline-grid|hidden)\b/.test(
+    wrapperClassName,
+  )
+
+  useEffect(() => {
+    setStatus('loading')
+  }, [src])
+
+  return (
+    <span
+      className={`relative ${hasDisplayClass ? '' : 'block'} overflow-hidden bg-[#f8f1ef] ${wrapperClassName}`}
+      aria-busy={status === 'loading' ? 'true' : undefined}
+    >
+      {status === 'loading' ? (
+        <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[linear-gradient(110deg,#f8f1ef_0%,#fff9f6_45%,#eadbd8_100%)]">
+          <span className="absolute inset-0 animate-pulse bg-white/30" />
+          <span className="relative h-7 w-7 rounded-full border-2 border-[#d8c1bc] border-t-[#6d0b1b] animate-spin" />
+        </span>
+      ) : null}
+      {status === 'error' ? (
+        <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#f8f1ef] text-[#8b7074]">
+          <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" aria-hidden="true">
+            <path
+              d="M4.5 6.5A2 2 0 016.5 4.5h11a2 2 0 012 2v11a2 2 0 01-2 2h-11a2 2 0 01-2-2z"
+              stroke="currentColor"
+              strokeWidth="1.7"
+            />
+            <path
+              d="M8 14l2.2-2.2 2.1 2.1 1.7-1.7L17 15.2M8.4 8.6h.01"
+              stroke="currentColor"
+              strokeWidth="1.7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      ) : null}
+      <img
+        {...props}
+        src={src}
+        alt={alt}
+        className={`${className} transition-opacity duration-300 ${
+          status === 'loaded' ? 'opacity-100' : 'opacity-0'
+        }`}
+        onLoad={(event) => {
+          setStatus('loaded')
+          onLoad?.(event)
+        }}
+        onError={(event) => {
+          setStatus('error')
+          onError?.(event)
+        }}
+      />
+    </span>
+  )
 }
 
 function detectModelFormatFromName(fileName: string): ChatModelFormat | null {
@@ -1868,10 +1941,11 @@ function TourChatWidget({
                   }}
                   className="block w-full cursor-zoom-in"
                 >
-                  <img
+                  <LoadingImage
                     src={imageUrl}
                     alt={match.title || match.inventory || `${tt('imageLabel')} ${index + 1}`}
-                    className="h-24 w-full object-cover"
+                    wrapperClassName="h-24 w-full"
+                    className="h-full w-full object-cover"
                     loading="lazy"
                   />
                 </button>
@@ -1980,9 +2054,10 @@ function TourChatWidget({
               onClick={() => setLightboxImage({ src: activeImageUrl, alt: activeLabel })}
               className="flex h-[46vh] min-h-[280px] max-h-[540px] w-full cursor-zoom-in items-center justify-center p-2"
             >
-              <img
+              <LoadingImage
                 src={activeImageUrl}
                 alt={activeLabel}
+                wrapperClassName="flex h-full w-full items-center justify-center"
                 className="max-h-full max-w-full object-contain"
                 loading="lazy"
               />
@@ -2066,9 +2141,10 @@ function TourChatWidget({
                   }`}
                 >
                   {imageUrl ? (
-                    <img
+                    <LoadingImage
                       src={imageUrl}
                       alt={label}
+                      wrapperClassName="flex h-full w-full items-center justify-center rounded"
                       className="max-h-full max-w-full object-contain"
                       loading="lazy"
                     />
@@ -2183,9 +2259,10 @@ function TourChatWidget({
                 >
                   <div className="flex h-24 w-full items-center justify-center bg-[#f7efed]">
                     {thumbnailUrl ? (
-                      <img
+                      <LoadingImage
                         src={thumbnailUrl}
                         alt={label}
+                        wrapperClassName="h-full w-full"
                         className="h-full w-full object-cover"
                         loading="lazy"
                       />
@@ -2695,10 +2772,11 @@ function TourChatWidget({
                       }
                       className="block w-full cursor-zoom-in"
                     >
-                      <img
+                      <LoadingImage
                         src={message.uploadedImageUrl}
                         alt={message.uploadedAssetName || tt('uploadedImageAlt')}
-                        className="h-24 w-full object-cover"
+                        wrapperClassName="h-24 w-full"
+                        className="h-full w-full object-cover"
                         loading="lazy"
                       />
                     </button>
@@ -2845,10 +2923,11 @@ function TourChatWidget({
               </button>
             </div>
             {selectedUploadKind === 'image' && selectedImagePreviewUrl ? (
-              <img
+              <LoadingImage
                 src={selectedImagePreviewUrl}
                 alt={selectedUploadFile.name}
-                className="mt-2 h-24 w-full rounded-lg object-cover"
+                wrapperClassName="mt-2 h-24 w-full rounded-lg"
+                className="h-full w-full object-cover"
               />
             ) : selectedUploadKind === 'model' && selectedModelPreviewUrl ? (
               <Suspense
@@ -3169,12 +3248,17 @@ function TourChatWidget({
               >
                 <CloseIcon />
               </button>
-              <img
-                src={lightboxImage.src}
-                alt={lightboxImage.alt}
-                className="p360-chat-modal-card-enter h-auto max-h-[98%] w-auto max-w-[98%] rounded-xl border border-white/20 bg-black/20 object-contain shadow-2xl"
+              <div
+                className="p360-chat-modal-card-enter"
                 onClick={(event) => event.stopPropagation()}
-              />
+              >
+                <LoadingImage
+                  src={lightboxImage.src}
+                  alt={lightboxImage.alt}
+                  wrapperClassName="flex min-h-[220px] min-w-[280px] max-h-[98vh] max-w-[98vw] items-center justify-center rounded-xl border border-white/20 bg-black/20 shadow-2xl"
+                  className="h-auto max-h-[98vh] w-auto max-w-[98vw] object-contain"
+                />
+              </div>
             </div>,
             portalRoot,
           )
