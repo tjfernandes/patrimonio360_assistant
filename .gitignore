@@ -40,7 +40,7 @@ Thumbs.db
 .idea/
 
 # Large/generated tour assets
-assets/
+/assets/
 tours/
 
 visitas_virtuais.zip
