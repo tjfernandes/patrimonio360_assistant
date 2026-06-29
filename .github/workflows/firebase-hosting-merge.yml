@@ -36,3 +36,4 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_PATRIMONIO360_AMALIA_FRONTEND }}
           channelId: live
           projectId: patrimonio360-amalia-frontend
+          firebaseToolsVersion: 15.22.1
