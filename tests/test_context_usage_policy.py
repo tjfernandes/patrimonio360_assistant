@@ -26,14 +26,33 @@ from app.schemas.chat import (
     ChatMessageRequest,
     ChatResultsPageRequest,
     ImageMatchResult,
+    ResponseFormatObject,
     TourNavigationTarget,
 )
 from app.services.chat_service import ChatService, TemporalQuery
 from app.services.chat_session_store import ChatSessionState, ChatSessionStore, ChatTurn
+from app.services.llm_service import LLMServiceError
 
 
 class _Dummy:
     pass
+
+
+class _SelectedReferenceGateway:
+    async def fetch_artifacts_by_ids(self, **_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "artifact_id": "ref-1",
+                "inventory_number": "100",
+                "title": "Vestido de seda",
+                "category": "traje",
+                "super_category": "traje e aderecos",
+                "support_or_material": "seda",
+                "technique": "bordado",
+                "date_or_period": "1900",
+                "creator": "Autor",
+            }
+        ]
 
 
 class _NoTourNavigation:
@@ -178,6 +197,37 @@ class _LLMRewriteHeadgearLeak:
                 "lexical_query": "chapeus",
                 "embedding_query": "headgear",
             }
+        )
+
+
+class _LLMFinalOk:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def generate(self, **kwargs: object):
+        self.messages.append(str(kwargs.get("message") or ""))
+        return types.SimpleNamespace(
+            text="ok",
+            model="test-model",
+            response_format=kwargs.get("response_format"),
+            parsed_json=None,
+        )
+
+
+class _LLMFinalLimitThenOk(_LLMFinalOk):
+    async def generate(self, **kwargs: object):
+        self.messages.append(str(kwargs.get("message") or ""))
+        if len(self.messages) == 1:
+            raise LLMServiceError(
+                "LLM request failed: Could not parse response content as the length "
+                "limit was reached - CompletionUsage(completion_tokens=2048, "
+                "prompt_tokens=30720, total_tokens=32768)"
+            )
+        return types.SimpleNamespace(
+            text="ok",
+            model="test-model",
+            response_format=kwargs.get("response_format"),
+            parsed_json=None,
         )
 
 
@@ -482,6 +532,128 @@ def _state_with_history() -> ChatSessionState:
 
 
 class ContextUsagePolicyTests(unittest.TestCase):
+    def test_final_answer_retry_does_not_trim_when_initial_prompt_succeeds(self) -> None:
+        service = _build_service()
+        llm = _LLMFinalOk()
+        service.llm_service = llm  # type: ignore[assignment]
+        response_format = ResponseFormatObject(type="text")
+
+        def build_message(result_count: int) -> str:
+            return "\n".join(f"[doc_{index}] Resultado {index}" for index in range(1, result_count + 1))
+
+        response = asyncio.run(
+            service._generate_final_answer_with_context_retries(
+                initial_message=build_message(3),
+                response_format=response_format,
+                system_prompt=None,
+                model_override=None,
+                visible_result_count=3,
+                build_message_for_result_count=build_message,
+            )
+        )
+
+        self.assertEqual(response.text, "ok")
+        self.assertEqual(llm.messages, [build_message(3)])
+
+    def test_final_answer_retry_removes_last_result_after_token_limit_error(self) -> None:
+        service = _build_service()
+        llm = _LLMFinalLimitThenOk()
+        service.llm_service = llm  # type: ignore[assignment]
+        response_format = ResponseFormatObject(type="text")
+        retry_counts: list[int] = []
+
+        def build_message(result_count: int) -> str:
+            retry_counts.append(result_count)
+            return "\n".join(f"[doc_{index}] Resultado {index}" for index in range(1, result_count + 1))
+
+        initial_message = "\n".join(f"[doc_{index}] Resultado {index}" for index in range(1, 4))
+        response = asyncio.run(
+            service._generate_final_answer_with_context_retries(
+                initial_message=initial_message,
+                response_format=response_format,
+                system_prompt=None,
+                model_override=None,
+                visible_result_count=3,
+                build_message_for_result_count=build_message,
+            )
+        )
+
+        self.assertEqual(response.text, "ok")
+        self.assertEqual(len(llm.messages), 2)
+        self.assertIn("[doc_3]", llm.messages[0])
+        self.assertIn("[doc_2]", llm.messages[1])
+        self.assertNotIn("[doc_3]", llm.messages[1])
+        self.assertEqual(retry_counts, [2])
+
+    def test_selected_context_mode_detects_anchored_similarity(self) -> None:
+        service = _build_service()
+
+        self.assertEqual(
+            service._selected_artifact_context_mode("que outros vestidos existem parecidos a este?"),
+            "anchored_similarity",
+        )
+        self.assertEqual(
+            service._selected_artifact_context_mode("qual e a data deste?"),
+            "selected_artifact",
+        )
+
+    def test_anchored_similarity_excludes_reference_artifact(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_SelectedReferenceGateway(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_Dummy(),
+            session_store=ChatSessionStore(settings),
+            query_logger=_Dummy(),
+        )
+
+        async def fake_retrieve_context(**kwargs: object):
+            query = str(kwargs.get("query") or "")
+            self.assertIn("Vestido de seda", query)
+            self.assertIn("seda", query)
+            return (
+                "",
+                3,
+                [
+                    {"artifact_id": "ref-1", "inventory_number": "100", "title": "Vestido de seda"},
+                    {"artifact_id": "sim-1", "inventory_number": "101", "title": "Vestido semelhante"},
+                    {"artifact_id": "sim-2", "inventory_number": "102", "title": "Outro vestido"},
+                ],
+                {
+                    "kind": "text",
+                    "query_text": query,
+                    "lexical_query": query,
+                    "filters": {},
+                    "sort": {},
+                    "results_total": 3,
+                },
+            )
+
+        service._retrieve_context = fake_retrieve_context  # type: ignore[method-assign]
+
+        context, count, docs, request = asyncio.run(
+            service._retrieve_anchored_similarity_context(
+                museum_slug="mnt",
+                museum_id="mnt",
+                selected_artifact={"artifact_id": "ref-1", "inventory_number": "100", "title": "Vestido de seda"},
+                query="que outros vestidos existem parecidos a este?",
+                filters={},
+                sort={},
+                result_window_size=8,
+            )
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual([doc["artifact_id"] for doc in docs], ["sim-1", "sim-2"])
+        self.assertEqual(request["kind"], "anchored_similarity")
+        self.assertEqual(request["selected_context_mode"], "anchored_similarity")
+        self.assertIn("reference_artifact:", context)
+        self.assertIn("similar_candidate_results:", context)
+        self.assertNotIn('"artifact_id": "ref-1"', context.split("similar_candidate_results:", 1)[1])
+
     def test_query_log_default_path_uses_evaluation_directory(self) -> None:
         settings = Settings()
         expected = Path(__file__).resolve().parents[1] / "evaluation" / "backend_queries.jsonl"
@@ -1134,6 +1306,33 @@ class ContextUsagePolicyTests(unittest.TestCase):
             ("trajes sebastianistas", TemporalQuery(1578, 1580, "periodo sebastianista", 1.0)),
             ("objetos da crise de sucessao", TemporalQuery(1578, 1580, "periodo sebastianista", 1.0)),
             ("moda do periodo miguelista", TemporalQuery(1828, 1834, "periodo miguelista", 1.0)),
+        ]
+
+        for query, expected in cases:
+            with self.subTest(query=query):
+                self.assertEqual(
+                    asyncio.run(service._interpret_temporal_query(query)),
+                    expected,
+                )
+
+    def test_temporal_query_resolves_supported_centuries_without_llm(self) -> None:
+        settings = get_settings()
+        service = ChatService(
+            settings=settings,
+            opensearch_gateway=_Dummy(),
+            embedding_provider=_Dummy(),
+            model_retrieval_service=_Dummy(),
+            tour_navigation_service=_Dummy(),
+            llm_service=_LLMShouldNotBeCalled(),
+            session_store=ChatSessionStore(settings),
+        )
+
+        cases = [
+            ("azulejos do seculo XV", TemporalQuery(1400, 1499, "seculo xv", 1.0)),
+            ("azulejos do século XVIII", TemporalQuery(1700, 1799, "seculo xviii", 1.0)),
+            ("trajes do sec. XIX", TemporalQuery(1800, 1899, "sec xix", 1.0)),
+            ("pecas do seculo 20", TemporalQuery(1900, 1999, "seculo 20", 1.0)),
+            ("show blue tiles from the 18th century", TemporalQuery(1700, 1799, "18th century", 1.0)),
         ]
 
         for query, expected in cases:

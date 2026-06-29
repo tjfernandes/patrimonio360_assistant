@@ -13,6 +13,8 @@ FRONTEND_EVENT_TYPES = {
     "message_sent",
     "answer_received",
     "artifact_card_opened",
+    "artifact_context_selected",
+    "artifact_context_cleared",
     "see_in_tour_clicked",
     "navigation_command_sent",
     "navigation_completed",

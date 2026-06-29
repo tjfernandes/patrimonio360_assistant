@@ -393,6 +393,13 @@ class TourNavigationTarget(BaseModel):
     title: str | None = None
 
 
+class ChatSearchScope(BaseModel):
+    museum_id: str | None = None
+    museum_slug: str
+    museum_name: str | None = None
+    is_cross_museum: bool = False
+
+
 class ChatMessageResponse(BaseModel):
     status: Literal["ok"] = "ok"
     conversation_id: str = Field(default_factory=lambda: str(uuid4()))
@@ -411,6 +418,7 @@ class ChatMessageResponse(BaseModel):
     results_total: int = 0
     results_has_more: bool = False
     results_request_id: str | None = None
+    search_scope: ChatSearchScope | None = None
 
 
 class ChatResultsPageResponse(BaseModel):
@@ -425,6 +433,7 @@ class ChatResultsPageResponse(BaseModel):
     results_total: int = 0
     results_has_more: bool = False
     results_request_id: str | None = None
+    search_scope: ChatSearchScope | None = None
 
 
 class ArtifactDetailContextResponse(BaseModel):

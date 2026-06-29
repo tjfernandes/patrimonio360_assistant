@@ -215,6 +215,31 @@ async def get_related_artifacts_page(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.get("/artifacts/by-inventory/full", response_model=ArtifactResult)
+async def get_artifact_full_by_inventory(
+    inventory_number: str,
+    museum_slug: str,
+    museum_id: str | None = None,
+    service: ChatService = Depends(get_chat_service),
+) -> ArtifactResult:
+    """Devolve um ArtifactResult completo por numero de inventario.
+    Usado para converter eventos da tour em referencias de chat."""
+    cleaned_inventory = (inventory_number or "").strip()
+    if not cleaned_inventory:
+        raise HTTPException(status_code=400, detail="inventory_number obrigatorio.")
+    cleaned_slug = (museum_slug or "").strip()
+    if not cleaned_slug:
+        raise HTTPException(status_code=400, detail="museum_slug obrigatorio.")
+    result = await service.get_artifact_full_by_inventory(
+        museum_slug=cleaned_slug,
+        museum_id=(museum_id or "").strip() or None,
+        inventory_number=cleaned_inventory,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Artefacto nao encontrado.")
+    return result
+
+
 @router.get("/artifacts/{artifact_id:path}/full", response_model=ArtifactResult)
 async def get_artifact_full(
     artifact_id: str,
