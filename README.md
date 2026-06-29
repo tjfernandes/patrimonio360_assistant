@@ -76,8 +76,11 @@ source .venv/bin/activate
 Instalacao:
 
 ```bash
+pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.8.0+cu128 torchvision==0.23.0+cu128
 pip install -r requirements.txt
 ```
+
+Instala primeiro `torch`/`torchvision` separadamente e so depois `requirements.txt`. O guia direto esta em [INSTALL.md](./INSTALL.md).
 
 ### Configuracao do backend
 
@@ -111,7 +114,6 @@ Campos uteis em dev:
 - `CHAT_ENABLE_LLM_LEXICAL_QUERY=true`
 - `CHAT_USE_QUERY_EMBEDDINGS=true`
 - `CHAT_RETRIEVAL_EMBEDDING_ONLY=false`
-- `CHAT_ENABLE_STRUCTURED_QUERY_PLANNING=true`
 - `LOG_JSON=true`
 - `LOG_JSON_PRETTY=true`
 - `POI_TOURS_DIR=` pode ficar vazio se estiveres a usar o diretório default `backend/poi_tours`

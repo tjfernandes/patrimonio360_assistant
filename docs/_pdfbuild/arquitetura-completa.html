@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="pt"><head><meta charset="utf-8"><style>
+  @page { size: A4; margin: 18mm 16mm 20mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", "Calibri", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10.5px; line-height: 1.5; color: #1f2430; margin: 0;
+  }
+  h1 { font-size: 23px; color: #0f2d52; margin: 0 0 2px 0; line-height: 1.2; }
+  h2 { font-size: 16px; color: #0f2d52; margin: 22px 0 8px; padding-bottom: 4px;
+       border-bottom: 2px solid #d8e1ee; page-break-after: avoid; }
+  h3 { font-size: 13px; color: #1b3a63; margin: 16px 0 6px; page-break-after: avoid; }
+  h4 { font-size: 11.5px; color: #294a73; margin: 12px 0 5px; page-break-after: avoid; }
+  p { margin: 6px 0; }
+  a { color: #1b5fb0; text-decoration: none; }
+  strong { color: #14233a; }
+  ul, ol { margin: 6px 0 6px 0; padding-left: 22px; }
+  li { margin: 2.5px 0; }
+  code {
+    font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
+    background: #eef1f6; color: #b1224b; padding: 1px 4px; border-radius: 3px;
+    font-size: 9.5px;
+  }
+  pre {
+    background: #0f1b2d; color: #e7edf6; border-radius: 6px;
+    padding: 10px 12px; overflow: hidden; margin: 10px 0;
+    page-break-inside: avoid; border: 1px solid #0a1320;
+  }
+  pre code {
+    background: transparent; color: inherit; padding: 0; border-radius: 0;
+    font-size: 8px; line-height: 1.28; white-space: pre;
+    font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
+  }
+  blockquote {
+    margin: 10px 0; padding: 8px 12px; background: #f3f7fc;
+    border-left: 4px solid #6f9bd1; color: #34465f; border-radius: 0 4px 4px 0;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.3px;
+          page-break-inside: auto; }
+  th, td { border: 1px solid #c9d4e3; padding: 5px 7px; text-align: left;
+           vertical-align: top; word-break: break-word; }
+  th { background: #e8eef7; color: #15294a; font-weight: 600; }
+  tr:nth-child(even) td { background: #f7f9fc; }
+  hr { border: 0; border-top: 1px solid #dce3ee; margin: 16px 0; }
+  .cover { margin-bottom: 6px; }
+  .cover .sub { color: #5a6b82; font-size: 12px; margin-top: 2px; }
+
+  /* file-tree panels (light, intentional, not a code dump) */
+  pre.tree {
+    background: #f7f9fc; color: #2a3a52; border: 1px solid #dbe4f0;
+    border-radius: 8px; padding: 10px 14px; margin: 10px 0;
+    font-family: "Cascadia Mono", "Consolas", "Courier New", monospace;
+    font-size: 8.5px; line-height: 1.5; white-space: pre; overflow: hidden;
+  }
+  pre.tree code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+
+  /* graphical diagrams */
+  .dgm { margin: 16px 0; }
+  .dgm-center { display: flex; justify-content: center; }
+  .dgm-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; align-items: stretch; }
+  .node {
+    border-radius: 10px; padding: 8px 12px; text-align: center; border: 1.5px solid;
+    font-size: 9.3px; line-height: 1.3; max-width: 320px; break-inside: avoid;
+  }
+  .node b { font-weight: 700; }
+  .node small { display: block; font-size: 8px; opacity: 0.78; margin-top: 2px; }
+  .n-step    { background: #eef3fb; border-color: #a7c0e2; color: #16304f; }
+  .n-accent  { background: #1b5fb0; border-color: #1b5fb0; color: #ffffff; }
+  .n-backend { background: #0f2d52; border-color: #0f2d52; color: #ffffff; }
+  .n-service { background: #e8f5f0; border-color: #79c2a6; color: #13503c; }
+  .n-llm     { background: #fbf0e8; border-color: #e0b07a; color: #6a3d12; }
+  .n-browser { background: #eef3fb; border-color: #a7c0e2; color: #1b3a63; }
+  .conn { display: flex; flex-direction: column; align-items: center; margin: 1px 0; }
+  .vline { width: 2px; height: 11px; background: #a3b1c4; }
+  .chev { width: 0; height: 0; border-left: 5px solid transparent;
+          border-right: 5px solid transparent; border-top: 7px solid #8595aa; }
+  .cnote { font-size: 7.5px; color: #7a879b; margin: 1px 0; }
+  .branch { display: flex; gap: 20px; justify-content: center; align-items: flex-start; }
+  .branch-col {
+    display: flex; flex-direction: column; align-items: center; gap: 0;
+    border: 1px dashed #c5d2e4; border-radius: 10px; padding: 8px 10px;
+    background: #fbfcfe; break-inside: avoid;
+  }
+  .cols3 { display: flex; gap: 12px; justify-content: center; align-items: flex-start; }
+  .cols3 .branch-col { flex: 1; }
+  .colhead { font-size: 9.5px; font-weight: 700; color: #fff; border-radius: 8px;
+             padding: 5px 8px; text-align: center; width: 100%; margin-bottom: 4px; }
+  .badge { font-size: 8.5px; font-weight: 700; border-radius: 999px; padding: 2px 12px; color: #fff; }
+  .badge.rag { background: #1b5fb0; }
+  .badge.llm { background: #8a6d3b; }
+  .subbranch { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+  .sb { display: flex; flex-direction: column; align-items: center; gap: 0;
+        background: #fff; border: 1px solid #e3e9f2; border-radius: 8px; padding: 6px 8px; }
+  .chip { font-size: 7.5px; font-weight: 700; color: #5a4b8a; background: #efeafa;
+          border: 1px solid #d6ccf0; border-radius: 999px; padding: 1px 9px; }
+  .panel-title { font-size: 8.5px; font-weight: 700; color: #54657d; text-transform: uppercase;
+                 letter-spacing: 0.04em; margin-bottom: 6px; text-align: center; }
+  .frame { border: 1.5px solid #c5d2e4; border-radius: 12px; padding: 10px; background: #f8fafd; }
+  .hpair { display: flex; align-items: center; gap: 10px; justify-content: center; }
+  .hlink { font-size: 8.5px; color: #7a879b; font-weight: 700; text-align: center; }
+  .seq { display: flex; flex-direction: column; gap: 6px; }
+  .seq-step { display: flex; align-items: center; gap: 9px; background: #f7f9fc;
+              border: 1px solid #dbe4f0; border-radius: 9px; padding: 6px 9px; break-inside: avoid; }
+  .seq-num { width: 17px; height: 17px; border-radius: 50%; background: #1b5fb0; color: #fff;
+             font-size: 8.5px; font-weight: 700; display: flex; align-items: center;
+             justify-content: center; flex: 0 0 auto; }
+  .seq-route { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+  .actor { font-size: 8.5px; font-weight: 700; color: #15294a; background: #e8eef7;
+           border: 1px solid #c4d2e6; border-radius: 6px; padding: 2px 6px; white-space: nowrap; }
+  .seq-ar { color: #1b5fb0; font-weight: 700; font-size: 11px; }
+  .seq-desc { font-size: 8.7px; color: #34465f; }
+</style></head>
+<body><h1>Património 360 — Assistente Virtual de Museus</h1>
+<h2>Documento de Arquitetura Completa e Funcionalidades</h2>
+<blockquote>Documento técnico <strong>exaustivo</strong>. Descreve a arquitetura completa da aplicação, todas as funcionalidades, o pipeline de raciocínio (RAG multimodal), os mecanismos de comunicação, o modelo de dados, a observabilidade e <strong>exemplos de todos os tipos de queries</strong> suportados.  Tudo o que aqui está descrito foi verificado diretamente no código-fonte do repositório.</blockquote>
+<hr>
+<h2>Índice</h2>
+<ol><li>Visão geral</li><li>Stack tecnológica</li><li>Mapa de componentes</li><li>O pipeline de raciocínio (passo a passo)</li><li>O Router: como a pergunta é encaminhada</li><li>Política de contexto e seguimento (follow-up)</li><li>Retrieval de texto (pesquisa híbrida)</li><li>Filtros: museu, temporais e âmbito da visita</li><li>Reescrita de query e <em>boosts</em></li><li>Entradas multimodais (texto, imagem, modelo 3D)</li><li>Navegação peça → ponto da visita virtual</li><li>Geração da resposta final e sanitização</li><li>Paginação de resultados</li><li>Modal de detalhe: autores, conjuntos, exposições, relacionados</li><li>Pesquisa entre museus (<em>cross-museum</em>)</li><li>Comunicação Frontend ↔ Backend (REST + SSE)</li><li>Comunicação Frontend ↔ Visita Virtual (postMessage)</li><li>Sessão, estado e memória de conversa</li><li>Internacionalização (PT/EN)</li><li>Observabilidade: logging estruturado de queries e interações</li><li>Configuração (settings/env)</li><li>Modelo de dados (artefacto e entidades)</li><li><strong>Exemplos de todos os tipos de queries</strong></li><li>Apêndice A — Esquema do Router (JSON)</li><li>Apêndice B — Esquema do evento <code>backend_query</code></li><li>Apêndice C — Notas de implementação e componentes não ativos</li></ol>
+<hr>
+<h2>1. Visão geral</h2>
+<p>O projeto é um <strong>assistente conversacional embebido numa visita virtual 360º de um museu</strong>. O visitante faz perguntas — por <strong>texto</strong>, <strong>imagem</strong> ou <strong>modelo 3D</strong> — e o sistema procura nas peças do acervo, responde em linguagem natural com base em factos recuperados e, quando faz sentido, <strong>leva o visitante até ao ponto exato da visita virtual</strong> onde a peça está exposta.</p>
+<p>Em uma frase: <em>é um guia inteligente para uma visita virtual de museu, que percebe linguagem natural, pesquisa multimodal no acervo e liga cada peça ao seu lugar físico na visita 360º.</em></p>
+<div class="dgm">
+    <div class="frame"><div class="panel-title">Página do museu (browser)</div>
+      <div class="hpair">
+        <div class="node n-browser"><b>Visita Virtual 360º</b><small>iframe externo</small></div>
+        <div class="hlink">⇄ postMessage</div>
+        <div class="node n-browser"><b>Assistente (chat)</b><small>TourChatWidget / Embed</small></div>
+      </div>
+    </div>
+    <div class="conn"><span class="cnote">HTTP REST / SSE</span><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-backend"><b>Backend — FastAPI</b><small>ChatService (orquestra)</small></div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-row">
+      <div class="node n-service"><b>OpenSearch</b><small>acervo · vetores · imagens</small></div>
+      <div class="node n-llm"><b>LLM</b><small>router · resposta</small></div>
+      <div class="node n-service"><b>Embeddings</b><small>texto · multimodal</small></div>
+      <div class="node n-service"><b>poi_tours</b><small>inventário → visita</small></div>
+      <div class="node n-service"><b>Multiview Worker</b><small>render 3D (Node)</small></div>
+    </div>
+  </div>
+<p><strong>Peças-chave:</strong></p>
+<ul><li><strong>Frontend (React/Vite)</strong> — widget de chat sobreposto à visita virtual; é "fino": trata da UI e da ponte para a visita, mas não contém lógica de raciocínio.</li><li><strong>Backend (FastAPI / <code>ChatService</code>)</strong> — orquestra todo o raciocínio e detém o estado.</li><li><strong>OpenSearch</strong> — base de pesquisa do acervo, com três "vistas" do mesmo dado: texto pesquisável (BM25), vetores semânticos de texto e vetores multimodais de imagem.</li><li><strong>LLM</strong> (OpenAI-compatible) — usado para (1) <em>router</em> (decidir o caminho), (2) reescrita da query lexical de retrieval, (3) interpretação temporal e (4) redação da resposta final.</li><li><strong>Embeddings</strong> — modelos de <em>embedding</em> de texto e multimodal (imagem).</li><li><strong><code>poi_tours/</code></strong> — ficheiros JSON que ligam o <strong>número de inventário</strong> de uma peça ao <strong>ponto da visita virtual</strong> (panorama + <em>overlay</em>).</li><li><strong>Multiview Worker</strong> — serviço Node/Puppeteer que renderiza várias vistas de um modelo 3D enviado pelo utilizador, para pesquisa por modelo.</li></ul>
+<hr>
+<h2>2. Stack tecnológica</h2>
+<table><thead><tr><th>Camada</th><th>Tecnologia</th></tr></thead><tbody><tr><td>Frontend</td><td>React + TypeScript + Vite</td></tr><tr><td>Backend</td><td>Python 3.11+, FastAPI, Pydantic / pydantic-settings</td></tr><tr><td>Cliente LLM</td><td>SDK OpenAI (<code>AsyncOpenAI</code>), endpoint <em>openai-compatible</em></td></tr><tr><td>Pesquisa</td><td>OpenSearch (índices de artefactos, imagens, museus e entidades relacionais)</td></tr><tr><td>Embeddings de texto</td><td>BGE-M3 (1024-dim) via FlagEmbedding <strong>ou</strong> OpenRouter; alternativa Qwen</td></tr><tr><td>Embeddings multimodais</td><td>Qwen3-VL-Embedding-2B (2048-dim) via sentence-transformers</td></tr><tr><td>Render 3D</td><td>Worker Node.js + Puppeteer (Chromium headless)</td></tr><tr><td>Streaming</td><td>Server-Sent Events (SSE) sobre HTTP</td></tr><tr><td>Persistência de sessão</td><td>Em memória, no processo do backend (com TTL)</td></tr><tr><td>Observabilidade</td><td>Logging estruturado JSONL (queries de backend + interações de frontend)</td></tr></tbody></table>
+<p><strong>LLM por omissão:</strong> <code>carminho/AMALIA-9B-50-DPO</code> (configurável). Temperatura <code>0.4</code> para respostas de texto e <code>0.0</code> para saídas JSON (router, reescrita, interpretação temporal).</p>
+<hr>
+<h2>3. Mapa de componentes</h2>
+<h3>3.1. Backend (<code>backend/app/</code>)</h3>
+<pre class="tree">app/
+├── main.py                      Cria a app FastAPI + CORS + monta o router
+├── api/
+│   ├── router.py                Agrega: /chat, /logs, health
+│   └── routes/
+│       ├── chat.py              Todos os endpoints de chat, upload e artefactos
+│       ├── logs.py              Recebe eventos de interação do frontend
+│       └── health.py            Health checks
+├── core/
+│   └── config.py                Settings (env) + caminhos resolvidos
+├── schemas/
+│   └── chat.py                  Modelos Pydantic de request/response
+├── prompts/
+│   ├── chat_prompts.py          Prompts do router, lexical e resposta final
+│   └── query_planner_prompts.py Prompt de reescrita da query de retrieval
+└── services/
+    ├── chat_service.py          ORQUESTRADOR central (todo o pipeline)
+    ├── opensearch_client.py     Gateway de pesquisa (híbrida, imagem, entidades)
+    ├── embeddings.py            Provedores de embedding (texto + multimodal)
+    ├── llm_service.py           Cliente LLM openai-compatible
+    ├── model_retrieval.py       Pesquisa por modelo 3D (orquestra render+embed+search)
+    ├── multiview_renderer.py    Cliente do worker Node (render de vistas 3D)
+    ├── tour_navigation.py       Inventário → overlay/panorama (poi_tours)
+    ├── chat_session_store.py    Estado de sessão em memória (TTL, histórico)
+    ├── chat_i18n.py             Traduções de estados e erros (PT/EN)
+    ├── query_logger.py          Logging JSONL (backend_query + frontend_events)
+    ├── warmup.py                Pré-aquecimento opcional do stack
+    └── reranker.py              Reranker pairwise (presente, NÃO ativo — ver Apêndice C)</pre>
+<h3>3.2. Frontend (<code>frontend/src/embed/</code>)</h3>
+<pre class="tree">embed/
+├── components/
+│   ├── TourAssistantEmbed.tsx   Contentor: visita (iframe) + assistente + ponte postMessage
+│   ├── TourChatWidget.tsx       Widget de chat (UI, mensagens, resultados)
+│   ├── MessageMarkdown.tsx      Render do markdown das respostas
+│   └── ModelAttachmentViewer.tsx Pré-visualização de modelo 3D anexado
+├── services/
+│   ├── chatApi.ts               Cliente do backend (REST + SSE, normalização)
+│   ├── tourBridge.ts            postMessage → visita (contexto + navegação)
+│   ├── interactionLogger.ts     Eventos de interação → /logs/events
+│   └── embedConfig.ts           Configuração do embed
+├── i18n/index.ts                Traduções da UI
+└── types.ts                     Tipos partilhados do frontend</pre>
+<hr>
+<h2>4. O pipeline de raciocínio (passo a passo)</h2>
+<p>RAG = <em>Retrieval-Augmented Generation</em>: o modelo <strong>não responde de cor</strong> — primeiro <strong>procura</strong> factos no acervo e só depois <strong>redige</strong> a resposta com base nesses factos.</p>
+<p>A característica central é que <strong>não existe um único caminho</strong>: consoante a pergunta, o sistema escolhe o percurso. O diagrama abaixo mostra o fluxo de uma mensagem de texto.</p>
+<div class="dgm">
+    <div class="dgm-center"><div class="node n-step"><b>Mensagem do visitante</b><small>texto</small></div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-row">
+      <div class="node n-step"><b>1 · Sessão</b><small>idioma · histórico · filtros</small></div>
+      <div class="node n-step"><b>2 · Política de contexto</b><small>é seguimento?</small></div>
+    </div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-accent"><b>3 · ROUTER</b><small>LLM → JSON</small></div></div>
+    <div class="conn"><span class="cnote">decide o caminho</span><div class="vline"></div><div class="chev"></div></div>
+    <div class="branch">
+      <div class="branch-col">
+        <span class="badge llm">llm_only</span>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="node n-step">Resposta só com o<br>contexto da conversa</div>
+        <div class="cnote" style="margin-top:6px">saudações · small talk · “explica melhor”</div>
+      </div>
+      <div class="branch-col">
+        <span class="badge rag">rag</span>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="node n-step">Preparar retrieval</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="subbranch">
+          <div class="sb"><span class="chip">com nº de inventário</span><div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Lookup direto por inventário</div></div>
+          <div class="sb"><span class="chip">sem inventário</span><div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Temporal + âmbito da visita</div><div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Reescrita lexical + embedding</div><div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Pesquisa híbrida + boosts</div></div>
+        </div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="node n-step">Imagens + fichas de artefacto</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="node n-step">Resolver navegação (peça → visita)</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="node n-step">Paginar resultados</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+        <div class="node n-accent">Resposta final (LLM)</div>
+      </div>
+    </div>
+    <div class="conn"><span class="cnote">convergência</span><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-step">Sanitizar resposta · remover IDs · [doc_x] · renumerar listas</div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-step">Atualizar sessão · histórico · rolling summary · filtros</div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-service">Registar evento backend_query (JSONL)</div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-accent">Devolver ao frontend</div></div>
+  </div>
+<p>Cada um destes passos é detalhado nas secções seguintes.</p>
+<hr>
+<h2>5. O Router: como a pergunta é encaminhada</h2>
+<p>O <strong>router</strong> é uma chamada LLM que devolve <strong>JSON estrito</strong> (ver Apêndice A). Recebe a mensagem atual, o museu, o estado de filtros/ordenação e — só quando há seguimento — um resumo e excerto do histórico. Decide os campos seguintes:</p>
+<table><thead><tr><th>Campo</th><th>Significado</th></tr></thead><tbody><tr><td><code>mode</code></td><td><code>rag</code> (procurar no acervo) ou <code>llm_only</code> (responder só com a conversa)</td></tr><tr><td><code>intent</code></td><td><code>overview</code>, <code>search</code>, <code>refine</code> ou <code>fallback</code></td></tr><tr><td><code>is_follow_up</code></td><td>A mensagem é um seguimento de algo já dito?</td></tr><tr><td><code>use_history_for_query</code></td><td>O histórico deve construir a query de pesquisa?</td></tr><tr><td><code>use_history_for_answer</code></td><td>O histórico deve ajudar a redigir a resposta?</td></tr><tr><td><code>carry_filters</code> / <code>carry_sort</code></td><td>Manter filtros/ordenação do turno anterior?</td></tr><tr><td><code>rewritten_query</code></td><td>Reescrita conversacional da pergunta (para o prompt da resposta)</td></tr><tr><td><code>needs_retrieval</code></td><td>Precisa mesmo de ir ao acervo?</td></tr><tr><td><code>filters_delta</code> / <code>sort_delta</code></td><td>Alterações de filtro/ordenação propostas</td></tr><tr><td><code>reason</code></td><td>Justificação (acumula <em>tags</em> de guardrails)</td></tr></tbody></table>
+<p><strong>Guardrails determinísticos</strong> aplicados sobre a saída do LLM (não se confia cegamente):</p>
+<ul><li>Se <code>intent</code> for <code>search</code>/<code>refine</code>, força-se <code>mode=rag</code> e <code>needs_retrieval=true</code>.</li><li>Se <code>needs_retrieval=true</code>, força-se <code>mode=rag</code>.</li><li>Se <strong>não</strong> for seguimento, desligam-se <code>use_history_for_query</code>, <code>carry_filters</code> e <code>carry_sort</code>.</li><li>Se a pergunta contiver expressão de <strong>âmbito da visita</strong> ("nesta visita virtual"), trata-se como <strong>nova pesquisa autónoma</strong> (sem herdar contexto nem <code>artifact_id</code>).</li><li>Em caso de falha do LLM no router, usa-se um <em>fallback</em> heurístico (<code>_fallback_router_decision</code>): saudações/small talk → <code>llm_only</code>; caso contrário → <code>rag</code>.</li></ul>
+<blockquote>Importante: a query usada para <strong>retrieval</strong> é a <strong>mensagem literal do utilizador</strong> (estrita, sem expansões). A <code>rewritten_query</code> do router serve apenas o prompt da resposta final, não a pesquisa. A limpeza para BM25 é feita separadamente (secção 9).</blockquote>
+<hr>
+<h2>6. Política de contexto e seguimento (follow-up)</h2>
+<p>Antes do router, o <code>ChatService</code> deriva uma <strong>política de contexto</strong> determinística (<code>_derive_context_policy</code>) que analisa a mensagem com expressões regulares e o estado da sessão. Esta política é uma "dica" forte para o router e também impõe guardrails.</p>
+<table><thead><tr><th>Situação detetada</th><th>Resultado</th></tr></thead><tbody><tr><td>Mensagem vazia / sem contexto anterior</td><td>Pergunta autónoma, sem histórico</td></tr><tr><td>Pedido explícito de "nova pesquisa", "outro tema", "do zero"</td><td>Autónoma (ignora histórico/filtros)</td></tr><tr><td>Expressão de âmbito da visita ("nesta visita 360")</td><td>Autónoma, ativa filtro de âmbito</td></tr><tr><td>Pronomes/referências ("e a anterior?", "só os do século XVIII", "desse autor")</td><td>Seguimento: usa histórico <strong>para query e resposta</strong>, mantém filtros e ordenação</td></tr><tr><td>Pedidos de reformulação ("explica melhor", "detalha", "resume")</td><td>Seguimento <strong>só para resposta</strong> (não repesquisa, não herda filtros)</td></tr><tr><td>Tudo o resto</td><td>Pergunta autónoma por omissão</td></tr></tbody></table>
+<p>Isto permite conversas naturais como:</p>
+<ul><li><em>"Que azulejos há do século XVIII?"</em> → pesquisa nova.</li><li><em>"E só os de iconografia mariana?"</em> → seguimento que <strong>acrescenta</strong> um filtro à pesquisa anterior.</li><li><em>"Explica melhor o primeiro."</em> → não repesquisa; reusa o contexto e detalha.</li></ul>
+<hr>
+<h2>7. Retrieval de texto (pesquisa híbrida)</h2>
+<p>Quando <code>mode=rag</code> e não há número de inventário, executa-se <code>_retrieve_context</code>, que faz uma <strong>pesquisa híbrida</strong> no índice de artefactos do OpenSearch, combinando duas vistas:</p>
+<ol><li><strong>Semântica (kNN)</strong> — o <em>embedding</em> da query é comparado com o campo <code>text_embedding</code> dos documentos (<code>k = 1000</code> candidatos no kNN).</li><li><strong>Lexical (BM25)</strong> — <code>multi_match</code> em vários níveis sobre campos do artefacto:</li></ol>
+<table><thead><tr><th>Nível</th><th>Tipo</th><th>Campos</th><th>Boost</th></tr></thead><tbody><tr><td>Frase</td><td><code>phrase</code> (slop 1)</td><td>campos núcleo (título, descrição, categoria, material…)</td><td>4.0</td></tr><tr><td>Conjunção</td><td><code>best_fields</code>, <code>operator=and</code></td><td>campos núcleo</td><td>2.5</td></tr><tr><td>Disjunção</td><td><code>best_fields</code>, <code>or</code>, <code>minimum_should_match=2&lt;75%</code></td><td>campos núcleo</td><td>1.0</td></tr><tr><td>Contexto</td><td><code>best_fields</code>, <code>or</code></td><td>campos de contexto (origem, exposições, bibliografia…)</td><td>0.25</td></tr></tbody></table>
+<p>As duas vistas são combinadas via <em>search pipeline</em> <code>nlp-search-pipeline</code> do OpenSearch, com <code>pagination_depth</code> igual à janela de recuperação configurada. Pode forçar-se modo <strong>só-embedding</strong> (<code>CHAT_RETRIEVAL_EMBEDDING_ONLY=true</code>), que remove os ramos BM25.</p>
+<p><strong>Campos núcleo</strong> (com pesos): <code>title^6</code>, <code>description^2.5</code>, <code>category.text^3</code>, <code>super_category.text^2.5</code>, <code>support_or_material.text^2</code>, <code>technique.text^1.5</code>, <code>date_or_period.text^1.2</code>, <code>creators.text^1.2</code>, <code>production_center.text^0.8</code>. <strong>Campos de contexto</strong>: <code>origin_history^0.25</code>, <code>exhibitions.text^0.2</code>, <code>sets.text^0.2</code>, <code>incorporation.text^0.2</code>, <code>bibliography^0.1</code>, <code>museum.text^0.1</code>.</p>
+<p>O resultado é uma página de documentos já normalizados (cada um com <code>artifact_id</code>, <code>inventory_number</code>, <code>title</code>, <code>score</code>, etc.), o total estimado e o <strong>corpo exato da query enviada ao OpenSearch</strong> (guardado para o log — ver secção 20).</p>
+<hr>
+<h2>8. Filtros: museu, temporais e âmbito da visita</h2>
+<p>A pesquisa é sempre restringida ao <strong>museu</strong> (cláusula <code>term</code> sobre <code>museum_id</code>, resolvido a partir do <code>museum_id</code> explícito ou do <code>museum_slug</code>). Sobre isto aplicam-se filtros adicionais derivados da pergunta:</p>
+<h3>8.1. Filtro temporal</h3>
+<p>A pergunta é analisada por <code>_interpret_temporal_query</code>, em três camadas:</p>
+<ol><li><strong>Explícito por regex</strong> — intervalos como "entre 1700 e 1750", "de 1500 a 1520".</li><li>**Períodos históricos *hardcoded*** — aliases conhecidos mapeados para intervalos:</li></ol>
+<ul><li><em>período pombalino</em> → 1750–1777</li><li><em>período joanino</em> → 1706–1750</li><li><em>período manuelino</em> → 1495–1521</li><li><em>período sebastianista</em> / <em>crise de sucessão</em> → 1578–1580</li><li><em>período miguelista</em> → 1828–1834</li></ul>
+<ol><li><strong>LLM</strong> — interpretação temporal por modelo quando as duas anteriores não resolvem.</li></ol>
+<p>O intervalo resultante vira um <strong>filtro de metadata</strong> (<code>_temporal_interval</code>) traduzido para cláusulas <code>range</code> sobre <code>start_year</code>/<code>end_year</code>, com lógica de <strong>sobreposição de intervalos</strong> (um documento com início e fim corresponde se os intervalos se cruzam; um documento só com <code>start_year</code> é tratado como data pontual dentro do intervalo).</p>
+<p>A expressão temporal é <strong>removida do texto</strong> da query — não é pesquisada como termo lexical.</p>
+<h3>8.2. Filtro de âmbito da visita</h3>
+<p>Padrões como <em>"nesta visita virtual"</em>, <em>"no tour 360"</em>, <em>"in this tour"</em> são detetados (<code>_extract_tour_scope_expression</code>) e convertidos num filtro booleano <code>in_tour=true</code>. Também são removidos do texto da query. Isto responde a <em>"o que posso ver nesta visita?"</em> restringindo aos artefactos efetivamente mapeados na visita virtual.</p>
+<h3>8.3. Filtros de seguimento</h3>
+<p>Em seguimentos, os <code>filters_delta</code> do router (ex.: <code>{"category": "azulejo"}</code>) são fundidos com os filtros herdados da sessão. Os campos suportados incluem categóricos (<code>category</code>, <code>creators</code>, <code>support_or_material</code>, <code>technique</code>, <code>date_or_period</code>…), numéricos (<code>start_year</code>, <code>end_year</code>, <code>image_count</code>…, com <code>gte</code>/<code>lte</code>) e booleanos (<code>in_tour</code>).</p>
+<hr>
+<h2>9. Reescrita de query e <em>boosts</em></h2>
+<h3>9.1. Duas queries diferentes</h3>
+<p>Dentro de <code>_retrieve_context</code> constroem-se <strong>duas</strong> representações da pergunta:</p>
+<ul><li><strong><code>embedding_query</code></strong> — a expressão original do utilizador (após retirar temporal e âmbito da visita). É usada para o vetor semântico. Mantém-se fiel à intenção literal.</li><li><strong><code>lexical_query</code></strong> — uma versão <strong>curta e limpa</strong> para BM25. Por omissão é produzida por heurística (<code>_build_lexical_query</code>); se <code>CHAT_ENABLE_LLM_LEXICAL_QUERY=true</code>, o LLM extrai a expressão nominal pesquisável (<code>_rewrite_retrieval_query_with_llm</code>).</li></ul>
+<p>O prompt de reescrita lexical é muito restritivo: <strong>não traduz, não troca por sinónimos, não muda singular/plural, não inclui anos nem frases de âmbito</strong>, e preserva expressões compostas ("fatos de banho" nunca vira "banhos"; "túmulo de Fernando Pessoa" não vira "Fernando Pessoa"). Devolve apenas <code>{"lexical_query":"..."}</code>.</p>
+<h3>9.2. <em>Boost</em> "in_tour"</h3>
+<p>Os artefactos presentes na visita virtual recebem um <em>boost</em> configurável para subirem no ranking (sem <strong>excluir</strong> os restantes):</p>
+<ul><li><code>CHAT_IN_TOUR_BOOST</code> — para pesquisa de texto.</li><li><code>IMAGE_IN_TOUR_BOOST</code> — para pesquisa por imagem/modelo 3D.</li></ul>
+<p>Implementado como cláusula <code>should</code> com <code>term: { in_tour: { value: true, boost: N } }</code>.</p>
+<h3>9.3. <em>Boosts</em> por alias de categoria/material/técnica</h3>
+<p><code>app/config/retrieval_boost_aliases.json</code> define aliases que, quando detetados na query, acrescentam <em>boosts</em> dirigidos. Exemplo: "azulejos"/"tiles" → reforça <code>category: ceramica</code>; "quadro"/"painting" → reforça <code>category: pintura</code>. Isto melhora a precisão sem alterar a intenção do utilizador.</p>
+<hr>
+<h2>10. Entradas multimodais (texto, imagem, modelo 3D)</h2>
+<p>O mesmo motor RAG aceita três tipos de "pergunta". Cada uma tem o seu ponto de entrada no <code>ChatService</code> (<code>handle_message</code>, <code>handle_image_message</code>, <code>handle_model_message</code>).</p>
+<div class="dgm">
+    <div class="cols3">
+      <div class="branch-col"><div class="colhead" style="background:#1b5fb0">Texto</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Embedding de texto<br>(BGE-M3)</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Pesquisa híbrida<br>(BM25 + kNN)</div>
+      </div>
+      <div class="branch-col"><div class="colhead" style="background:#1e8f70">Imagem (foto)</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Embedding multimodal<br>(Qwen-VL)</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Pesquisa kNN<br>de imagens</div>
+      </div>
+      <div class="branch-col"><div class="colhead" style="background:#6b4fae">Modelo 3D</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Render de 5 vistas<br>(worker Node)</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">Embedding por vista</div>
+        <div class="conn"><div class="vline"></div><div class="chev"></div></div><div class="node n-step">kNN multi-vetor<br>+ artefactos</div>
+      </div>
+    </div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-accent">Peças do acervo relevantes → fichas + imagens + navegação</div></div>
+  </div>
+<h3>10.1. Texto</h3>
+<p>Pesquisa híbrida descrita nas secções 7–9.</p>
+<h3>10.2. Imagem</h3>
+<p>O visitante envia uma foto (upload <em>multipart</em>). Geramos um <strong>embedding multimodal</strong> da imagem (modelo Qwen3-VL, 2048-dim) e procuramos no índice de imagens as peças <strong>visualmente parecidas</strong> (<code>search_similar_images_page</code>, kNN com <em>boost</em> in_tour de imagem). A partir das imagens encontradas, resolvem-se os artefactos correspondentes. <code>route="image_search"</code>, <code>retrieval_mode="image_similarity"</code>.</p>
+<h3>10.3. Modelo 3D</h3>
+<p>O visitante envia um ficheiro <code>.glb</code>, <code>.gltf</code> ou <code>.obj</code> (validado no endpoint). O fluxo (<code>ModelRetrievalService</code>):</p>
+<ol><li><strong>Render</strong> — o <strong>Multiview Worker</strong> (Node + Puppeteer/Chromium) renderiza <strong>5 vistas</strong> determinísticas do modelo. O backend faz <em>spawn</em> do worker no primeiro pedido e comunica por HTTP local. As vistas são opcionalmente persistidas em <code>tmp/multiview_last_views/</code> para inspeção.</li><li><strong>Embedding</strong> — gera-se um embedding multimodal por vista.</li><li><strong>Pesquisa multi-vetor</strong> — <code>search_similar_images_multi_page</code> procura imagens semelhantes a qualquer das vistas (kNN), com <em>boost</em> in_tour de imagem.</li><li><strong>Resolução de artefactos</strong> — buscam-se os artefactos por <strong>número de inventário</strong> das imagens encontradas; se falhar, <em>fallback</em> por <code>artifact_id</code>.</li></ol>
+<p>Há <strong>cache LRU</strong> por <em>hash</em> do modelo (<code>CHAT_MODEL_CACHE_SIZE</code>), e existe lógica preparada para um segundo passo de vistas adicionais em caso de baixa confiança (controlada por <code>CHAT_MODEL_LOW_CONFIDENCE_SCORE_THRESHOLD</code>). <code>route="model_search"</code>, <code>retrieval_mode="model_multiview_similarity"</code>.</p>
+<hr>
+<h2>11. Navegação peça → ponto da visita virtual</h2>
+<p>Este é o elo distintivo do projeto: ligar <strong>uma peça do acervo</strong> a <strong>um ponto físico da visita 360º</strong>.</p>
+<div class="dgm">
+    <div class="dgm-center"><div class="node n-step"><b>Peça encontrada no acervo</b><small>tem nº de inventário, ex. “MNAz 1 Az”</small></div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-step"><b>TourNavigationService</b><small>consulta poi_tours/…-&lt;museu&gt;.json</small></div></div>
+    <div class="conn"><span class="cnote">nº inventário normalizado → overlay + panorama</span><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-service"><b>navigation_target</b><small>overlay_id · panorama_key · inventory_id · location · title</small></div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-step"><b>Frontend</b><small>botão “Ver na visita” → postMessage</small></div></div>
+    <div class="conn"><div class="vline"></div><div class="chev"></div></div>
+    <div class="dgm-center"><div class="node n-accent"><b>A visita 360º salta para o panorama e destaca a peça</b></div></div>
+  </div>
+<p><strong>Estrutura de cada entrada do ficheiro de mapeamento</strong> (<code>poi_tours/...-&lt;slug&gt;.json</code>):</p>
+<pre><code>{
+  "overlayId": "sprite_41F5890F_1112_FF73_41AA_15B9DDA1FFD4",
+  "panoramaKey": "model_41B32FB0_110F_7293_41A3_0D87FC3F53F0",
+  "inventoryIds": ["MNAz 1 Az"],
+  "location": "Grande Panorama de Lisboa",
+  "title": "Vista de Lisboa"
+}</code></pre>
+<p><strong>Normalização robusta:</strong> os números de inventário são passados a maiúsculas e despojados de pontuação/espaços antes do <em>match</em>; o serviço lida com <strong>listas</strong>, <strong>variantes entre parênteses</strong> e <strong>separadores</strong> (<code>;</code>, <code>,</code>, <code>|</code>). Se uma peça <strong>não estiver mapeada</strong> na visita, simplesmente não aparece o botão de navegação — a resposta de texto continua a funcionar normalmente. O índice de cada museu é carregado uma vez e mantido em memória.</p>
+<hr>
+<h2>12. Geração da resposta final e sanitização</h2>
+<p>A resposta final é produzida por uma chamada LLM com um prompt construído por <code>build_final_answer_prompt</code>, que injeta:</p>
+<ul><li>O idioma final obrigatório (PT ou EN).</li><li>A <strong>precedência de fontes</strong>: <code>retrieval_context</code> &gt; mensagem atual &gt; estado explícito &gt; histórico recente &gt; rolling summary.</li><li>O <code>retrieval_context</code> (os cartões <strong>visíveis</strong> ao utilizador), como fonte primária de factos.</li><li>A modalidade (texto/imagem/modelo) e regras específicas (ex.: numa pesquisa por imagem, o media enviado é a fonte de verdade).</li></ul>
+<p><strong>Regras de consistência</strong> impostas pelo prompt:</p>
+<ul><li>Nunca dizer que foram encontrados menos resultados do que os cartões visíveis.</li><li>Descrever todos os resultados visíveis (salvo pedido explícito de subconjunto).</li><li><strong>Nunca expor</strong> identificadores internos (<code>artifact_id</code>), nomes de variáveis do prompt (<code>retrieval_context</code>, etc.) nem marcadores de contexto (<code>[doc_1]</code>, <code>doc_x</code>).</li><li>Preferir o <strong>título</strong> (e opcionalmente a referência de inventário) ao referir uma peça.</li></ul>
+<p><strong>Sanitização pós-LLM</strong> (<code>_sanitize_assistant_reply</code>): remove identificadores internos, substitui marcadores <code>[doc_x]</code> por rótulos legíveis e renumera listas ordenadas para ficarem consecutivas. Há ainda um <em>guard</em> de idioma para garantir que a resposta sai integralmente na língua pedida.</p>
+<p><strong>Comportamento de falha:</strong> se o LLM estiver indisponível, devolve-se uma mensagem de <em>fallback</em> traduzida e a resposta continua a transportar os resultados de pesquisa (cartões, imagens, navegação) — a pesquisa não é perdida.</p>
+<hr>
+<h2>13. Paginação de resultados</h2>
+<p>Os resultados de pesquisa são <strong>paginados</strong>. A primeira resposta já traz a primeira página (<code>results_page</code>, <code>results_page_size</code>, <code>results_total</code>, <code>results_has_more</code>) e um <code>results_request_id</code> que identifica aquela pesquisa.</p>
+<p>Para "ver mais resultados", o frontend chama <code>POST /chat/messages/results</code> com o <code>results_request_id</code> e o número de página. O backend tem em cache, na sessão, o pedido de retrieval e os resultados completos (<code>paged_results_by_request_id</code>), e <strong>materializa</strong> a página pedida sem repetir a pesquisa nem voltar a chamar o LLM de resposta (gera um texto curto de acompanhamento). Isto vale para texto, imagem e modelo 3D.</p>
+<hr>
+<h2>14. Modal de detalhe: autores, conjuntos, exposições, relacionados</h2>
+<p>Quando o visitante abre uma peça, o frontend pede contexto relacional <strong>a pedido</strong> (<em>lazy</em>), para não pesar a resposta de chat:</p>
+<table><thead><tr><th>Endpoint</th><th>Conteúdo</th></tr></thead><tbody><tr><td><code>GET /chat/artifacts/{id}/detail-context</code></td><td>Autores, conjuntos e exposições da peça, cada um com os outros artefactos relacionados (e <code>navigation_target</code> se existir na visita)</td></tr><tr><td><code>GET /chat/artifacts/related</code></td><td>Paginação dos artefactos de um conjunto/exposição</td></tr><tr><td><code>GET /chat/artifacts/{id}/full</code></td><td>Ficha completa de uma peça, com todas as imagens</td></tr><tr><td><code>GET /chat/artifacts/by-inventory/full</code></td><td>Ficha completa por número de inventário (usado para converter eventos da visita em referências de chat)</td></tr></tbody></table>
+<p>As entidades relacionais (autores, conjuntos, exposições) vivem em índices próprios do OpenSearch e são resolvidas pelo <code>OpenSearchGateway</code>.</p>
+<hr>
+<h2>15. Pesquisa entre museus (<em>cross-museum</em>)</h2>
+<p>Embora o assistente esteja embebido num museu, o utilizador pode <strong>nomear outro museu</strong> na pergunta (ex.: <em>"procura trajes no Museu Nacional do Traje"</em>). O serviço <code>_resolve_requested_search_museum</code> deteta o museu por alias (config <code>app/config/search_museums.json</code>), remove a expressão do museu da query e constrói um <strong><code>search_scope</code></strong> com <code>is_cross_museum=true</code>. A resposta inclui esse <code>search_scope</code>, permitindo ao frontend indicar que os resultados vêm de um museu diferente do da visita.</p>
+<p>Museus configurados por omissão: <strong>MNT</strong> (Traje), <strong>MNAZ</strong> (Azulejo), <strong>MJ</strong> (Jerónimos), <strong>MNSR</strong> (Soares dos Reis).</p>
+<hr>
+<h2>16. Comunicação Frontend ↔ Backend (REST + SSE)</h2>
+<p>A comunicação é <strong>HTTP REST</strong>, com uma camada de <strong>streaming (SSE)</strong> para mostrar progresso ao vivo ("a analisar pedido…", "a procurar no acervo…", "encontrei N peças…").</p>
+<div class="dgm"><div class="seq">
+    <div class="seq-step"><div class="seq-num">1</div><div class="seq-route"><span class="actor">Visitante</span><span class="seq-ar">→</span><span class="actor">Widget</span></div><div class="seq-desc">Escreve a pergunta (ou anexa imagem / modelo 3D).</div></div>
+    <div class="seq-step"><div class="seq-num">2</div><div class="seq-route"><span class="actor">Widget</span><span class="seq-ar">→</span><span class="actor">chatApi</span></div><div class="seq-desc">sendChatMessage(...)</div></div>
+    <div class="seq-step"><div class="seq-num">3</div><div class="seq-route"><span class="actor">chatApi</span><span class="seq-ar">→</span><span class="actor">Backend</span></div><div class="seq-desc">POST /api/v1/chat/messages/stream</div></div>
+    <div class="seq-step"><div class="seq-num">4</div><div class="seq-route"><span class="actor">Backend</span><span class="seq-ar">→</span><span class="actor">LLM</span></div><div class="seq-desc">Router (JSON) + reescrita lexical da query.</div></div>
+    <div class="seq-step"><div class="seq-num">5</div><div class="seq-route"><span class="actor">Backend</span><span class="seq-ar">⇢</span><span class="actor">Widget</span></div><div class="seq-desc">event: status (“a procurar no acervo…”) → onStatus</div></div>
+    <div class="seq-step"><div class="seq-num">6</div><div class="seq-route"><span class="actor">Backend</span><span class="seq-ar">→</span><span class="actor">OpenSearch</span></div><div class="seq-desc">Pesquisa híbrida + imagens dos artefactos.</div></div>
+    <div class="seq-step"><div class="seq-num">7</div><div class="seq-route"><span class="actor">Backend</span><span class="seq-ar">→</span><span class="actor">LLM</span></div><div class="seq-desc">Redige a resposta final com base nos factos.</div></div>
+    <div class="seq-step"><div class="seq-num">8</div><div class="seq-route"><span class="actor">Backend</span><span class="seq-ar">⇢</span><span class="actor">chatApi</span></div><div class="seq-desc">event: result (payload completo) + event: done</div></div>
+    <div class="seq-step"><div class="seq-num">9</div><div class="seq-route"><span class="actor">chatApi</span><span class="seq-ar">→</span><span class="actor">Widget</span></div><div class="seq-desc">Normaliza snake→camelCase; mostra resposta + cartões.</div></div>
+  </div></div>
+<h3>16.1. Endpoints (todos sob <code>/api/v1/chat</code>)</h3>
+<table><thead><tr><th>Endpoint</th><th>Função</th></tr></thead><tbody><tr><td><code>GET /health</code></td><td>"Aquecer" a sessão e confirmar que o backend está vivo</td></tr><tr><td><code>POST /messages</code> · <code>/messages/stream</code></td><td>Pergunta por <strong>texto</strong> (simples · com progresso SSE)</td></tr><tr><td><code>POST /messages/image</code> · <code>/image/stream</code></td><td>Pergunta com <strong>imagem</strong> (upload multipart)</td></tr><tr><td><code>POST /messages/model</code> · <code>/model/stream</code></td><td>Pergunta com <strong>modelo 3D</strong> (upload multipart)</td></tr><tr><td><code>POST /messages/regenerate</code> · <code>/regenerate/stream</code></td><td>Voltar a gerar a última resposta</td></tr><tr><td><code>POST /messages/results</code></td><td><strong>Paginação</strong> — "ver mais resultados"</td></tr><tr><td><code>GET /artifacts/{id}/detail-context</code></td><td>Contexto relacional (modal, <em>lazy</em>)</td></tr><tr><td><code>GET /artifacts/related</code></td><td>Paginação de relacionados (modal)</td></tr><tr><td><code>GET /artifacts/{id}/full</code></td><td>Ficha completa por <code>artifact_id</code></td></tr><tr><td><code>GET /artifacts/by-inventory/full</code></td><td>Ficha completa por número de inventário</td></tr><tr><td><code>GET /images/{ref}</code></td><td>Servir ficheiros de imagem das peças</td></tr></tbody></table>
+<p>Há ainda, fora de <code>/chat</code>: <code>POST /api/v1/logs/events</code> (eventos de interação do frontend).</p>
+<h3>16.2. Princípios de desenho</h3>
+<ul><li><strong>Estado no backend</strong> — o frontend só guarda o <code>conversationId</code>; histórico, filtros ativos e últimos resultados ficam no servidor (permite seguimento natural).</li><li><strong>Streaming opcional</strong> — se o frontend passa um <em>callback</em> de progresso, usa a versão <code>/stream</code> (SSE); caso contrário, faz um pedido simples.</li><li><strong>Tradução de formato</strong> — o backend responde em <code>snake_case</code>; o <code>chatApi.ts</code> normaliza tudo para <code>camelCase</code> e tipos do frontend, isolando a UI de mudanças no backend.</li><li><strong>Carregamento preguiçoso</strong> — detalhes pesados (contexto relacional, ficha completa, páginas extra) só são pedidos quando o visitante interage.</li><li><strong>Metadata de correlação</strong> — o frontend pode anexar <code>session_id</code>, <code>participant_id</code>, <code>task_id</code> e a <strong>peça selecionada</strong> (<code>selected_artifact</code>) no campo <code>metadata</code>, propagados para o backend e para os logs.</li></ul>
+<hr>
+<h2>17. Comunicação Frontend ↔ Visita Virtual (postMessage)</h2>
+<p>A visita virtual é uma aplicação <strong>externa</strong> carregada num <code>&lt;iframe&gt;</code>. O assistente e a visita comunicam por <strong><code>postMessage</code></strong> (entre janelas do browser) — não há servidor pelo meio. A comunicação é <strong>bidirecional</strong>.</p>
+<h3>17.1. Assistente → Visita</h3>
+<table><thead><tr><th>Mensagem</th><th>Conteúdo</th><th>Quando</th></tr></thead><tbody><tr><td><code>patrimonio360:tour-context</code></td><td><code>{ museumSlug }</code></td><td>Ao carregar a visita (sincroniza o contexto do museu)</td></tr><tr><td><code>navigateToArtifact</code></td><td><code>{ overlayId, panoramaKey, inventoryId, requestId }</code></td><td>Quando o visitante clica em <strong>"Ver na visita"</strong> num resultado</td></tr></tbody></table>
+<h3>17.2. Visita → Assistente</h3>
+<p>A visita reporta eventos que o <code>TourAssistantEmbed</code> escuta:</p>
+<table><thead><tr><th>Mensagem (<code>event.data.type</code>)</th><th>Significado</th></tr></thead><tbody><tr><td><code>selectedArtifacts</code></td><td>O utilizador abriu/selecionou uma peça <strong>dentro da visita</strong> (traz inventário, título, localização)</td></tr><tr><td><code>deselectedArtifacts</code></td><td>Fechou a seleção</td></tr><tr><td><code>tour_event</code> (com <code>event_type</code>)</td><td>Eventos de navegação: <code>tour_location_changed</code>, <code>artifact_info_opened</code>, <code>artifact_info_closed</code>, <code>navigation_completed</code>, etc.</td></tr></tbody></table>
+<p>Isto permite <strong>correlacionar</strong> o que acontece na visita com a conversa: por exemplo, quando o assistente envia <code>navigateToArtifact</code> e a visita responde com <code>navigation_completed</code>, o frontend regista o sucesso e associa o evento à query original.</p>
+<div class="dgm"><div class="seq">
+    <div class="seq-step"><div class="seq-num">1</div><div class="seq-route"><span class="actor">Embed</span><span class="seq-ar">→</span><span class="actor">Visita</span></div><div class="seq-desc">postMessage tour-context { museumSlug } (ao carregar).</div></div>
+    <div class="seq-step"><div class="seq-num">2</div><div class="seq-route"><span class="actor">Widget</span><span class="seq-ar">→</span><span class="actor">Backend</span></div><div class="seq-desc">Pergunta do visitante.</div></div>
+    <div class="seq-step"><div class="seq-num">3</div><div class="seq-route"><span class="actor">Backend</span><span class="seq-ar">⇢</span><span class="actor">Widget</span></div><div class="seq-desc">Resposta + navigation_targets.</div></div>
+    <div class="seq-step"><div class="seq-num">4</div><div class="seq-route"><span class="actor">Visitante</span><span class="seq-ar">→</span><span class="actor">Widget</span></div><div class="seq-desc">Clique em “Ver na visita” num resultado.</div></div>
+    <div class="seq-step"><div class="seq-num">5</div><div class="seq-route"><span class="actor">Widget</span><span class="seq-ar">→</span><span class="actor">Embed</span></div><div class="seq-desc">onNavigateToTarget(target)</div></div>
+    <div class="seq-step"><div class="seq-num">6</div><div class="seq-route"><span class="actor">Embed</span><span class="seq-ar">→</span><span class="actor">Visita</span></div><div class="seq-desc">postMessage navigateToArtifact { overlayId, panoramaKey }</div></div>
+    <div class="seq-step"><div class="seq-num">7</div><div class="seq-route"><span class="actor">Visita 360º</span><span class="seq-ar">↻</span></div><div class="seq-desc">Salta para o panorama e destaca o overlay da peça.</div></div>
+    <div class="seq-step"><div class="seq-num">8</div><div class="seq-route"><span class="actor">Visita</span><span class="seq-ar">→</span><span class="actor">Embed</span></div><div class="seq-desc">tour_event (navigation_completed).</div></div>
+    <div class="seq-step"><div class="seq-num">9</div><div class="seq-route"><span class="actor">Embed</span><span class="seq-ar">→</span><span class="actor">Backend</span></div><div class="seq-desc">logFrontendEvent → POST /api/v1/logs/events</div></div>
+  </div></div>
+<hr>
+<h2>18. Sessão, estado e memória de conversa</h2>
+<p>O estado de conversa vive em memória no backend (<code>ChatSessionStore</code>), indexado por <code>conversation_id</code>, com <strong>eviction por TTL</strong> (<code>CHAT_SESSION_TTL_SECONDS</code>, 3600s por omissão). Cada <code>ChatSessionState</code> guarda:</p>
+<ul><li><code>language</code>, <code>intent</code> atual.</li><li><code>filters</code> e <code>sort</code> ativos (para seguimentos).</li><li><code>history</code> (janela das últimas N mensagens — <code>CHAT_HISTORY_WINDOW</code>, 8 por omissão).</li><li><code>rolling_summary</code> — resumo contínuo da conversa (máx. <code>CHAT_ROLLING_SUMMARY_MAX_CHARS</code>, 600).</li><li><code>last_result_ids</code> e os <strong>resultados paginados em cache</strong> (<code>paged_results_by_request_id</code>) para servir "ver mais" sem repesquisar.</li></ul>
+<p>Se o <code>conversation_id</code> mudar de museu, o estado ligado ao museu é reiniciado (mas o id mantém-se). O <strong>rolling summary</strong> é atualizado a cada turno e serve apenas como contexto auxiliar — nunca introduz factos novos na resposta.</p>
+<hr>
+<h2>19. Internacionalização (PT/EN)</h2>
+<p>Todo o texto voltado ao utilizador (estados de progresso, erros, mensagens <em>default</em> de upload, <em>guards</em> de idioma e rótulos do sanitizador) é traduzido via <code>chat_i18n.translate</code> em <strong>português</strong> e <strong>inglês</strong>, com suporte a pluralização (ex.: "Encontrado 1 artefacto" vs "Encontrados 5 artefactos"). O idioma é resolvido do pedido (<code>language</code>) e fixado na sessão. Os prompts do router, da reescrita e da resposta final também têm variantes PT/EN.</p>
+<hr>
+<h2>20. Observabilidade: logging estruturado de queries e interações</h2>
+<p>O sistema produz <strong>dois fluxos de log JSONL</strong> (um objeto JSON por linha), pensados para avaliação offline e análise (papers). O serviço <code>QueryLogger</code> é <strong>fail-soft</strong>: nunca quebra a resposta de chat; em caso de falha, emite um <em>warning</em> e continua. Não regista chaves de API, <em>tokens</em>, cabeçalhos nem segredos.</p>
+<h3>20.1. <code>backend_query</code> (um evento por pedido de chat)</h3>
+<p>Escrito em <code>logs/evaluation/backend_queries.jsonl</code> (configurável via <code>QUERY_LOG_PATH</code>). Gerado nos três pontos de entrada (texto, imagem, modelo 3D), com um <code>query_id</code> único por pedido. Inclui IDs de correlação, a query em várias formas, modo/rota de retrieval, filtros e <em>boosts</em> aplicados, artefactos recuperados e mostrados, alvos de navegação, latências (retrieval / LLM / total), estado e — no fundo do evento — **o <em>dump</em> exato da query enviada ao OpenSearch** (campo <code>opensearch_query</code>, incluindo o vetor de embedding completo nas pesquisas de texto). O esquema completo está no Apêndice B.</p>
+<h3>20.2. <code>frontend_events</code> (interações do utilizador)</h3>
+<p>Escrito em <code>logs/evaluation/frontend_events.jsonl</code> (<code>FRONTEND_EVENT_LOG_PATH</code>), recebido via <code>POST /api/v1/logs/events</code>. O frontend envia eventos (com <code>sendBeacon</code>/<code>fetch</code>) como <code>assistant_opened</code>, <code>message_sent</code>, <code>answer_received</code>, <code>artifact_card_opened</code>, <code>see_in_tour_clicked</code>, <code>navigation_command_sent</code>, <code>navigation_completed</code>, <code>tour_location_changed</code>, <code>task_started</code>, <code>task_completed</code>, <code>feedback_clicked</code>, <code>error_shown</code>, entre outros. Cada evento transporta <code>session_id</code>, <code>conversation_id</code>, <code>query_id</code>, <code>participant_id</code>, <code>task_id</code>, <code>tour_id</code> e <code>language</code>, permitindo reconstruir a jornada completa do visitante e cruzá-la com os <code>backend_query</code>.</p>
+<blockquote><strong>Privacidade:</strong> os logs não são expostos na UI normal do frontend; servem avaliação e investigação. Não contêm dados pessoais desnecessários nem segredos.</blockquote>
+<hr>
+<h2>21. Configuração (settings/env)</h2>
+<p>A configuração vive em <code>app/core/config.py</code> (Pydantic <code>BaseSettings</code>, lê <code>backend/.env</code>). Grupos principais:</p>
+<table><thead><tr><th>Grupo</th><th>Exemplos de chaves</th></tr></thead><tbody><tr><td>Ambiente / CORS</td><td><code>APP_ENV</code>, <code>API_PREFIX</code>, <code>CORS_ALLOW_ORIGINS</code></td></tr><tr><td>OpenSearch</td><td><code>OPENSEARCH_HOST/PORT/SCHEME</code>, índices <code>OPENSEARCH_INDEX_ARTIFACT/IMAGE/MUSEUM/...</code></td></tr><tr><td>Embeddings</td><td><code>QWEN_TEXT_EMBEDDING_MODEL_ID</code>, <code>QWEN_MULTIMODAL_EMBEDDING_MODEL_ID</code>, <code>USE_OPENROUTER_BGE_M3</code>, dimensões</td></tr><tr><td>LLM</td><td><code>LLM_PROVIDER</code>, <code>LLM_BASE_URL</code>, <code>LLM_MODEL</code>, <code>LLM_TEMPERATURE_TEXT/JSON</code>, <code>LLM_TIMEOUT_SECONDS</code></td></tr><tr><td>Chat / retrieval</td><td><code>CHAT_ENABLE_RAG</code>, <code>CHAT_ENABLE_LLM_LEXICAL_QUERY</code>, <code>CHAT_USE_QUERY_EMBEDDINGS</code>, <code>CHAT_RETRIEVAL_CANDIDATES</code>, <code>CHAT_RETRIEVAL_TOP_K</code>, <code>CHAT_IN_TOUR_BOOST</code></td></tr><tr><td>Imagem / 3D</td><td><code>CHAT_IMAGE_RETRIEVAL_TOP_K</code>, <code>IMAGE_IN_TOUR_BOOST</code>, <code>CHAT_MODEL_TOTAL_VIEWS</code>, <code>CHAT_MODEL_CACHE_SIZE</code></td></tr><tr><td>Multiview worker</td><td><code>MULTIVIEW_WORKER_HOST/PORT</code>, <code>MULTIVIEW_RENDER_*</code></td></tr><tr><td>Caminhos</td><td><code>IMAGE_ASSET_ROOT</code>, <code>POI_TOURS_DIR</code>, <code>MULTIVIEW_LAST_VIEWS_DIR</code></td></tr><tr><td>Logging</td><td><code>QUERY_LOG_ENABLED</code>, <code>QUERY_LOG_PATH</code>, <code>FRONTEND_EVENT_LOG_PATH</code></td></tr></tbody></table>
+<p>Os serviços são <em>singletons</em> construídos por <em>factories</em> com <code>@lru_cache</code> (<code>get_chat_service</code>, <code>get_settings</code>, <code>get_opensearch_gateway</code>, <code>get_query_logger</code>, …), injetados nas rotas via <code>Depends(...)</code> do FastAPI.</p>
+<hr>
+<h2>22. Modelo de dados (artefacto e entidades)</h2>
+<p>O objeto central devolvido ao frontend é o <strong><code>ArtifactResult</code></strong>. Campos principais:</p>
+<ul><li><strong>Identificação:</strong> <code>artifact_id</code>, <code>inventory_number</code>, <code>tipo_inventario</code>, <code>title</code>.</li><li><strong>Museu:</strong> <code>museum_id</code>, <code>museum</code>.</li><li><strong>Classificação:</strong> <code>category</code>, <code>super_category</code>, <code>support_or_material</code>, <code>technique</code>.</li><li><strong>Autoria:</strong> <code>creator</code> (legado), <code>creators[]</code>, <code>creator_ids[]</code>.</li><li><strong>Cronologia:</strong> <code>date_or_period</code>, <code>start_year</code>, <code>end_year</code>.</li><li><strong>Texto:</strong> <code>description</code>, <code>origin_history</code>, <code>incorporation</code>, <code>production_center</code>, <code>bibliography</code>.</li><li><strong>Relações:</strong> <code>sets[]</code>, <code>set_ids[]</code>, <code>exhibitions[]</code>, <code>exhibition_ids[]</code>, contagens.</li><li><strong>Visita:</strong> <code>in_tour</code> (booleano).</li><li><strong>Imagens:</strong> <code>images[]</code> (<code>ArtifactImageResult</code>: <code>image_id</code>, <code>local_path</code>, <code>source_url</code>, <code>caption</code>, <code>alt_text</code>, <code>image_order</code>).</li></ul>
+<p>Entidades relacionais para o modal: <code>AuthorEntity</code>, <code>SetEntityWithArtifacts</code>, <code>ExhibitionEntityWithArtifacts</code> (cada uma com a sua lista de <code>RelatedArtifactItem</code>, incluindo <code>navigation_target</code>). Resultados de imagem usam <code>ImageMatchResult</code> e a navegação usa <code>TourNavigationTarget</code> (<code>overlay_id</code>, <code>panorama_key</code>, <code>inventory_id</code>, <code>location</code>, <code>title</code>).</p>
+<hr>
+<h2>23. Exemplos de todos os tipos de queries</h2>
+<p>Esta secção percorre <strong>todos os tipos de pergunta</strong> que o sistema reconhece, mostrando a entrada, como é classificada e o que acontece.</p>
+<h3>23.1. Pergunta factual sobre uma peça (RAG, texto)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Fala-me sobre o traje de criança."</em></li><li><strong>Router:</strong> <code>mode=rag</code>, <code>intent=search</code>, <code>needs_retrieval=true</code>, sem filtros.</li><li><strong>Retrieval:</strong> embedding de "traje de criança" + BM25 (<code>lexical_query</code> ≈ "traje criança"); pesquisa híbrida no museu atual.</li><li><strong>Resposta:</strong> texto descritivo baseado nas peças encontradas + cartões de artefacto; botão "Ver na visita" nas peças mapeadas.</li></ul>
+<h3>23.2. Pergunta aberta / exploratória (RAG, texto)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Que peças há sobre arte sacra?"</em></li><li><strong>Router:</strong> <code>mode=rag</code>, <code>intent=search</code>/<code>overview</code>.</li><li><strong>Retrieval:</strong> híbrido; o <em>boost</em> de alias pode reforçar categorias relevantes.</li><li><strong>Resposta:</strong> lista dos resultados visíveis (primeira página), consistente com os cartões.</li></ul>
+<h3>23.3. Pergunta quantitativa (RAG, sem executor analítico)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Quantos azulejos do século XVIII há nesta visita?"</em></li><li><strong>Router:</strong> <code>mode=rag</code>. A expressão "nesta visita" ativa o filtro <code>in_tour=true</code>; "século XVIII" é interpretado como intervalo temporal (filtro de metadata).</li><li><strong>Nota:</strong> <strong>não há</strong> executor analítico de contagem exata nesta versão; a resposta é redigida com base nos resultados recuperados (e no <code>results_total</code> estimado), não por um agregador numérico dedicado.</li></ul>
+<h3>23.4. Lookup direto por número de inventário (RAG, atalho)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Mostra-me a peça MNAz 1 Az"</em> ou <em>"número de inventário 1234"</em>.</li><li><strong>Deteção:</strong> <code>_extract_inventory_candidates</code> reconhece prefixos de museu (<code>mnaz</code>, <code>mnt</code>, <code>mj</code>, <code>mnsr</code>, …) e marcadores ("nº de inventário", "referência").</li><li><strong>Retrieval:</strong> <strong>atalho</strong> <code>_retrieve_inventory_context</code> — procura diretamente por candidatos de inventário, sem passar pela pesquisa híbrida (<code>retrieval_mode</code> interno <code>kind="inventory"</code>).</li><li><strong>Resposta:</strong> a ficha da peça exata + navegação.</li></ul>
+<h3>23.5. Pergunta com filtro temporal explícito (RAG, texto)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Azulejos entre 1700 e 1750."</em></li><li><strong>Retrieval:</strong> "entre 1700 e 1750" → filtro <code>range</code> sobre <code>start_year</code>/<code>end_year</code> (sobreposição de intervalos). O texto pesquisado fica só "azulejos".</li></ul>
+<h3>23.6. Pergunta com período histórico nomeado (RAG, texto)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"O que há do período pombalino?"</em></li><li><strong>Retrieval:</strong> "período pombalino" → intervalo <em>hardcoded</em> 1750–1777 (filtro temporal).</li></ul>
+<h3>23.7. Pergunta com âmbito da visita (RAG, texto)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"O que posso ver nesta visita virtual?"</em></li><li><strong>Política de contexto:</strong> trata como <strong>nova pesquisa autónoma</strong>; ativa <code>in_tour=true</code>.</li><li><strong>Resposta:</strong> apenas peças efetivamente mapeadas na visita 360º.</li></ul>
+<h3>23.8. Pesquisa entre museus (RAG, <em>cross-museum</em>)</h3>
+<ul><li><strong>Utilizador (numa visita do MNAZ):</strong> <em>"Procura trajes no Museu Nacional do Traje."</em></li><li><strong>Deteção:</strong> alias "Museu Nacional do Traje" → <code>search_scope</code> para MNT com <code>is_cross_museum=true</code>; a expressão do museu é removida da query.</li><li><strong>Resposta:</strong> resultados do MNT, com indicação de que vêm de outro museu.</li></ul>
+<h3>23.9. Seguimento referencial — refina a query (RAG, follow-up)</h3>
+<ul><li><strong>Contexto:</strong> pesquisa anterior por "azulejos".</li><li><strong>Utilizador:</strong> <em>"E só os de iconografia mariana?"</em> / <em>"Só os do século XVIII."</em></li><li><strong>Política:</strong> seguimento; <code>use_history_for_query=true</code>, <code>carry_filters=true</code>.</li><li><strong>Retrieval:</strong> mantém a pesquisa anterior e <strong>acrescenta</strong> o novo filtro/termo.</li></ul>
+<h3>23.10. Seguimento referencial — só resposta (sem repesquisa)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Explica melhor o primeiro."</em> / <em>"Detalha essa peça."</em></li><li><strong>Política:</strong> <code>use_history_for_answer=true</code>, <strong><code>use_history_for_query=false</code></strong>.</li><li><strong>Comportamento:</strong> não repesquisa; reusa o contexto e redige com mais detalhe.</li></ul>
+<h3>23.11. Peça selecionada como âncora (RAG, contexto de seleção)</h3>
+<ul><li><strong>Contexto:</strong> o visitante selecionou uma peça (na visita ou num cartão); o frontend envia <code>selected_artifact</code> em <code>metadata</code>.</li><li><strong>Utilizador:</strong> <em>"Há mais peças parecidas com esta?"</em></li><li><strong>Comportamento:</strong> o backend ancora a pesquisa na peça selecionada (similaridade / contexto da peça) para responder de forma relevante.</li></ul>
+<h3>23.12. Conversa / saudação (LLM-only)</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Olá!"</em> / <em>"Obrigado, até já."</em></li><li><strong>Router:</strong> <code>mode=llm_only</code> (o <em>fallback</em> heurístico também trata saudações).</li><li><strong>Comportamento:</strong> <strong>não</strong> vai ao acervo; responde só com o contexto da conversa.</li></ul>
+<h3>23.13. Pesquisa por imagem (RAG multimodal)</h3>
+<ul><li><strong>Utilizador:</strong> envia uma foto de uma peça (com ou sem texto).</li><li><strong>Fluxo:</strong> embedding multimodal da imagem → kNN no índice de imagens → artefactos correspondentes. <code>route="image_search"</code>.</li><li><strong>Resposta:</strong> "a peça mais provável" + visualmente semelhantes + navegação.</li></ul>
+<h3>23.14. Pesquisa por modelo 3D (RAG multimodal)</h3>
+<ul><li><strong>Utilizador:</strong> envia um <code>.glb</code>/<code>.gltf</code>/<code>.obj</code>.</li><li><strong>Fluxo:</strong> render de 5 vistas (worker) → embedding por vista → kNN multi-vetor de imagens → artefactos por inventário. <code>route="model_search"</code>. O primeiro pedido pode demorar mais (arranque do worker).</li></ul>
+<h3>23.15. Paginação ("ver mais resultados")</h3>
+<ul><li><strong>Utilizador:</strong> clica "ver mais".</li><li><strong>Fluxo:</strong> <code>POST /messages/results</code> com <code>results_request_id</code> → materializa a página seguinte a partir da cache da sessão, <strong>sem</strong> repesquisar nem chamar o LLM de resposta.</li></ul>
+<h3>23.16. Regenerar resposta</h3>
+<ul><li><strong>Utilizador:</strong> pede para gerar de novo a última resposta.</li><li><strong>Fluxo:</strong> <code>POST /messages/regenerate</code> — reexecuta o último turno do utilizador (gera um novo <code>query_id</code>).</li></ul>
+<h3>23.17. Detalhe de uma peça (modal, <em>lazy</em>)</h3>
+<ul><li><strong>Utilizador:</strong> abre uma peça nos resultados.</li><li><strong>Fluxo:</strong> <code>GET /artifacts/{id}/detail-context</code> → autores, conjuntos, exposições e artefactos relacionados (carregados só nesse momento).</li></ul>
+<h3>23.18. Pergunta sem dados / fora de domínio</h3>
+<ul><li><strong>Utilizador:</strong> <em>"Qual é a capital da Austrália?"</em></li><li><strong>Comportamento:</strong> o router tende a <code>llm_only</code>; se cair em RAG sem resultados, o prompt obriga a responder com cautela e a indicar que faltam dados factuais do acervo.</li></ul>
+<hr>
+<h2>24. Apêndice A — Esquema do Router (JSON)</h2>
+<p>O router devolve estritamente este objeto:</p>
+<pre><code>{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "mode":                 { "type": "string", "enum": ["rag", "llm_only"] },
+    "intent":               { "type": "string", "enum": ["overview", "search", "refine", "fallback"] },
+    "is_follow_up":         { "type": "boolean" },
+    "use_history_for_query":  { "type": "boolean" },
+    "use_history_for_answer": { "type": "boolean" },
+    "carry_filters":        { "type": "boolean" },
+    "carry_sort":           { "type": "boolean" },
+    "rewritten_query":      { "type": "string" },
+    "needs_retrieval":      { "type": "boolean" },
+    "reason":               { "type": "string" },
+    "filters_delta":        { "type": "object" },
+    "sort_delta":           { "type": "object" }
+  },
+  "required": ["mode", "intent", "is_follow_up", "use_history_for_query",
+               "use_history_for_answer", "carry_filters", "carry_sort",
+               "rewritten_query", "needs_retrieval", "reason",
+               "filters_delta", "sort_delta"]
+}</code></pre>
+<p><strong>Exemplo de saída</strong> para <em>"E só os de iconografia mariana?"</em> (seguimento de "azulejos"):</p>
+<pre><code>{
+  "mode": "rag",
+  "intent": "refine",
+  "is_follow_up": true,
+  "use_history_for_query": true,
+  "use_history_for_answer": true,
+  "carry_filters": true,
+  "carry_sort": true,
+  "rewritten_query": "azulejos com iconografia mariana",
+  "needs_retrieval": true,
+  "reason": "refine sobre pesquisa anterior",
+  "filters_delta": { "category": "azulejo" },
+  "sort_delta": {}
+}</code></pre>
+<hr>
+<h2>25. Apêndice B — Esquema do evento <code>backend_query</code></h2>
+<p>Um objeto por linha em <code>logs/evaluation/backend_queries.jsonl</code>:</p>
+<pre><code>{
+  "event_type": "backend_query",
+  "timestamp": "2026-06-18T10:15:30.123456+00:00",
+  "session_id": null,
+  "conversation_id": "conv-abc",
+  "query_id": "f1e2d3c4-...",
+  "participant_id": null,
+  "task_id": null,
+  "tour_id": "mnaz",
+  "museum_slug": "mnaz",
+  "language": "pt",
+  "raw_query": "azulejos do século XVIII nesta visita",
+  "resolved_query": "azulejos do século XVIII",
+  "lexical_query": "azulejos",
+  "embedding_query": "azulejos",
+  "route": "rag",
+  "retrieval_mode": "hybrid_text",
+  "filters_applied": {
+    "filters": { "in_tour": true },
+    "sort": {},
+    "temporal_query": { "start_year": 1700, "end_year": 1799 },
+    "tour_scope": { "in_tour": true }
+  },
+  "boosts_applied": { "in_tour_boost": 5 },
+  "retrieved_artifacts": [
+    { "artifact_id": "a1", "inventory_number": "MNAz 1 Az", "title": "...", "score": 12.34, "source": "hybrid" }
+  ],
+  "shown_artifacts": [
+    { "artifact_id": "a1", "inventory_number": "MNAz 1 Az", "title": "..." }
+  ],
+  "navigation_targets": [
+    { "artifact_id": "a1", "inventory_number": "MNAz 1 Az", "has_navigation_target": true,
+      "panorama_id": "model_...", "overlay_id": "sprite_..." }
+  ],
+  "latency_retrieval_ms": 120.4,
+  "latency_llm_ms": 800.1,
+  "latency_total_ms": 950.7,
+  "status": "ok",
+  "error": null,
+  "opensearch_query": {
+    "query": { "hybrid": { "pagination_depth": 150, "queries": [
+      { "knn": { "text_embedding": { "vector": [0.0123, -0.0456, "...1024 floats..."], "k": 1000 } } },
+      { "bool": { "must": [ { "bool": { "should": [ "...multi_match BM25..." ] } } ] } }
+    ] } },
+    "size": 15
+  }
+}</code></pre>
+<p>Para <code>image_search</code> e <code>model_search</code>, <code>lexical_query</code>/<code>embedding_query</code> são <code>null</code>, <code>boosts_applied</code> usa <code>image_in_tour_boost</code>, e <code>opensearch_query</code> reflete a query de imagem.</p>
+<hr>
+<h2>26. Apêndice C — Notas de implementação e componentes não ativos</h2>
+<ul><li><strong>Planeador analítico removido:</strong> uma versão anterior tinha um <em>query planner</em> analítico (<code>app/query_planning/</code>). Foi <strong>removido</strong>; não há executor de contagens/agregações exatas. Perguntas quantitativas são respondidas pela via RAG normal (secção 23.3).</li><li><strong>Reranker (não ativo):</strong> existe <code>services/reranker.py</code> (reranker pairwise estilo Qwen), mas <strong>não está ligado</strong> ao pipeline e depende de settings que não estão em <code>config.py</code> (<code>RERANKER_*</code>, <code>CHAT_ENABLE_RERANKING</code>). É código preparatório/experimental.</li><li><strong>Pré-aquecimento (warmup):</strong> <code>warmup.py</code> permite pré-carregar OpenSearch, embeddings e worker; está <strong>desligado por omissão</strong> (<code>CHAT_PREWARM_ON_STARTUP=false</code>) e não é chamado no arranque atual de <code>main.py</code>.</li><li><strong>Worker 3D sob demanda:</strong> o Multiview Worker não precisa de ser arrancado manualmente; o backend faz <em>spawn</em> no primeiro pedido de pesquisa 3D, desde que o Node.js e as dependências de <code>backend/multiview_worker/</code> estejam instalados.</li></ul>
+<hr>
+<p><em>Documento gerado a partir da análise direta do código-fonte do repositório <code>patrimonio360_assistant</code> (backend FastAPI + frontend React).</em></p></body></html>
