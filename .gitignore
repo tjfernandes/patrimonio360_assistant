@@ -1,6 +1,5 @@
 # Dependencies
 backend/multiview_worker/node_modules/
-backend/benchmarks/
 backend/tests/
 backend/benchmark_runs/
 frontend/node_modules/
