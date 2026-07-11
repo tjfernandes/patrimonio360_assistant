@@ -8,11 +8,13 @@ from typing import Any
 
 from app.schemas.chat import ResponseFormatObject
 from benchmarks.loaders import BenchmarkCase
-from benchmarks.metrics import score_ranking, selected_artifact_hit
+from benchmarks.metrics import hit_at_k, score_ranking, selected_artifact_hit
 from benchmarks.runner import build_skip_result
 from benchmarks.service_factory import BenchmarkServiceBundle
 from benchmarks.variants import VariantSpec
 
+
+_SINGLE_PATH_VARIANTS = {"bm25_only", "dense_only"}
 
 _SELECTOR_SYSTEM_PROMPT = (
     "És um avaliador offline de retrieval para um assistente de museu.\n"
@@ -54,6 +56,10 @@ class OfflineBenchmarkExecutor:
             return await self._execute_rewriting_pair(case)
         if case.mode == "image":
             return await self._execute_image_case(case)
+        if case.mode == "text_to_image":
+            return await self._execute_text_to_image_case(case)
+        if case.mode == "image_text":
+            return await self._execute_image_text_case(case)
         if case.mode == "model_3d":
             return await self._execute_model_case(case)
         raise ValueError(f"Unsupported benchmark mode '{case.mode}'.")
@@ -100,10 +106,16 @@ class OfflineBenchmarkExecutor:
             "relevant_artifacts": list(case.relevant_artifacts),
             "recall_at_1": None,
             "recall_at_5": None,
+            "recall_at_10": None,
             "hit_at_5": None,
+            "hit_at_10": None,
             "precision_at_5": None,
             "mrr": None,
             "ndcg_at_5": None,
+            "ndcg_at_10": None,
+            "ranking_image_ids": [],
+            "image_hit_at_1": None,
+            "image_hit_at_5": None,
             "latency_first_ms": None,
             "latency_final_ms": None,
             "result_count": 0,
@@ -290,6 +302,13 @@ class OfflineBenchmarkExecutor:
         filters: dict[str, object] | None = None,
         sort: dict[str, object] | None = None,
     ) -> list[dict[str, object]]:
+        if self.variant.name in _SINGLE_PATH_VARIANTS:
+            return await self._retrieve_docs_single_path(
+                museum_id=museum_id,
+                query=query,
+                filters=filters,
+                sort=sort,
+            )
         _, _, docs = await self.services.chat_service._retrieve_context(
             museum_slug=museum_id,
             museum_id=museum_id,
@@ -298,6 +317,37 @@ class OfflineBenchmarkExecutor:
             sort=sort or {},
         )
         return docs
+
+    async def _retrieve_docs_single_path(
+        self,
+        *,
+        museum_id: str,
+        query: str,
+        filters: dict[str, object] | None = None,
+        sort: dict[str, object] | None = None,
+    ) -> list[dict[str, object]]:
+        settings = self.services.settings
+        mode = self.variant.name
+        query_text = (query or "").strip()
+        if not query_text:
+            return []
+        query_embedding: list[float] = []
+        if mode == "dense_only":
+            query_embedding = await self.services.embedding_provider.embed_text(query_text)
+        page = await self.services.opensearch_gateway.search_relevant_context_page(
+            museum_slug=museum_id,
+            museum_id=museum_id,
+            query_text=query_text,
+            lexical_query=query_text,
+            query_embedding=query_embedding,
+            from_offset=0,
+            page_size=max(int(settings.CHAT_RETRIEVAL_CANDIDATES), 10),
+            filters=dict(filters or {}),
+            sort=dict(sort or {}),
+            retrieval_window_size=max(int(settings.CHAT_RETRIEVAL_PAGINATION_WINDOW), 1),
+            retrieval_mode=mode,
+        )
+        return page.results
 
     def _ranking_from_docs(self, docs: list[dict[str, object]]) -> list[str]:
         ranking: list[str] = []
@@ -391,7 +441,103 @@ class OfflineBenchmarkExecutor:
             assistant_selection_error=assistant_selection_error,
         )
 
+    def _visual_search_top_k(self, *, excluded_count: int) -> int:
+        return (
+            max(
+                self.services.settings.CHAT_IMAGE_RETRIEVAL_TOP_K,
+                self.services.settings.CHAT_IMAGE_ARTIFACT_TOP_K,
+                10,
+            )
+            + excluded_count
+        )
+
+    def _apply_leave_self_out(
+        self,
+        case: BenchmarkCase,
+        image_hits: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        excluded = {image_id for image_id in case.exclude_image_ids if image_id}
+        if not excluded:
+            return image_hits
+        return [
+            hit
+            for hit in image_hits
+            if str(hit.get("image_id") or "").strip() not in excluded
+        ]
+
+    async def _relevant_image_ids(self, case: BenchmarkCase) -> list[str]:
+        targets = case.scoring_targets
+        if not targets:
+            return []
+        try:
+            image_docs = await self.services.opensearch_gateway.fetch_images_by_artifact_ids(
+                museum_slug=case.museum_id,
+                museum_id=case.museum_id,
+                artifact_ids=targets,
+                per_artifact=16,
+                max_total=64,
+            )
+        except Exception:
+            return []
+        excluded = {image_id for image_id in case.exclude_image_ids if image_id}
+        relevant: list[str] = []
+        for doc in image_docs:
+            image_id = str(doc.get("image_id") or "").strip()
+            if image_id and image_id not in excluded:
+                relevant.append(image_id)
+        return relevant
+
+    async def _score_visual_case(
+        self,
+        *,
+        case: BenchmarkCase,
+        image_hits: list[dict[str, object]],
+        start: float,
+    ) -> dict[str, Any]:
+        image_hits = self._apply_leave_self_out(case, image_hits)
+        image_ranking: list[str] = []
+        seen_image_ids: set[str] = set()
+        for hit in image_hits:
+            image_id = str(hit.get("image_id") or "").strip()
+            if not image_id or image_id in seen_image_ids:
+                continue
+            seen_image_ids.add(image_id)
+            image_ranking.append(image_id)
+
+        artifact_ids = self._ranking_from_docs(image_hits)
+        artifact_docs = await self.services.opensearch_gateway.fetch_artifacts_by_ids(
+            museum_slug=case.museum_id,
+            museum_id=case.museum_id,
+            artifact_ids=artifact_ids,
+            top_k=max(self.services.settings.CHAT_IMAGE_ARTIFACT_TOP_K, 10),
+        )
+        ranking = self._ranking_from_docs(artifact_docs)
+        selected_artifact_id, assistant_selection_error = await self._select_with_llm(
+            case=case,
+            docs=artifact_docs,
+        )
+        result = self._finalize_result(
+            case=case,
+            ranking=ranking,
+            latency_final_ms=(time.perf_counter() - start) * 1000.0,
+            selected_artifact_id=selected_artifact_id,
+            assistant_selection_error=assistant_selection_error,
+        )
+        result["ranking_image_ids"] = image_ranking
+        relevant_image_ids = await self._relevant_image_ids(case)
+        if relevant_image_ids:
+            result["image_hit_at_1"] = hit_at_k(image_ranking, relevant_image_ids, 1)
+            result["image_hit_at_5"] = hit_at_k(image_ranking, relevant_image_ids, 5)
+        return result
+
     async def _execute_image_case(self, case: BenchmarkCase) -> dict[str, Any]:
+        if self.variant.name in _SINGLE_PATH_VARIANTS:
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="variant_not_applicable",
+                error="Single-path text variants do not apply to image cases.",
+            )
         input_path = self._resolve_input_path(case)
         if input_path is None or not input_path.exists():
             return build_skip_result(
@@ -412,36 +558,91 @@ class OfflineBenchmarkExecutor:
             museum_slug=case.museum_id,
             museum_id=case.museum_id,
             image_embedding=image_embedding,
-            top_k=max(
-                self.services.settings.CHAT_IMAGE_RETRIEVAL_TOP_K,
-                self.services.settings.CHAT_IMAGE_ARTIFACT_TOP_K,
-                1,
-            ),
+            top_k=self._visual_search_top_k(excluded_count=len(case.exclude_image_ids)),
         )
-        artifact_ids = self._ranking_from_docs(image_hits)
-        artifact_docs = await self.services.opensearch_gateway.fetch_artifacts_by_ids(
+        result = await self._score_visual_case(case=case, image_hits=image_hits, start=start)
+        result["input_path"] = str(input_path)
+        result["input_used"] = str(input_path)
+        return result
+
+    async def _execute_text_to_image_case(self, case: BenchmarkCase) -> dict[str, Any]:
+        if self.variant.name in _SINGLE_PATH_VARIANTS:
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="variant_not_applicable",
+                error="Single-path text variants do not apply to text-to-image cases.",
+            )
+        query_text = (case.query or "").strip()
+        if not query_text:
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="missing_query",
+                error="text_to_image case has no query text.",
+            )
+        start = time.perf_counter()
+        query_embedding = await self.services.embedding_provider.embed_multimodal_text_query(
+            query_text
+        )
+        image_hits = await self.services.opensearch_gateway.search_similar_images(
             museum_slug=case.museum_id,
             museum_id=case.museum_id,
-            artifact_ids=artifact_ids,
-            top_k=max(self.services.settings.CHAT_IMAGE_ARTIFACT_TOP_K, 1),
+            image_embedding=query_embedding,
+            top_k=self._visual_search_top_k(excluded_count=len(case.exclude_image_ids)),
         )
-        ranking = self._ranking_from_docs(artifact_docs)
-        selected_artifact_id, assistant_selection_error = await self._select_with_llm(
-            case=case,
-            docs=artifact_docs,
+        return await self._score_visual_case(case=case, image_hits=image_hits, start=start)
+
+    async def _execute_image_text_case(self, case: BenchmarkCase) -> dict[str, Any]:
+        if self.variant.name in _SINGLE_PATH_VARIANTS:
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="variant_not_applicable",
+                error="Single-path text variants do not apply to image+text cases.",
+            )
+        input_path = self._resolve_input_path(case)
+        if input_path is None or not input_path.exists():
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="unresolved_input_id",
+                error=f"Could not resolve image input '{case.input_id}'.",
+            )
+        query_text = (case.query or "").strip()
+        if not query_text:
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="missing_query",
+                error="image_text case has no query text.",
+            )
+
+        image_bytes = input_path.read_bytes()
+        start = time.perf_counter()
+        joint_embedding = await self.services.embedding_provider.embed_multimodal_joint_image_bytes(
+            image_bytes=image_bytes,
+            text=query_text,
         )
-        result = self._finalize_result(
-            case=case,
-            ranking=ranking,
-            latency_final_ms=(time.perf_counter() - start) * 1000.0,
-            selected_artifact_id=selected_artifact_id,
-            assistant_selection_error=assistant_selection_error,
+        image_hits = await self.services.opensearch_gateway.search_similar_images(
+            museum_slug=case.museum_id,
+            museum_id=case.museum_id,
+            image_embedding=joint_embedding,
+            top_k=self._visual_search_top_k(excluded_count=len(case.exclude_image_ids)),
         )
+        result = await self._score_visual_case(case=case, image_hits=image_hits, start=start)
         result["input_path"] = str(input_path)
         result["input_used"] = str(input_path)
         return result
 
     async def _execute_model_case(self, case: BenchmarkCase) -> dict[str, Any]:
+        if self.variant.name in _SINGLE_PATH_VARIANTS:
+            return build_skip_result(
+                case,
+                self.variant,
+                reason="variant_not_applicable",
+                error="Single-path text variants do not apply to 3D model cases.",
+            )
         input_path = self._resolve_input_path(case)
         if input_path is None or not input_path.exists():
             return build_skip_result(

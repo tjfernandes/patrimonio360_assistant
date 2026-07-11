@@ -89,17 +89,23 @@ def score_ranking(
         return {
             "recall_at_1": None,
             "recall_at_5": None,
+            "recall_at_10": recall_at_k(ranking, relevant_artifacts, 10),
             "hit_at_5": hit_at_k(ranking, relevant_artifacts, 5),
+            "hit_at_10": hit_at_k(ranking, relevant_artifacts, 10),
             "precision_at_5": precision_at_k(ranking, relevant_artifacts, 5),
             "mrr": None,
             "ndcg_at_5": ndcg_at_k(ranking, relevant_artifacts, 5),
+            "ndcg_at_10": ndcg_at_k(ranking, relevant_artifacts, 10),
         }
 
     return {
         "recall_at_1": recall_at_k(ranking, relevant_artifacts, 1),
         "recall_at_5": recall_at_k(ranking, relevant_artifacts, 5),
+        "recall_at_10": recall_at_k(ranking, relevant_artifacts, 10),
         "hit_at_5": None,
+        "hit_at_10": None,
         "precision_at_5": None,
         "mrr": reciprocal_rank(ranking, relevant_artifacts),
         "ndcg_at_5": None,
+        "ndcg_at_10": ndcg_at_k(ranking, relevant_artifacts, 10),
     }

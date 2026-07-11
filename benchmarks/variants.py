@@ -27,21 +27,20 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
     ),
     "bm25_only": VariantSpec(
         name="bm25_only",
-        description="Placeholder for a future lexical-only baseline.",
-        supported=False,
-        unsupported_reason=(
-            "Preserving the current OpenSearch queries means the benchmark cannot switch to "
-            "a lexical-only retrieval path today."
+        description=(
+            "Lexical-only baseline: runs the production BM25 clause set (no_stem multi_match "
+            "variants + filters + boosts) without the kNN branch or the hybrid pipeline. "
+            "Uses the raw case query (no LLM rewriting) for isolation."
         ),
+        supported=True,
     ),
     "dense_only": VariantSpec(
         name="dense_only",
-        description="Placeholder for a future dense-only baseline.",
-        supported=False,
-        unsupported_reason=(
-            "Preserving the current OpenSearch queries means the benchmark cannot switch to "
-            "an embedding-only retrieval path today."
+        description=(
+            "Dense-only baseline: pure text_embedding kNN with production filters, without "
+            "the BM25 branch or the hybrid pipeline. Uses the raw case query (no LLM rewriting)."
         ),
+        supported=True,
     ),
     "hybrid": VariantSpec(
         name="hybrid",

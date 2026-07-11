@@ -5,13 +5,23 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-CaseMode = Literal["text_single", "text_multi", "rewriting_pair", "image", "model_3d"]
+CaseMode = Literal[
+    "text_single",
+    "text_multi",
+    "rewriting_pair",
+    "image",
+    "model_3d",
+    "text_to_image",
+    "image_text",
+]
 _VALID_CASE_MODES = {
     "text_single",
     "text_multi",
     "rewriting_pair",
     "image",
     "model_3d",
+    "text_to_image",
+    "image_text",
 }
 
 
@@ -77,6 +87,7 @@ class BenchmarkCase:
     input_id: str | None = None
     target_artifact: str | None = None
     relevant_artifacts: list[str] = field(default_factory=list)
+    exclude_image_ids: list[str] = field(default_factory=list)
     incomplete_reason: str | None = None
 
     @property
@@ -96,7 +107,7 @@ class BenchmarkCase:
         return self.mode == "text_multi" or len(self.relevant_artifacts) > 1
 
     def input_used(self) -> str | None:
-        if self.mode in {"text_single", "text_multi"}:
+        if self.mode in {"text_single", "text_multi", "text_to_image"}:
             return self.query
         if self.mode == "rewriting_pair":
             return self.q2
@@ -120,6 +131,7 @@ class BenchmarkCase:
             "input_id": self.input_id,
             "target_artifact": self.target_artifact,
             "relevant_artifacts": list(self.relevant_artifacts),
+            "exclude_image_ids": list(self.exclude_image_ids),
             "incomplete_reason": self.incomplete_reason,
         }
 
@@ -160,7 +172,7 @@ def _parse_case(raw_case: dict[str, Any], *, base_dir: Path) -> BenchmarkCase:
     input_path = None
     input_id = None
 
-    if mode_raw in {"text_single", "text_multi"}:
+    if mode_raw in {"text_single", "text_multi", "text_to_image"}:
         query = _clean_string(raw_case.get("query"))
         if not query:
             reasons.append("missing_query")
@@ -175,6 +187,14 @@ def _parse_case(raw_case: dict[str, Any], *, base_dir: Path) -> BenchmarkCase:
     elif mode_raw == "image":
         input_path = _resolve_path(base_dir, raw_case.get("image_path"))
         input_id = _clean_string(raw_case.get("image_id"))
+        if input_path is None and not input_id:
+            reasons.append("missing_image_input")
+    elif mode_raw == "image_text":
+        query = _clean_string(raw_case.get("query"))
+        input_path = _resolve_path(base_dir, raw_case.get("image_path"))
+        input_id = _clean_string(raw_case.get("image_id"))
+        if not query:
+            reasons.append("missing_query")
         if input_path is None and not input_id:
             reasons.append("missing_image_input")
     elif mode_raw == "model_3d":
@@ -201,6 +221,7 @@ def _parse_case(raw_case: dict[str, Any], *, base_dir: Path) -> BenchmarkCase:
         input_id=input_id,
         target_artifact=target_artifact,
         relevant_artifacts=relevant_artifacts,
+        exclude_image_ids=_clean_artifact_list(raw_case.get("exclude_image_ids")),
         incomplete_reason=_join_reasons(reasons),
     )
 

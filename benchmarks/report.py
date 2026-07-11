@@ -35,10 +35,16 @@ _RESULT_FIELDS = [
     "relevant_artifacts",
     "recall_at_1",
     "recall_at_5",
+    "recall_at_10",
     "hit_at_5",
+    "hit_at_10",
     "precision_at_5",
     "mrr",
     "ndcg_at_5",
+    "ndcg_at_10",
+    "ranking_image_ids",
+    "image_hit_at_1",
+    "image_hit_at_5",
     "latency_first_ms",
     "latency_final_ms",
     "result_count",
@@ -47,16 +53,21 @@ _RESULT_FIELDS = [
 _SUMMARY_METRICS = [
     "recall_at_1",
     "recall_at_5",
+    "recall_at_10",
     "hit_at_5",
+    "hit_at_10",
     "precision_at_5",
     "mrr",
     "ndcg_at_5",
+    "ndcg_at_10",
+    "image_hit_at_1",
+    "image_hit_at_5",
     "selected_hit",
     "latency_first_ms",
     "latency_final_ms",
 ]
 
-_SINGLE_TARGET_MODES = ("text_single", "image", "model_3d")
+_SINGLE_TARGET_MODES = ("text_single", "image", "model_3d", "text_to_image", "image_text")
 _TEXT_MULTI_MODES = ("text_multi",)
 
 
@@ -224,6 +235,8 @@ def write_results_csv(output_path: Path, results: list[dict[str, Any]]) -> None:
             row["ranking_artifact_ids"] = "|".join(result.get("ranking_artifact_ids", []))
             row["q1_ranking_artifact_ids"] = "|".join(result.get("q1_ranking_artifact_ids", []))
             row["relevant_artifacts"] = "|".join(result.get("relevant_artifacts", []))
+            row["ranking_image_ids"] = "|".join(result.get("ranking_image_ids") or [])
+            row = {key: value for key, value in row.items() if key in _RESULT_FIELDS}
             writer.writerow(row)
 
 
@@ -303,8 +316,8 @@ def _append_single_target_tables(lines: list[str], section: dict[str, list[dict[
     lines.append("## Text Single, Image, 3D")
 
     lines.append("### By Mode")
-    lines.append("| Mode | Scored | Recall@1 | Recall@5 | MRR | LLM Final Selection | Avg Final ms |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("| Mode | Scored | Recall@1 | Recall@5 | Recall@10 | MRR | LLM Final Selection | Avg Final ms |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
     for row in section.get("by_mode", []):
         lines.append(
             "| "
@@ -325,8 +338,8 @@ def _append_single_target_tables(lines: list[str], section: dict[str, list[dict[
 
     if section.get("by_museum"):
         lines.append("### By Museum")
-        lines.append("| Museum | Scored | Recall@1 | Recall@5 | MRR | LLM Final Selection | Avg Final ms |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| Museum | Scored | Recall@1 | Recall@5 | Recall@10 | MRR | LLM Final Selection | Avg Final ms |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for row in section["by_museum"]:
             lines.append(
                 "| "
@@ -336,6 +349,7 @@ def _append_single_target_tables(lines: list[str], section: dict[str, list[dict[
                         str(row.get("scored_cases", 0)),
                         _format_metric(row.get("recall_at_1")),
                         _format_metric(row.get("recall_at_5")),
+                        _format_metric(row.get("recall_at_10")),
                         _format_metric(row.get("mrr")),
                         _format_metric(row.get("selected_hit")),
                         _format_metric(row.get("latency_final_ms")),
@@ -347,8 +361,8 @@ def _append_single_target_tables(lines: list[str], section: dict[str, list[dict[
 
     if section.get("by_variant"):
         lines.append("### By Variant")
-        lines.append("| Variant | Scored | Recall@1 | Recall@5 | MRR | LLM Final Selection | Avg Final ms |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| Variant | Scored | Recall@1 | Recall@5 | Recall@10 | MRR | LLM Final Selection | Avg Final ms |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for row in section["by_variant"]:
             lines.append(
                 "| "
@@ -358,6 +372,7 @@ def _append_single_target_tables(lines: list[str], section: dict[str, list[dict[
                         str(row.get("scored_cases", 0)),
                         _format_metric(row.get("recall_at_1")),
                         _format_metric(row.get("recall_at_5")),
+                        _format_metric(row.get("recall_at_10")),
                         _format_metric(row.get("mrr")),
                         _format_metric(row.get("selected_hit")),
                         _format_metric(row.get("latency_final_ms")),
@@ -373,8 +388,8 @@ def _append_text_multi_tables(lines: list[str], section: dict[str, list[dict[str
 
     overall_row = section.get("overall", [{}])[0]
     lines.append("### Overall")
-    lines.append("| Scored | Hit@5 | Precision@5 | nDCG@5 | LLM Final Selection | Avg Final ms |")
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    lines.append("| Scored | Hit@5 | Precision@5 | nDCG@5 | nDCG@10 | LLM Final Selection | Avg Final ms |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     lines.append(
         "| "
         + " | ".join(
@@ -383,6 +398,7 @@ def _append_text_multi_tables(lines: list[str], section: dict[str, list[dict[str
                 _format_metric(overall_row.get("hit_at_5")),
                 _format_metric(overall_row.get("precision_at_5")),
                 _format_metric(overall_row.get("ndcg_at_5")),
+                _format_metric(overall_row.get("ndcg_at_10")),
                 _format_metric(overall_row.get("selected_hit")),
                 _format_metric(overall_row.get("latency_final_ms")),
             ]
@@ -393,8 +409,8 @@ def _append_text_multi_tables(lines: list[str], section: dict[str, list[dict[str
 
     if section.get("by_museum"):
         lines.append("### By Museum")
-        lines.append("| Museum | Scored | Hit@5 | Precision@5 | nDCG@5 | LLM Final Selection | Avg Final ms |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| Museum | Scored | Hit@5 | Precision@5 | nDCG@5 | nDCG@10 | LLM Final Selection | Avg Final ms |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for row in section["by_museum"]:
             lines.append(
                 "| "
@@ -405,6 +421,7 @@ def _append_text_multi_tables(lines: list[str], section: dict[str, list[dict[str
                         _format_metric(row.get("hit_at_5")),
                         _format_metric(row.get("precision_at_5")),
                         _format_metric(row.get("ndcg_at_5")),
+                        _format_metric(row.get("ndcg_at_10")),
                         _format_metric(row.get("selected_hit")),
                         _format_metric(row.get("latency_final_ms")),
                     ]
@@ -415,8 +432,8 @@ def _append_text_multi_tables(lines: list[str], section: dict[str, list[dict[str
 
     if section.get("by_variant"):
         lines.append("### By Variant")
-        lines.append("| Variant | Scored | Hit@5 | Precision@5 | nDCG@5 | LLM Final Selection | Avg Final ms |")
-        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        lines.append("| Variant | Scored | Hit@5 | Precision@5 | nDCG@5 | nDCG@10 | LLM Final Selection | Avg Final ms |")
+        lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
         for row in section["by_variant"]:
             lines.append(
                 "| "
@@ -427,6 +444,7 @@ def _append_text_multi_tables(lines: list[str], section: dict[str, list[dict[str
                         _format_metric(row.get("hit_at_5")),
                         _format_metric(row.get("precision_at_5")),
                         _format_metric(row.get("ndcg_at_5")),
+                        _format_metric(row.get("ndcg_at_10")),
                         _format_metric(row.get("selected_hit")),
                         _format_metric(row.get("latency_final_ms")),
                     ]
