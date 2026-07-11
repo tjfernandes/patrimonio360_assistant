@@ -1,32 +1,32 @@
 {
-  "source_file_name": "MNT_00967_Bolsa.glb",
-  "saved_at_epoch": 1782316652,
+  "source_file_name": "MNT_07617_Vestia_de_Crianca.glb",
+  "saved_at_epoch": 1782897625,
   "view_count": 5,
   "views": [
     {
-      "input_name": "rgb_lonp090_latp00_#0.png",
-      "saved_as": "01_rgb_lonp090_latp00_#0.png",
-      "bytes": 220342
+      "input_name": "rgb_lonp090_latp18_#0.png",
+      "saved_as": "01_rgb_lonp090_latp18_#0.png",
+      "bytes": 192501
     },
     {
-      "input_name": "rgb_lonm090_latp00_#1.png",
-      "saved_as": "02_rgb_lonm090_latp00_#1.png",
-      "bytes": 210693
+      "input_name": "rgb_lonm090_latp18_#1.png",
+      "saved_as": "02_rgb_lonm090_latp18_#1.png",
+      "bytes": 190925
     },
     {
-      "input_name": "rgb_lonp090_latp18_#2.png",
-      "saved_as": "03_rgb_lonp090_latp18_#2.png",
-      "bytes": 191512
+      "input_name": "rgb_lonp000_latp18_#2.png",
+      "saved_as": "03_rgb_lonp000_latp18_#2.png",
+      "bytes": 122483
     },
     {
-      "input_name": "rgb_lonm090_latp18_#3.png",
-      "saved_as": "04_rgb_lonm090_latp18_#3.png",
-      "bytes": 186160
+      "input_name": "rgb_lonp180_latp18_#3.png",
+      "saved_as": "04_rgb_lonp180_latp18_#3.png",
+      "bytes": 123783
     },
     {
-      "input_name": "rgb_lonp135_latp00_#4.png",
-      "saved_as": "05_rgb_lonp135_latp00_#4.png",
-      "bytes": 147636
+      "input_name": "rgb_lonp135_latp18_#4.png",
+      "saved_as": "05_rgb_lonp135_latp18_#4.png",
+      "bytes": 144724
     }
   ]
 }
