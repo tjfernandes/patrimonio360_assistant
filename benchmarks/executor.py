@@ -72,7 +72,6 @@ class OfflineBenchmarkExecutor:
             return
         await self.services.warmup(
             include_multimodal=self.include_multimodal_warmup,
-            include_reranker=self.services.settings.CHAT_ENABLE_RERANKING,
             include_multiview_worker=self.include_multiview_worker_warmup,
         )
         self._warmup_completed = True
@@ -309,7 +308,9 @@ class OfflineBenchmarkExecutor:
                 filters=filters,
                 sort=sort,
             )
-        _, _, docs = await self.services.chat_service._retrieve_context(
+        # _retrieve_context returns (resolved_query, total, docs, extra); we only
+        # need the docs (3rd element).
+        _, _, docs, *_ = await self.services.chat_service._retrieve_context(
             museum_slug=museum_id,
             museum_id=museum_id,
             query=query,
