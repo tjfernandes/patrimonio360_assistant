@@ -83,6 +83,9 @@ type LoadingImageProps = Omit<ImgHTMLAttributes<HTMLImageElement>, 'src' | 'alt'
   wrapperClassName?: string
 }
 
+const IMAGE_LOAD_WATCHDOG_MS = 10_000
+const IMAGE_LOAD_MAX_RETRIES = 2
+
 function LoadingImage({
   src,
   alt,
@@ -93,13 +96,35 @@ function LoadingImage({
   ...props
 }: LoadingImageProps) {
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading')
+  const [attempt, setAttempt] = useState(0)
   const hasDisplayClass = /\b(?:block|inline-block|inline|flex|inline-flex|grid|inline-grid|hidden)\b/.test(
     wrapperClassName,
   )
 
   useEffect(() => {
     setStatus('loading')
+    setAttempt(0)
   }, [src])
+
+  // Watchdog: um fetch de imagem pode ficar pendurado sem nunca disparar
+  // onLoad/onError (ligacao presa a caminho do backend). Refaz o pedido com
+  // um cache-buster ate IMAGE_LOAD_MAX_RETRIES antes de marcar erro.
+  useEffect(() => {
+    if (status !== 'loading') {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      if (attempt < IMAGE_LOAD_MAX_RETRIES) {
+        setAttempt((current) => current + 1)
+      } else {
+        setStatus('error')
+      }
+    }, IMAGE_LOAD_WATCHDOG_MS)
+    return () => window.clearTimeout(timer)
+  }, [status, attempt, src])
+
+  const effectiveSrc =
+    attempt === 0 ? src : `${src}${src.includes('?') ? '&' : '?'}retry=${attempt}`
 
   return (
     <span
@@ -132,7 +157,7 @@ function LoadingImage({
       ) : null}
       <img
         {...props}
-        src={src}
+        src={effectiveSrc}
         alt={alt}
         className={`${className} transition-opacity duration-300 ${
           status === 'loaded' ? 'opacity-100' : 'opacity-0'

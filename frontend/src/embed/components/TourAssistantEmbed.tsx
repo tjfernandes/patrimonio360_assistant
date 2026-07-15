@@ -750,6 +750,28 @@ function TourAssistantEmbed({
         },
       })
 
+      // Deep-link cross-museu: assim que o tour confirma que navegou/abriu a
+      // peca que pedimos, paramos os retries iniciais. Sem isto, cada retry
+      // restante reenvia navigateToArtifact e REABRE a janela da peca — mesmo
+      // depois de o utilizador a fechar (o sintoma "abre vezes sem conta").
+      // Cobre tambem tour_window_opened e tour_location_changed, que a limpeza
+      // por tipo abaixo nao apanhava. Condicao estrita (apenas navegacao do
+      // assistente / inventario correspondente) para nunca cancelar antes do
+      // primeiro envio real: antes desse envio o tour nunca emite estes sinais.
+      const confirmsAssistantNavigation =
+        ((eventType === 'navigation_completed' ||
+          eventType === 'tour_location_changed') &&
+          readString(data.source) === 'assistant_navigation') ||
+        ((eventType === 'artifact_info_opened' ||
+          eventType === 'tour_window_opened') &&
+          inventoriesMatch(eventInventoryNumber, pending?.inventoryNumber))
+      if (
+        confirmsAssistantNavigation &&
+        initialNavigationRetryTimersRef.current.length > 0
+      ) {
+        clearInitialNavigationRetries()
+      }
+
       if (eventType === 'navigation_completed' && attachPending && pending) {
         pendingNavigationRef.current = {
           ...pending,
