@@ -364,6 +364,18 @@ function TourChatWidget({
   // Texto parcial da resposta em curso (evento SSE `token`); substituído pela
   // resposta final sanitizada quando chega o `result`.
   const [streamingDraft, setStreamingDraft] = useState<string | null>(null)
+  // Espelho do rascunho para os handlers saberem, no fim do pedido, se a
+  // resposta já esteve visível em stream (o estado no closure está desatualizado).
+  const streamingDraftRef = useRef<string | null>(null)
+  const pushStreamingDelta = (delta: string, seq: number) => {
+    const next = seq === 0 ? delta : `${streamingDraftRef.current ?? ''}${delta}`
+    streamingDraftRef.current = next
+    setStreamingDraft(next)
+  }
+  const clearStreamingDraft = () => {
+    streamingDraftRef.current = null
+    setStreamingDraft(null)
+  }
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
   const [selectedArtifactNavigationTarget, setSelectedArtifactNavigationTarget] = useState<ChatNavigationTarget | null>(null)
@@ -1124,7 +1136,7 @@ function TourChatWidget({
     clearSelectedUpload()
     setIsAssistantLoading(false)
     setStatusMessages([])
-    setStreamingDraft(null)
+    clearStreamingDraft()
     activeTurnTopMessageIdRef.current = null
     if (artifactModalCloseTimerRef.current !== null) {
       window.clearTimeout(artifactModalCloseTimerRef.current)
@@ -1309,7 +1321,7 @@ function TourChatWidget({
     setIsSending(true)
     setIsAssistantLoading(true)
     setStatusMessages([tt('preparingRequest')])
-    setStreamingDraft(null)
+    clearStreamingDraft()
     clearSelectedUpload()
     logInteraction('message_sent', {
       metadata: {
@@ -1342,7 +1354,7 @@ function TourChatWidget({
         if (requestController.signal.aborted) {
           return
         }
-        setStreamingDraft((previous) => (seq === 0 ? delta : `${previous ?? ''}${delta}`))
+        pushStreamingDelta(delta, seq)
       },
       onStatus: (message) => {
         const normalized = message.trim()
@@ -1378,7 +1390,7 @@ function TourChatWidget({
       })
       setIsAssistantLoading(false)
       setStatusMessages([])
-      setStreamingDraft(null)
+      clearStreamingDraft()
       setIsSending(false)
       return
     }
@@ -1402,6 +1414,7 @@ function TourChatWidget({
           navigationTargets: chatResponse.navigationTargets,
           tourRoom: chatResponse.tourRoom ?? null,
           tourRooms: chatResponse.tourRooms ?? [],
+          streamed: streamingDraftRef.current !== null,
           resultsPage: chatResponse.resultsPage,
           resultsPageSize: chatResponse.resultsPageSize,
           resultsTotal: chatResponse.resultsTotal,
@@ -1474,7 +1487,7 @@ function TourChatWidget({
 
     setIsAssistantLoading(false)
     setStatusMessages([])
-    setStreamingDraft(null)
+    clearStreamingDraft()
     setIsSending(false)
   }
 
@@ -1498,7 +1511,7 @@ function TourChatWidget({
     setIsSending(true)
     setIsAssistantLoading(true)
     setStatusMessages([tt('preparingRegeneration')])
-    setStreamingDraft(null)
+    clearStreamingDraft()
 
     const requestController = beginChatRequest()
     const chatResponse = await regenerateAssistantMessage({
@@ -1518,7 +1531,7 @@ function TourChatWidget({
         if (requestController.signal.aborted) {
           return
         }
-        setStreamingDraft((previous) => (seq === 0 ? delta : `${previous ?? ''}${delta}`))
+        pushStreamingDelta(delta, seq)
       },
       onStatus: (message) => {
         const normalized = message.trim()
@@ -1542,7 +1555,7 @@ function TourChatWidget({
       // Parar a regeneração mantém a resposta anterior tal como estava.
       setIsAssistantLoading(false)
       setStatusMessages([])
-      setStreamingDraft(null)
+      clearStreamingDraft()
       setIsSending(false)
       return
     }
@@ -1566,6 +1579,7 @@ function TourChatWidget({
                 navigationTargets: chatResponse.navigationTargets,
                 tourRoom: chatResponse.tourRoom ?? null,
                 tourRooms: chatResponse.tourRooms ?? [],
+                streamed: streamingDraftRef.current !== null,
                 resultsPage: chatResponse.resultsPage,
                 resultsPageSize: chatResponse.resultsPageSize,
                 resultsTotal: chatResponse.resultsTotal,
@@ -1628,7 +1642,7 @@ function TourChatWidget({
 
     setIsAssistantLoading(false)
     setStatusMessages([])
-    setStreamingDraft(null)
+    clearStreamingDraft()
     setIsSending(false)
   }
 
@@ -2922,7 +2936,10 @@ function TourChatWidget({
                 </div>
               </div>
             ) : message.role === 'assistant' ? (
-              <article key={message.id} className="text-2xl p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]">
+              <article
+                key={message.id}
+                className={`text-2xl ${message.streamed ? '' : 'p360-chat-message-enter p360-chat-message-enter-assistant '}mr-auto max-w-[94%] px-2 py-1 text-[#341d22]`}
+              >
                 <div className="mb-2 flex items-center gap-2">
                   <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#6d0b1b]/12 text-[#6d0b1b]">
                     <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
@@ -3096,7 +3113,25 @@ function TourChatWidget({
               </div>
             ),
           )}
-          {isAssistantLoading ? (
+          {isAssistantLoading && streamingDraft ? (
+            // A resposta a chegar em stream nasce já no lugar e com o formato
+            // da mensagem final; o `result` substitui o texto sem animação.
+            <article className="text-2xl p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] px-2 py-1 text-[#341d22]" aria-live="polite">
+              <div className="mb-2 flex items-center gap-2">
+                <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#6d0b1b]/12 text-[#6d0b1b]">
+                  <svg viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="currentColor" aria-hidden="true">
+                    <path d="M10 2.5l1.8 4.2 4.2 1.8-4.2 1.8L10 14.5l-1.8-4.2L4 8.5l4.2-1.8L10 2.5z" />
+                  </svg>
+                </span>
+                <span className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
+                  {tt('assistantBadge')}
+                </span>
+              </div>
+              <div className="space-y-2">
+                <MessageMarkdown messageId="streaming-draft" text={streamingDraft} />
+              </div>
+            </article>
+          ) : isAssistantLoading ? (
             <article className="p360-chat-text-scale p360-chat-message-enter p360-chat-message-enter-assistant mr-auto max-w-[94%] rounded-xl border border-[#ddc6c2] bg-white/70 px-3 py-2 text-[#341d22]">
               <div className="mb-1.5 flex items-center gap-2">
                 <span className="inline-flex h-4 w-4 animate-spin rounded-full border-2 border-[#6d0b1b]/25 border-t-[#6d0b1b]" />
@@ -3111,11 +3146,6 @@ function TourChatWidget({
                       {status}
                     </p>
                   ))}
-                </div>
-              ) : null}
-              {streamingDraft ? (
-                <div className="mt-1.5 border-t border-[#ddc6c2]/70 pt-1.5">
-                  <MessageMarkdown messageId="streaming-draft" text={streamingDraft} />
                 </div>
               ) : null}
             </article>
