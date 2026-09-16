@@ -182,6 +182,17 @@ export interface TourOpenArtifactContext {
   openedAt: number
 }
 
+// Posição atual do visitante na visita 360, tal como o tour a reporta
+// (tour_location_changed / artifact_info_opened). Vai em cada pedido ao
+// backend como metadata.tour_location para «Onde estou?» ser respondido
+// a partir da visita e não do acervo.
+export interface ChatTourLocationContext {
+  panoramaKey?: string | null
+  room?: string | null
+  title?: string | null
+  updatedAt: number
+}
+
 export interface TourArtifactModalRequest extends TourOpenArtifactContext {
   requestId: string
   source: string

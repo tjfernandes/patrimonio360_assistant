@@ -30,6 +30,7 @@ import type {
   ChatNavigationTarget,
   ChatSearchScope,
   ChatSelectedArtifactContext,
+  ChatTourLocationContext,
   ChatUploadKind,
   RelatedArtifact,
   TourArtifactModalRequest,
@@ -53,6 +54,8 @@ interface TourChatWidgetProps {
   onAssistantClosed?: () => void
   onOpenChange?: (isOpen: boolean) => void
   externalArtifactModalRequest?: TourArtifactModalRequest | null
+  // Última posição reportada pela visita; segue em cada pedido de chat.
+  tourLocation?: ChatTourLocationContext | null
 }
 
 const DEFAULT_PANEL_SIZE = { width: 900, height: 1050 }
@@ -339,6 +342,7 @@ function TourChatWidget({
   onAssistantClosed,
   onOpenChange,
   externalArtifactModalRequest,
+  tourLocation = null,
 }: TourChatWidgetProps) {
   const [language, setLanguage] = useState<ChatLanguage>(resolveEmbedLanguage(initialLanguage))
   const [isOpen, setIsOpen] = useState(false)
@@ -1328,6 +1332,7 @@ function TourChatWidget({
       participantId,
       taskId,
       selectedArtifact: focusedArtifactSnapshot,
+      tourLocation,
       text: submittedText,
       conversationId: conversationId ?? undefined,
       uploadFile: selectedUploadFileSnapshot,
@@ -1504,6 +1509,7 @@ function TourChatWidget({
       participantId,
       taskId,
       selectedArtifact: focusedArtifact,
+      tourLocation,
       conversationId,
       onToken: (delta, seq) => {
         if (requestController.signal.aborted) {

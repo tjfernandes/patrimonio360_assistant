@@ -10,6 +10,7 @@ import type {
   ChatNavigationTarget,
   ChatSearchScope,
   ChatSelectedArtifactContext,
+  ChatTourLocationContext,
   ChatUploadKind,
   RelatedArtifact,
 } from '../types'
@@ -25,6 +26,7 @@ interface ChatApiRequest {
   participantId?: string | null
   taskId?: string | null
   selectedArtifact?: ChatSelectedArtifactContext | null
+  tourLocation?: ChatTourLocationContext | null
 }
 
 interface SendChatMessageRequest extends ChatApiRequest {
@@ -225,6 +227,15 @@ function buildChatRequestMetadata(request: ChatApiRequest) {
       museum_id: optionalMetadataString(selectedArtifact?.museumId) ?? null,
       museum_slug: optionalMetadataString(selectedArtifact?.museumSlug) ?? null,
       museum_name: optionalMetadataString(selectedArtifact?.museumName) ?? null,
+    }
+  }
+  const tourPanoramaKey = optionalMetadataString(request.tourLocation?.panoramaKey)
+  const tourRoom = optionalMetadataString(request.tourLocation?.room)
+  if (tourPanoramaKey || tourRoom) {
+    metadata.tour_location = {
+      panorama_key: tourPanoramaKey ?? null,
+      room: tourRoom ?? null,
+      title: optionalMetadataString(request.tourLocation?.title) ?? null,
     }
   }
   return Object.keys(metadata).length > 0 ? metadata : undefined
