@@ -35,11 +35,19 @@ interface SendChatMessageRequest extends ChatApiRequest {
   resultsPage?: number
   resultsPageSize?: number
   onStatus?: (message: string) => void
+  // Quick win LLM-03: tokens parciais da resposta final (evento SSE `token`).
+  // O texto final chega sempre no evento `result`, já sanitizado.
+  onToken?: (delta: string, seq: number) => void
+  // Cancelamento (botão parar, nova conversa, desmontagem): fecha a ligação,
+  // e o backend cancela a tarefa e a geração no LLM.
+  signal?: AbortSignal
 }
 
 interface RegenerateChatMessageRequest extends ChatApiRequest {
   conversationId: string
   onStatus?: (message: string) => void
+  onToken?: (delta: string, seq: number) => void
+  signal?: AbortSignal
 }
 
 interface FetchChatResultsPageRequest extends ChatApiRequest {
@@ -65,6 +73,8 @@ export interface SendChatMessageResult {
   resultsRequestId?: string | null
   searchScope?: ChatSearchScope | null
   error?: string
+  // O pedido foi cancelado pelo próprio widget: não há resposta nem erro a mostrar.
+  aborted?: boolean
 }
 
 export interface ChatResultsPageResult {
@@ -606,6 +616,23 @@ async function parseErrorResponse(response: Response, language: ChatLanguage): P
   return message
 }
 
+function abortedResult(): SendChatMessageResult {
+  return {
+    reply: '',
+    responseFormat: 'text',
+    replyJson: null,
+    ...emptyResultsMeta(),
+    aborted: true,
+  }
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true
+  }
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 function parseSseEventBlock(rawBlock: string): { eventType: string; payload: Record<string, unknown> } | null {
   const block = rawBlock.trim()
   if (!block) {
@@ -643,6 +670,7 @@ async function readStreamingResult(
   response: Response,
   language: ChatLanguage,
   onStatus?: (message: string) => void,
+  onToken?: (delta: string, seq: number) => void,
 ): Promise<SendChatMessageResult> {
   if (!response.body) {
     return {
@@ -675,6 +703,12 @@ async function readStreamingResult(
           const message = typeof payload.message === 'string' ? payload.message : ''
           if (message && onStatus) {
             onStatus(message)
+          }
+        } else if (eventType === 'token') {
+          const delta = typeof payload.delta === 'string' ? payload.delta : ''
+          const seq = typeof payload.seq === 'number' ? payload.seq : -1
+          if (delta && onToken) {
+            onToken(delta, seq)
           }
         } else if (eventType === 'result') {
           const payloadValue = payload.payload
@@ -789,6 +823,7 @@ export async function sendChatMessage(
           method: 'POST',
           body: form,
           headers: useStreaming ? { Accept: 'text/event-stream' } : undefined,
+          signal: request.signal,
         },
       )
     } else if (request.uploadFile && request.uploadKind === 'model') {
@@ -821,6 +856,7 @@ export async function sendChatMessage(
           method: 'POST',
           body: form,
           headers: useStreaming ? { Accept: 'text/event-stream' } : undefined,
+          signal: request.signal,
         },
       )
     } else {
@@ -844,6 +880,7 @@ export async function sendChatMessage(
             response_format: { type: 'text' },
             metadata,
           }),
+          signal: request.signal,
         },
       )
     }
@@ -860,12 +897,15 @@ export async function sendChatMessage(
     }
 
     if (useStreaming) {
-      return await readStreamingResult(response, language, request.onStatus)
+      return await readStreamingResult(response, language, request.onStatus, request.onToken)
     }
 
     const payload = (await response.json()) as RawChatPayload
     return buildResultFromPayload(payload, language)
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, request.signal)) {
+      return abortedResult()
+    }
     return {
       reply: '',
       responseFormat: 'text',
@@ -985,6 +1025,7 @@ export async function regenerateAssistantMessage(
           response_format: { type: 'text' },
           metadata,
         }),
+        signal: request.signal,
       },
     )
 
@@ -1000,12 +1041,15 @@ export async function regenerateAssistantMessage(
     }
 
     if (useStreaming) {
-      return await readStreamingResult(response, language, request.onStatus)
+      return await readStreamingResult(response, language, request.onStatus, request.onToken)
     }
 
     const payload = (await response.json()) as RawChatPayload
     return buildResultFromPayload(payload, language)
-  } catch {
+  } catch (error) {
+    if (isAbortError(error, request.signal)) {
+      return abortedResult()
+    }
     return {
       reply: '',
       responseFormat: 'text',
