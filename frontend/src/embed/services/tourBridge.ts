@@ -2,11 +2,17 @@ interface TourContextPayload {
   museumSlug: string
 }
 
+// `focus`: o tour vai ao panorama com a câmara virada para o hotspot e
+// destaca o ícone (tour-focus-artifact.js), sem abrir a ficha. Sem modo, o
+// handler antigo do tour abre a ficha da peça (deep-links, tours antigos).
+export type TourNavigationMode = 'focus' | 'open'
+
 interface NavigateToArtifactPayload {
   overlayId: string
   panoramaKey: string
   inventoryId?: string | null
   requestId?: string | null
+  mode?: TourNavigationMode
 }
 
 export function syncTourContext(
@@ -44,6 +50,7 @@ export function navigateToArtifactInTour(
       panoramaKey: payload.panoramaKey,
       inventoryId: payload.inventoryId ?? null,
       requestId: payload.requestId ?? null,
+      ...(payload.mode === 'focus' ? { mode: 'focus' } : {}),
     },
     targetOrigin,
   )
