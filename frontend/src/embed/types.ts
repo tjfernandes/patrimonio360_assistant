@@ -144,6 +144,7 @@ export interface ChatTourRoomTarget {
   panoramaKey: string
   overlayId?: string | null
   pieceCount: number
+  description?: string | null
 }
 
 export interface ChatSearchScope {
@@ -217,6 +218,7 @@ export interface ChatMessage {
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
   tourRoom?: ChatTourRoomTarget | null
+  tourRooms?: ChatTourRoomTarget[]
   uploadedAssetKind?: ChatUploadKind
   uploadedAssetName?: string
   uploadedImageUrl?: string
