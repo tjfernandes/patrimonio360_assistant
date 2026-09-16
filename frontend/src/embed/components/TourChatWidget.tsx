@@ -201,7 +201,15 @@ function normalizeBaseUrl(baseUrl?: string) {
   return baseUrl.replace(/\/+$/, '')
 }
 
-function buildImageAssetUrl(baseUrl: string | null, originalImageName: string) {
+// Larguras pedidas ao backend com `?w=` (CHAT_IMAGE_THUMBNAILS): mosaicos de
+// resultados e relacionados (~240 px), tira de miniaturas do modal (80 px) e
+// vista principal do modal. A lightbox usa sempre o original. Um backend sem o
+// flag ignora `w` e serve o original, como antes.
+const IMAGE_WIDTH_CARD = 480
+const IMAGE_WIDTH_STRIP = 160
+const IMAGE_WIDTH_VIEWER = 1280
+
+function buildImageAssetUrl(baseUrl: string | null, originalImageName: string, width?: number) {
   if (!baseUrl || !originalImageName) {
     return null
   }
@@ -217,7 +225,8 @@ function buildImageAssetUrl(baseUrl: string | null, originalImageName: string) {
   if (!encodedPath) {
     return null
   }
-  return `${baseUrl}/api/v1/chat/images/${encodedPath}`
+  const assetUrl = `${baseUrl}/api/v1/chat/images/${encodedPath}`
+  return width ? `${assetUrl}?w=${width}` : assetUrl
 }
 
 function buildStarterMessage(): ChatMessage {
@@ -347,6 +356,9 @@ function TourChatWidget({
   const [uploadUiError, setUploadUiError] = useState<string | null>(null)
   const [isAssistantLoading, setIsAssistantLoading] = useState(false)
   const [statusMessages, setStatusMessages] = useState<string[]>([])
+  // Texto parcial da resposta em curso (evento SSE `token`); substituído pela
+  // resposta final sanitizada quando chega o `result`.
+  const [streamingDraft, setStreamingDraft] = useState<string | null>(null)
   const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null)
   const [selectedArtifactResult, setSelectedArtifactResult] = useState<ChatArtifactResult | null>(null)
   const [selectedArtifactNavigationTarget, setSelectedArtifactNavigationTarget] = useState<ChatNavigationTarget | null>(null)
@@ -375,6 +387,13 @@ function TourChatWidget({
   const artifactModalCloseTimerRef = useRef<number | null>(null)
   const externalArtifactModalRequestIdRef = useRef<string | null>(null)
   const objectUrlsRef = useRef<string[]>([])
+  // Pedido de chat em curso (enviar/regenerar). Parar aborta-o mas mantém a
+  // referência, para o handler mostrar «pedido cancelado»; nova conversa e
+  // desmontagem limpam-na, e o handler descarta a resposta em silêncio.
+  const requestAbortRef = useRef<AbortController | null>(null)
+  const requestStartedAtRef = useRef(0)
+  // Muda a cada nova conversa: respostas de «ver mais» pedidas antes são descartadas.
+  const conversationEpochRef = useRef(0)
   const dragCounterRef = useRef(0)
   const sessionIdRef = useRef(sessionId || createInteractionSessionId())
   const normalizedBackendBaseUrl = normalizeBaseUrl(backendBaseUrl)
@@ -1089,6 +1108,10 @@ function TourChatWidget({
   }
 
   const resetConversation = () => {
+    const pendingRequest = requestAbortRef.current
+    requestAbortRef.current = null
+    pendingRequest?.abort()
+    conversationEpochRef.current += 1
     setConversationId(null)
     setDraft('')
     setIsSending(false)
@@ -1096,6 +1119,7 @@ function TourChatWidget({
     clearSelectedUpload()
     setIsAssistantLoading(false)
     setStatusMessages([])
+    setStreamingDraft(null)
     activeTurnTopMessageIdRef.current = null
     if (artifactModalCloseTimerRef.current !== null) {
       window.clearTimeout(artifactModalCloseTimerRef.current)
@@ -1127,7 +1151,7 @@ function TourChatWidget({
     if (messagesEndRef.current) {
       scrollChatElementIntoView(messagesEndRef.current, 'end')
     }
-  }, [messages, isAssistantLoading, statusMessages, scrollActiveTurnToTop, scrollChatElementIntoView])
+  }, [messages, isAssistantLoading, statusMessages, streamingDraft, scrollActiveTurnToTop, scrollChatElementIntoView])
 
   useEffect(() => {
     void warmChatSession({ backendBaseUrl, museumSlug })
@@ -1160,6 +1184,9 @@ function TourChatWidget({
 
   useEffect(() => {
     return () => {
+      const pendingRequest = requestAbortRef.current
+      requestAbortRef.current = null
+      pendingRequest?.abort()
       if (chatCloseTimerRef.current !== null) {
         window.clearTimeout(chatCloseTimerRef.current)
         chatCloseTimerRef.current = null
@@ -1209,6 +1236,33 @@ function TourChatWidget({
     }
   }, [closeArtifactModal, selectedArtifactResult])
 
+  const beginChatRequest = () => {
+    requestAbortRef.current?.abort()
+    const controller = new AbortController()
+    requestAbortRef.current = controller
+    requestStartedAtRef.current = Date.now()
+    return controller
+  }
+
+  // true se o pedido ainda é o deste ecrã (e liberta a referência); false se
+  // uma nova conversa ou a desmontagem o substituiu entretanto.
+  const finishChatRequest = (controller: AbortController) => {
+    if (requestAbortRef.current !== controller) {
+      return false
+    }
+    requestAbortRef.current = null
+    return true
+  }
+
+  const handleStopRequest = () => {
+    // O botão parar aparece no lugar do enviar: ignora o segundo clique de um
+    // duplo clique no enviar, que cancelaria o pedido acabado de fazer.
+    if (Date.now() - requestStartedAtRef.current < 600) {
+      return
+    }
+    requestAbortRef.current?.abort()
+  }
+
   const handleSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault()
 
@@ -1250,6 +1304,7 @@ function TourChatWidget({
     setIsSending(true)
     setIsAssistantLoading(true)
     setStatusMessages([tt('preparingRequest')])
+    setStreamingDraft(null)
     clearSelectedUpload()
     logInteraction('message_sent', {
       metadata: {
@@ -1261,7 +1316,9 @@ function TourChatWidget({
       },
     })
 
+    const requestController = beginChatRequest()
     const chatResponse = await sendChatMessage({
+      signal: requestController.signal,
       backendBaseUrl,
       museumSlug,
       museumId,
@@ -1275,9 +1332,15 @@ function TourChatWidget({
       conversationId: conversationId ?? undefined,
       uploadFile: selectedUploadFileSnapshot,
       uploadKind: selectedUploadKindSnapshot,
+      onToken: (delta, seq) => {
+        if (requestController.signal.aborted) {
+          return
+        }
+        setStreamingDraft((previous) => (seq === 0 ? delta : `${previous ?? ''}${delta}`))
+      },
       onStatus: (message) => {
         const normalized = message.trim()
-        if (!normalized) {
+        if (!normalized || requestController.signal.aborted) {
           return
         }
         setStatusMessages((previous) => {
@@ -1288,6 +1351,31 @@ function TourChatWidget({
         })
       },
     })
+
+    if (!finishChatRequest(requestController)) {
+      // Nova conversa ou desmontagem a meio: a resposta já não pertence a este ecrã.
+      return
+    }
+
+    if (chatResponse?.aborted) {
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: createId(),
+          role: 'assistant',
+          text: tt('requestCancelled'),
+        },
+      ])
+      logInteraction('error_shown', {
+        conversationId,
+        metadata: { source: 'send_message', error: 'request_cancelled', cancelled_by_user: true },
+      })
+      setIsAssistantLoading(false)
+      setStatusMessages([])
+      setStreamingDraft(null)
+      setIsSending(false)
+      return
+    }
 
     if (chatResponse?.conversationId) {
       setConversationId(chatResponse.conversationId)
@@ -1378,6 +1466,7 @@ function TourChatWidget({
 
     setIsAssistantLoading(false)
     setStatusMessages([])
+    setStreamingDraft(null)
     setIsSending(false)
   }
 
@@ -1401,8 +1490,11 @@ function TourChatWidget({
     setIsSending(true)
     setIsAssistantLoading(true)
     setStatusMessages([tt('preparingRegeneration')])
+    setStreamingDraft(null)
 
+    const requestController = beginChatRequest()
     const chatResponse = await regenerateAssistantMessage({
+      signal: requestController.signal,
       backendBaseUrl,
       museumSlug,
       museumId,
@@ -1413,9 +1505,15 @@ function TourChatWidget({
       taskId,
       selectedArtifact: focusedArtifact,
       conversationId,
+      onToken: (delta, seq) => {
+        if (requestController.signal.aborted) {
+          return
+        }
+        setStreamingDraft((previous) => (seq === 0 ? delta : `${previous ?? ''}${delta}`))
+      },
       onStatus: (message) => {
         const normalized = message.trim()
-        if (!normalized) {
+        if (!normalized || requestController.signal.aborted) {
           return
         }
         setStatusMessages((previous) => {
@@ -1426,6 +1524,19 @@ function TourChatWidget({
         })
       },
     })
+
+    if (!finishChatRequest(requestController)) {
+      return
+    }
+
+    if (chatResponse?.aborted) {
+      // Parar a regeneração mantém a resposta anterior tal como estava.
+      setIsAssistantLoading(false)
+      setStatusMessages([])
+      setStreamingDraft(null)
+      setIsSending(false)
+      return
+    }
 
     if (chatResponse?.conversationId) {
       setConversationId(chatResponse.conversationId)
@@ -1506,6 +1617,7 @@ function TourChatWidget({
 
     setIsAssistantLoading(false)
     setStatusMessages([])
+    setStreamingDraft(null)
     setIsSending(false)
   }
 
@@ -1536,6 +1648,7 @@ function TourChatWidget({
       ),
     )
 
+    const requestEpoch = conversationEpochRef.current
     const resultsPage = await fetchChatResultsPage({
       backendBaseUrl,
       museumSlug,
@@ -1547,6 +1660,10 @@ function TourChatWidget({
       resultsPageSize: pageSize,
       resultsRequestId: targetMessage.resultsRequestId,
     })
+
+    if (requestEpoch !== conversationEpochRef.current) {
+      return
+    }
 
     if (resultsPage?.conversationId) {
       setConversationId(resultsPage.conversationId)
@@ -1725,11 +1842,11 @@ function TourChatWidget({
     })
   }
 
-  const resolveArtifactImageUrl = (image: ChatArtifactImage) => {
+  const resolveArtifactImageUrl = (image: ChatArtifactImage, width?: number) => {
     const localRef =
       image.localPath || image.originalImageName
     if (localRef) {
-      const localAssetUrl = buildImageAssetUrl(normalizedBackendBaseUrl, localRef)
+      const localAssetUrl = buildImageAssetUrl(normalizedBackendBaseUrl, localRef, width)
       if (localAssetUrl) {
         return localAssetUrl
       }
@@ -1914,7 +2031,8 @@ function TourChatWidget({
     return (
       <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2`}>
         {visibleImageMatches.map((match, index) => {
-          const imageUrl = buildImageAssetUrl(normalizedBackendBaseUrl, match.originalImageName)
+          const imageUrl = buildImageAssetUrl(normalizedBackendBaseUrl, match.originalImageName, IMAGE_WIDTH_CARD)
+          const fullImageUrl = buildImageAssetUrl(normalizedBackendBaseUrl, match.originalImageName)
           const linkedArtifact = resolveArtifactResultForImageMatch(match, artifactResults)
           const matchInventoryKey = normalizeLookupKey(match.inventory)
           const embeddedNavigationTarget =
@@ -1957,7 +2075,7 @@ function TourChatWidget({
                       return
                     }
                     setLightboxImage({
-                      src: imageUrl,
+                      src: fullImageUrl || imageUrl,
                       alt:
                         match.title ||
                         match.inventory ||
@@ -2056,7 +2174,8 @@ function TourChatWidget({
 
     const activeIndex = Math.min(Math.max(selectedArtifactImageIndex, 0), images.length - 1)
     const activeImage = images[activeIndex]
-    const activeImageUrl = resolveArtifactImageUrl(activeImage)
+    const activeImageUrl = resolveArtifactImageUrl(activeImage, IMAGE_WIDTH_VIEWER)
+    const activeImageFullUrl = resolveArtifactImageUrl(activeImage)
     const activeLabel =
       activeImage.altText ||
       activeImage.caption ||
@@ -2076,7 +2195,7 @@ function TourChatWidget({
           {activeImageUrl ? (
             <button
               type="button"
-              onClick={() => setLightboxImage({ src: activeImageUrl, alt: activeLabel })}
+              onClick={() => setLightboxImage({ src: activeImageFullUrl || activeImageUrl, alt: activeLabel })}
               className="flex h-[46vh] min-h-[280px] max-h-[540px] w-full cursor-zoom-in items-center justify-center p-2"
             >
               <LoadingImage
@@ -2146,7 +2265,7 @@ function TourChatWidget({
         {hasMultipleImages ? (
           <div className="flex gap-2 overflow-x-auto pb-1">
             {images.map((image, index) => {
-              const imageUrl = resolveArtifactImageUrl(image)
+              const imageUrl = resolveArtifactImageUrl(image, IMAGE_WIDTH_STRIP)
               const label =
                 image.altText ||
                 image.caption ||
@@ -2267,7 +2386,7 @@ function TourChatWidget({
         <div className="-mx-1 flex gap-2 overflow-x-auto overscroll-x-contain px-1 pb-2">
           {artifacts.map((art) => {
             const thumbnail = art.images[0]
-            const thumbnailUrl = thumbnail ? resolveArtifactImageUrl(thumbnail) : null
+            const thumbnailUrl = thumbnail ? resolveArtifactImageUrl(thumbnail, IMAGE_WIDTH_CARD) : null
             const label =
               art.title ||
               art.inventoryNumber ||
@@ -2870,6 +2989,11 @@ function TourChatWidget({
                   ))}
                 </div>
               ) : null}
+              {streamingDraft ? (
+                <div className="mt-1.5 border-t border-[#ddc6c2]/70 pt-1.5">
+                  <MessageMarkdown messageId="streaming-draft" text={streamingDraft} />
+                </div>
+              ) : null}
             </article>
           ) : null}
           <div ref={messagesEndRef} />
@@ -3024,16 +3148,29 @@ function TourChatWidget({
             </svg>
           </IconButton> */}
 
-          <button
-            type="submit"
-            disabled={isSending}
-            aria-label={isSending ? tt('sending') : tt('send')}
-            title={isSending ? tt('sending') : tt('send')}
-            className="inline-flex h-15 w-15 shrink-0 items-center justify-center rounded-xl bg-[#6d0b1b] text-white shadow-[0_14px_30px_-20px_rgba(109,11,27,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_20px_34px_-22px_rgba(109,11,27,1)] disabled:cursor-not-allowed disabled:opacity-65 disabled:hover:translate-y-0"
-          >
-            {isSending ? (
-              <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/35 border-t-white" />
-            ) : (
+          {isSending ? (
+            <button
+              key="stop"
+              type="button"
+              onClick={handleStopRequest}
+              aria-label={tt('stop')}
+              title={tt('stop')}
+              className="relative inline-flex h-15 w-15 shrink-0 items-center justify-center rounded-xl bg-[#6d0b1b] text-white shadow-[0_14px_30px_-20px_rgba(109,11,27,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_20px_34px_-22px_rgba(109,11,27,1)]"
+            >
+              <span
+                className="absolute h-9 w-9 animate-spin rounded-full border-2 border-white/25 border-t-white"
+                aria-hidden="true"
+              />
+              <span className="h-3.5 w-3.5 rounded-[3px] bg-white" aria-hidden="true" />
+            </button>
+          ) : (
+            <button
+              key="send"
+              type="submit"
+              aria-label={tt('send')}
+              title={tt('send')}
+              className="inline-flex h-15 w-15 shrink-0 items-center justify-center rounded-xl bg-[#6d0b1b] text-white shadow-[0_14px_30px_-20px_rgba(109,11,27,0.95)] transition-[background-color,transform,box-shadow] hover:-translate-y-0.5 hover:bg-[#4f0814] hover:shadow-[0_20px_34px_-22px_rgba(109,11,27,1)]"
+            >
               <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" aria-hidden="true">
                 <path
                   d="M5 12h13M13 6l6 6-6 6"
@@ -3043,8 +3180,8 @@ function TourChatWidget({
                   strokeLinejoin="round"
                 />
               </svg>
-            )}
-          </button>
+            </button>
+          )}
         </div>
       </form>
 
