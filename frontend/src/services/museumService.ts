@@ -46,7 +46,11 @@ export function getMuseumTourUrl(slug: string): string {
 
 export function getMuseumEmbedPath(slug: string): string {
   const configuredBaseUrl = import.meta.env.VITE_EMBED_BASE_URL?.trim()
-  const embedPath = `/embed/${toSafeSlugSegment(slug)}/`
+  // `v` = identificador da build (vite.config.ts): garante que o iframe do
+  // widget carrega a mesma build que a página, mesmo com o index.html do
+  // embed em cache no browser. Quem compõe deep-links usa URL.searchParams,
+  // pelo que o parâmetro convive com os outros.
+  const embedPath = `/embed/${toSafeSlugSegment(slug)}/?v=${encodeURIComponent(__BUILD_ID__)}`
 
   if (!configuredBaseUrl) {
     return embedPath
