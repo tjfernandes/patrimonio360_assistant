@@ -13,6 +13,7 @@ import type {
   TourAssistantEmbedProps,
   TourArtifactModalRequest,
   TourNavigationCommandContext,
+  ChatTourLocationContext,
   TourOpenArtifactContext,
 } from '../types'
 import TourChatWidget from './TourChatWidget'
@@ -427,6 +428,7 @@ function TourAssistantEmbed({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isChatWidgetOpen, setIsChatWidgetOpen] = useState(false)
   const [openTourArtifact, setOpenTourArtifact] = useState<TourOpenArtifactContext | null>(null)
+  const [tourLocation, setTourLocation] = useState<ChatTourLocationContext | null>(null)
   const [tourArtifactModalRequest, setTourArtifactModalRequest] =
     useState<TourArtifactModalRequest | null>(null)
   const language = resolveEmbedLanguage(initialLanguage)
@@ -647,6 +649,22 @@ function TourAssistantEmbed({
         null
       const eventTitle = readString(data.title)
       const eventLocation = readString(data.location)
+
+      // Posição atual: o tour manda `room` (e panorama_id/title) em cada
+      // mudança de panorama e ao abrir uma peça. Guardamos a última para o
+      // backend responder a «Onde estou?» sem pesquisar o acervo.
+      const eventRoom = readString(data.room)
+      if (
+        (eventType === 'tour_location_changed' || eventType === 'artifact_info_opened') &&
+        (panoramaId || eventRoom || eventLocation)
+      ) {
+        setTourLocation({
+          panoramaKey: panoramaId ?? null,
+          room: eventRoom ?? eventLocation ?? null,
+          title: eventTitle ?? null,
+          updatedAt: Date.now(),
+        })
+      }
 
       let navigationTarget: Partial<ChatNavigationTarget> = {}
       if (eventType === 'tour_location_changed') {
@@ -1211,6 +1229,7 @@ function TourAssistantEmbed({
         onAssistantClosed={handleAssistantClosed}
         onOpenChange={setIsChatWidgetOpen}
         externalArtifactModalRequest={tourArtifactModalRequest}
+        tourLocation={tourLocation}
       />
     </div>
   )
