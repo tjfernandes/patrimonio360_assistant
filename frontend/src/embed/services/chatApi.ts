@@ -11,6 +11,7 @@ import type {
   ChatSearchScope,
   ChatSelectedArtifactContext,
   ChatTourLocationContext,
+  ChatTourRoomTarget,
   ChatUploadKind,
   RelatedArtifact,
 } from '../types'
@@ -68,6 +69,7 @@ export interface SendChatMessageResult {
   imageMatches?: ChatImageMatch[]
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
+  tourRoom?: ChatTourRoomTarget | null
   resultsPage: number
   resultsPageSize: number
   resultsTotal: number
@@ -111,6 +113,12 @@ interface RawChatPayload {
   }>
   artifact_results?: RawArtifactResult[]
   navigation_targets?: RawNavigationTarget[]
+  tour_room?: {
+    room?: string
+    panorama_key?: string
+    overlay_id?: string | null
+    piece_count?: number
+  } | null
   results_page?: number
   results_page_size?: number
   results_total?: number
@@ -548,6 +556,20 @@ function emptyResultsMeta(): Pick<
   }
 }
 
+function normalizeTourRoom(raw: RawChatPayload['tour_room']): ChatTourRoomTarget | null {
+  const room = String(raw?.room || '').trim()
+  const panoramaKey = String(raw?.panorama_key || '').trim()
+  if (!room || !panoramaKey) {
+    return null
+  }
+  return {
+    room,
+    panoramaKey,
+    overlayId: typeof raw?.overlay_id === 'string' && raw.overlay_id.trim() ? raw.overlay_id.trim() : null,
+    pieceCount: typeof raw?.piece_count === 'number' ? raw.piece_count : 0,
+  }
+}
+
 function buildResultFromPayload(
   payload: RawChatPayload,
   language: ChatLanguage,
@@ -588,6 +610,7 @@ function buildResultFromPayload(
     imageMatches,
     artifactResults,
     navigationTargets,
+    tourRoom: normalizeTourRoom(payload.tour_room),
     searchScope,
     ...meta,
   }

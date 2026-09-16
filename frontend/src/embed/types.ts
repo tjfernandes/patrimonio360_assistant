@@ -137,6 +137,15 @@ export interface ChatNavigationTarget {
   title?: string
 }
 
+// Zona da visita referida na resposta («e a sala cantonal?»): o widget mostra
+// um botão «Ir para …» que salta para o panorama dessa zona.
+export interface ChatTourRoomTarget {
+  room: string
+  panoramaKey: string
+  overlayId?: string | null
+  pieceCount: number
+}
+
 export interface ChatSearchScope {
   museumId?: string | null
   museumSlug: string
@@ -207,6 +216,7 @@ export interface ChatMessage {
   imageMatches?: ChatImageMatch[]
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
+  tourRoom?: ChatTourRoomTarget | null
   uploadedAssetKind?: ChatUploadKind
   uploadedAssetName?: string
   uploadedImageUrl?: string

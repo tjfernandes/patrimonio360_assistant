@@ -31,6 +31,7 @@ import type {
   ChatSearchScope,
   ChatSelectedArtifactContext,
   ChatTourLocationContext,
+  ChatTourRoomTarget,
   ChatUploadKind,
   RelatedArtifact,
   TourArtifactModalRequest,
@@ -1399,6 +1400,7 @@ function TourChatWidget({
           imageMatches: dedupeImageMatches(chatResponse.imageMatches),
           artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
           navigationTargets: chatResponse.navigationTargets,
+          tourRoom: chatResponse.tourRoom ?? null,
           resultsPage: chatResponse.resultsPage,
           resultsPageSize: chatResponse.resultsPageSize,
           resultsTotal: chatResponse.resultsTotal,
@@ -1561,6 +1563,7 @@ function TourChatWidget({
                 imageMatches: dedupeImageMatches(chatResponse.imageMatches),
                 artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
                 navigationTargets: chatResponse.navigationTargets,
+                tourRoom: chatResponse.tourRoom ?? null,
                 resultsPage: chatResponse.resultsPage,
                 resultsPageSize: chatResponse.resultsPageSize,
                 resultsTotal: chatResponse.resultsTotal,
@@ -2721,6 +2724,58 @@ function TourChatWidget({
     )
   }
 
+  // «Ir para a Sala X»: salta para o primeiro panorama da zona. O tour vai
+  // ao panorama e, sem overlay, não abre nenhuma peça.
+  const renderTourRoomButton = (
+    tourRoom: ChatTourRoomTarget | null | undefined,
+    queryId?: string | null,
+    searchScope?: ChatSearchScope | null,
+  ) => {
+    if (!tourRoom) {
+      return null
+    }
+    return (
+      <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-2`}>
+        <button
+          type="button"
+          onClick={() =>
+            handleNavigateToTargetClick(
+              {
+                overlayId: tourRoom.overlayId ?? '',
+                panoramaKey: tourRoom.panoramaKey,
+                inventoryId: '',
+                location: tourRoom.room,
+                title: tourRoom.room,
+              },
+              {
+                queryId: queryId ?? null,
+                source: 'tour_room',
+                title: tourRoom.room,
+                inventoryNumber: null,
+                searchScope,
+              },
+            )
+          }
+          disabled={!onNavigateToTarget}
+          title={tt('goToRoomHint')}
+          className="flex w-full items-center justify-between rounded-lg border border-[#18304a] bg-[#13283f] px-3 py-2 text-left text-sm text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <span className="min-w-0 pr-2">
+            <span className="block truncate font-semibold">{tt('goToRoom', { room: tourRoom.room })}</span>
+            {tourRoom.pieceCount > 0 ? (
+              <span className="block truncate text-[11px] text-[#c9e6ff]">
+                {tt('tourObjects')}: {tourRoom.pieceCount}
+              </span>
+            ) : null}
+          </span>
+          <svg viewBox="0 0 24 24" className="h-5 w-5 shrink-0" fill="none" aria-hidden="true">
+            <path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
+    )
+  }
+
   if (!isOpen) {
     return (
       <div className="absolute bottom-4 left-4 z-[600] flex items-center gap-2">
@@ -2820,6 +2875,7 @@ function TourChatWidget({
                 <div className="space-y-2">
                   <MessageMarkdown messageId={message.id} text={message.text} />
                   {renderSearchScopeNotice(message.searchScope)}
+                  {renderTourRoomButton(message.tourRoom, message.queryId, message.searchScope)}
                   {renderImageMatches(
                     message.imageMatches,
                     message.artifactResults,
