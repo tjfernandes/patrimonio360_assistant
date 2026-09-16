@@ -7,6 +7,7 @@ import {
   type FrontendInteractionEventType,
 } from '../services/interactionLogger'
 import { navigateToArtifactInTour, syncTourContext } from '../services/tourBridge'
+import type { TourNavigationMode } from '../services/tourBridge'
 import { getMuseumEmbedPath } from '../../services/museumService'
 import type {
   ChatNavigationTarget,
@@ -1010,6 +1011,10 @@ function TourAssistantEmbed({
       return
     }
 
+    // Peça (tem hotspot): o tour vai ao panorama a olhar para o hotspot e
+    // destaca-o, sem abrir a ficha. Zona da visita (sem hotspot): só muda de
+    // panorama, como antes.
+    const navigationMode: TourNavigationMode = target.overlayId ? 'focus' : 'open'
     let status = 'sent'
     let error: string | null = null
     try {
@@ -1019,6 +1024,7 @@ function TourAssistantEmbed({
           overlayId: target.overlayId,
           panoramaKey: target.panoramaKey,
           inventoryId: context.inventoryNumber ?? target.inventoryId,
+          mode: navigationMode,
         },
         tourTargetOrigin,
       )
@@ -1068,6 +1074,7 @@ function TourAssistantEmbed({
       metadata: {
         click_source: context.source ?? null,
         post_message_type: 'navigateToArtifact',
+        navigation_mode: navigationMode,
         target_origin: tourTargetOrigin === '*' ? null : tourTargetOrigin,
         target_museum_id: context.targetMuseumId ?? null,
         target_museum_slug: context.targetMuseumSlug ?? museumSlug,
