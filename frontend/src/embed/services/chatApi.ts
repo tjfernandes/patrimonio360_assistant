@@ -70,6 +70,7 @@ export interface SendChatMessageResult {
   artifactResults?: ChatArtifactResult[]
   navigationTargets?: ChatNavigationTarget[]
   tourRoom?: ChatTourRoomTarget | null
+  tourRooms?: ChatTourRoomTarget[]
   resultsPage: number
   resultsPageSize: number
   resultsTotal: number
@@ -113,12 +114,8 @@ interface RawChatPayload {
   }>
   artifact_results?: RawArtifactResult[]
   navigation_targets?: RawNavigationTarget[]
-  tour_room?: {
-    room?: string
-    panorama_key?: string
-    overlay_id?: string | null
-    piece_count?: number
-  } | null
+  tour_room?: RawTourRoom | null
+  tour_rooms?: RawTourRoom[]
   results_page?: number
   results_page_size?: number
   results_total?: number
@@ -556,7 +553,15 @@ function emptyResultsMeta(): Pick<
   }
 }
 
-function normalizeTourRoom(raw: RawChatPayload['tour_room']): ChatTourRoomTarget | null {
+interface RawTourRoom {
+  room?: string
+  panorama_key?: string
+  overlay_id?: string | null
+  piece_count?: number
+  description?: string | null
+}
+
+function normalizeTourRoom(raw: RawTourRoom | null | undefined): ChatTourRoomTarget | null {
   const room = String(raw?.room || '').trim()
   const panoramaKey = String(raw?.panorama_key || '').trim()
   if (!room || !panoramaKey) {
@@ -567,7 +572,14 @@ function normalizeTourRoom(raw: RawChatPayload['tour_room']): ChatTourRoomTarget
     panoramaKey,
     overlayId: typeof raw?.overlay_id === 'string' && raw.overlay_id.trim() ? raw.overlay_id.trim() : null,
     pieceCount: typeof raw?.piece_count === 'number' ? raw.piece_count : 0,
+    description: typeof raw?.description === 'string' && raw.description.trim() ? raw.description.trim() : null,
   }
+}
+
+function normalizeTourRooms(raw: RawTourRoom[] | undefined): ChatTourRoomTarget[] {
+  return (raw ?? [])
+    .map((entry) => normalizeTourRoom(entry))
+    .filter((entry): entry is ChatTourRoomTarget => entry !== null)
 }
 
 function buildResultFromPayload(
@@ -611,6 +623,7 @@ function buildResultFromPayload(
     artifactResults,
     navigationTargets,
     tourRoom: normalizeTourRoom(payload.tour_room),
+    tourRooms: normalizeTourRooms(payload.tour_rooms),
     searchScope,
     ...meta,
   }

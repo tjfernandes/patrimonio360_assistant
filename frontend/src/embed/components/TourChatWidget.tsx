@@ -1401,6 +1401,7 @@ function TourChatWidget({
           artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
           navigationTargets: chatResponse.navigationTargets,
           tourRoom: chatResponse.tourRoom ?? null,
+          tourRooms: chatResponse.tourRooms ?? [],
           resultsPage: chatResponse.resultsPage,
           resultsPageSize: chatResponse.resultsPageSize,
           resultsTotal: chatResponse.resultsTotal,
@@ -1564,6 +1565,7 @@ function TourChatWidget({
                 artifactResults: dedupeArtifactResults(chatResponse.artifactResults),
                 navigationTargets: chatResponse.navigationTargets,
                 tourRoom: chatResponse.tourRoom ?? null,
+                tourRooms: chatResponse.tourRooms ?? [],
                 resultsPage: chatResponse.resultsPage,
                 resultsPageSize: chatResponse.resultsPageSize,
                 resultsTotal: chatResponse.resultsTotal,
@@ -2724,6 +2726,82 @@ function TourChatWidget({
     )
   }
 
+  const navigateToTourRoom = (
+    tourRoom: ChatTourRoomTarget,
+    queryId?: string | null,
+    searchScope?: ChatSearchScope | null,
+  ) =>
+    handleNavigateToTargetClick(
+      {
+        overlayId: tourRoom.overlayId ?? '',
+        panoramaKey: tourRoom.panoramaKey,
+        inventoryId: '',
+        location: tourRoom.room,
+        title: tourRoom.room,
+      },
+      {
+        queryId: queryId ?? null,
+        source: 'tour_room',
+        title: tourRoom.room,
+        inventoryNumber: null,
+        searchScope,
+      },
+    )
+
+  // Lista das zonas da visita («que salas há?»): nome, descrição curada (quando
+  // existe), n.º de peças e um botão por zona.
+  const renderTourRoomsList = (
+    tourRooms: ChatTourRoomTarget[] | undefined,
+    queryId?: string | null,
+    searchScope?: ChatSearchScope | null,
+  ) => {
+    if (!tourRooms || tourRooms.length === 0) {
+      return null
+    }
+    return (
+      <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-2 overflow-hidden rounded-xl border border-[#dfcbc6] bg-white/75`}>
+        <p className="border-b border-[#eadbd8] px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-[#6d0b1b]">
+          {tt('tourRoomsHeader')} · {tourRooms.length}
+        </p>
+        <ol className="divide-y divide-[#eadbd8]">
+          {tourRooms.map((tourRoom, index) => (
+            <li key={`${tourRoom.panoramaKey}-${index}`}>
+              <button
+                type="button"
+                onClick={() => navigateToTourRoom(tourRoom, queryId, searchScope)}
+                disabled={!onNavigateToTarget}
+                title={tt('goToRoomHint')}
+                className="group flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[#fff8f5] disabled:cursor-not-allowed disabled:opacity-60"
+                style={{ animationDelay: `${Math.min(index * 35, 240)}ms` }}
+              >
+                <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#6d0b1b]/10 text-[11px] font-bold text-[#6d0b1b]">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-[#341d22]">{tourRoom.room}</span>
+                  {tourRoom.description ? (
+                    <span className="mt-0.5 block text-xs leading-snug text-[#6b5b5f]">{tourRoom.description}</span>
+                  ) : null}
+                  {tourRoom.pieceCount > 0 ? (
+                    <span className="mt-1 block text-[11px] uppercase tracking-[0.08em] text-[#8b7074]">
+                      {tt('tourRoomPieces', { count: tourRoom.pieceCount })}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full border border-[#6d0b1b]/25 px-2.5 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors group-hover:bg-[#6d0b1b] group-hover:text-white">
+                  {tt('goToRoomShort')}
+                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                    <path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+              </button>
+            </li>
+          ))}
+        </ol>
+      </div>
+    )
+  }
+
   // «Ir para a Sala X»: salta para o primeiro panorama da zona. O tour vai
   // ao panorama e, sem overlay, não abre nenhuma peça.
   const renderTourRoomButton = (
@@ -2738,24 +2816,7 @@ function TourChatWidget({
       <div className={`${isChatClosing ? 'p360-chat-results-exit' : 'p360-chat-results-enter'} mt-2`}>
         <button
           type="button"
-          onClick={() =>
-            handleNavigateToTargetClick(
-              {
-                overlayId: tourRoom.overlayId ?? '',
-                panoramaKey: tourRoom.panoramaKey,
-                inventoryId: '',
-                location: tourRoom.room,
-                title: tourRoom.room,
-              },
-              {
-                queryId: queryId ?? null,
-                source: 'tour_room',
-                title: tourRoom.room,
-                inventoryNumber: null,
-                searchScope,
-              },
-            )
-          }
+          onClick={() => navigateToTourRoom(tourRoom, queryId, searchScope)}
           disabled={!onNavigateToTarget}
           title={tt('goToRoomHint')}
           className="flex w-full items-center justify-between rounded-lg border border-[#18304a] bg-[#13283f] px-3 py-2 text-left text-sm text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
@@ -2876,6 +2937,7 @@ function TourChatWidget({
                   <MessageMarkdown messageId={message.id} text={message.text} />
                   {renderSearchScopeNotice(message.searchScope)}
                   {renderTourRoomButton(message.tourRoom, message.queryId, message.searchScope)}
+                  {renderTourRoomsList(message.tourRooms, message.queryId, message.searchScope)}
                   {renderImageMatches(
                     message.imageMatches,
                     message.artifactResults,
