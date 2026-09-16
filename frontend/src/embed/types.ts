@@ -219,6 +219,9 @@ export interface ChatMessage {
   navigationTargets?: ChatNavigationTarget[]
   tourRoom?: ChatTourRoomTarget | null
   tourRooms?: ChatTourRoomTarget[]
+  // O texto já foi mostrado em stream: a mensagem final substitui o rascunho
+  // no mesmo sítio, sem animação de entrada.
+  streamed?: boolean
   uploadedAssetKind?: ChatUploadKind
   uploadedAssetName?: string
   uploadedImageUrl?: string
