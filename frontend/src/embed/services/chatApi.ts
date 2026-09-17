@@ -27,6 +27,10 @@ interface ChatApiRequest {
   participantId?: string | null
   taskId?: string | null
   selectedArtifact?: ChatSelectedArtifactContext | null
+  // Contexto implícito (sem botões): o backend decide se a pergunta é sobre esta peça.
+  contextArtifact?: ChatSelectedArtifactContext | null
+  // Cartões da última resposta, pela ordem mostrada («o segundo», «o 5622», «o leque»).
+  visibleArtifacts?: Array<{ artifactId: string; inventoryNumber?: string | null; title?: string | null }>
   tourLocation?: ChatTourLocationContext | null
 }
 
@@ -236,6 +240,25 @@ function buildChatRequestMetadata(request: ChatApiRequest) {
       museum_slug: optionalMetadataString(selectedArtifact?.museumSlug) ?? null,
       museum_name: optionalMetadataString(selectedArtifact?.museumName) ?? null,
     }
+  }
+  const contextArtifactId = optionalMetadataString(request.contextArtifact?.artifactId)
+  if (contextArtifactId && !selectedArtifactId) {
+    metadata.context_artifact = {
+      artifact_id: contextArtifactId,
+      inventory_number: optionalMetadataString(request.contextArtifact?.inventoryNumber) ?? null,
+      title: optionalMetadataString(request.contextArtifact?.title) ?? null,
+      source: optionalMetadataString(request.contextArtifact?.source) ?? null,
+    }
+  }
+  const visibleArtifacts = (request.visibleArtifacts ?? [])
+    .filter((item) => optionalMetadataString(item.artifactId))
+    .slice(0, 60)
+  if (visibleArtifacts.length && !selectedArtifactId) {
+    metadata.visible_artifacts = visibleArtifacts.map((item) => ({
+      artifact_id: item.artifactId,
+      inventory_number: optionalMetadataString(item.inventoryNumber) ?? null,
+      title: optionalMetadataString(item.title) ?? null,
+    }))
   }
   const tourPanoramaKey = optionalMetadataString(request.tourLocation?.panoramaKey)
   const tourRoom = optionalMetadataString(request.tourLocation?.room)
