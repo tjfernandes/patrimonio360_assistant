@@ -892,20 +892,37 @@ function TourChatWidget({
   // sobre esta peça ou um pedido novo.
   const latestAssistantMessage =
     [...messages].reverse().find((message) => message.role === 'assistant' && !message.isCenteredNotice) ?? null
-  const latestResults = (latestAssistantMessage?.artifactResults ?? []).filter((artifact) => artifact.artifactId)
+  // A conversa continua sobre os cartões da última resposta que os mostrou,
+  // mesmo com respostas sem cartões pelo meio («obrigado», a lista de zonas):
+  // depois de «olá», «de que ano é?» ainda é sobre a peça de que se falava.
+  const latestResultsMessage =
+    [...messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          !message.isCenteredNotice &&
+          (message.artifactResults ?? []).some((artifact) => artifact.artifactId),
+      ) ?? null
+  const latestResults = (latestResultsMessage?.artifactResults ?? []).filter((artifact) => artifact.artifactId)
   const firstResultContext: ChatSelectedArtifactContext | null = latestResults[0]
     ? {
         artifactId: latestResults[0].artifactId,
         inventoryNumber: latestResults[0].inventoryNumber ?? null,
         title: latestResults[0].title ?? null,
-        queryId: latestAssistantMessage?.queryId ?? null,
+        queryId: latestResultsMessage?.queryId ?? null,
         source: 'first_result',
-        museumId: latestAssistantMessage?.searchScope?.museumId ?? museumId ?? null,
-        museumSlug: latestAssistantMessage?.searchScope?.museumSlug ?? museumSlug,
-        museumName: latestAssistantMessage?.searchScope?.museumName ?? museumName ?? null,
+        museumId: latestResultsMessage?.searchScope?.museumId ?? museumId ?? null,
+        museumSlug: latestResultsMessage?.searchScope?.museumSlug ?? museumSlug,
+        museumName: latestResultsMessage?.searchScope?.museumName ?? museumName ?? null,
       }
     : null
-  const suggestionTarget = focusedArtifact ?? firstResultContext
+  const contextTarget = focusedArtifact ?? firstResultContext
+  // As sugestões só aparecem por baixo da resposta que mostrou os cartões (ou
+  // com uma ficha/hotspot aberto); o contexto invisível dura mais.
+  const suggestionTarget =
+    focusedArtifact ??
+    (latestAssistantMessage && latestAssistantMessage.id === latestResultsMessage?.id ? firstResultContext : null)
   const visibleArtifactsForContext = latestResults.map((artifact) => ({
     artifactId: artifact.artifactId,
     inventoryNumber: artifact.inventoryNumber ?? null,
@@ -1374,7 +1391,7 @@ function TourChatWidget({
     const selectedModelPreviewUrlSnapshot = selectedModelPreviewUrl
     const selectedModelFormatSnapshot = selectedModelFormat
     const focusedArtifactSnapshot = focusedArtifact ? { ...focusedArtifact } : null
-    const contextArtifactSnapshot = suggestionTarget ? { ...suggestionTarget } : null
+    const contextArtifactSnapshot = contextTarget ? { ...contextTarget } : null
     const visibleArtifactsSnapshot = visibleArtifactsForContext
 
     const userMessageId = createId()
@@ -1613,7 +1630,7 @@ function TourChatWidget({
       participantId,
       taskId,
       selectedArtifact: null,
-      contextArtifact: suggestionTarget,
+      contextArtifact: contextTarget,
       visibleArtifacts: visibleArtifactsForContext,
       tourLocation,
       conversationId,
