@@ -551,26 +551,6 @@ function TourChatWidget({
     })
   }
 
-  const clearFocusedArtifact = (source: string = 'composer') => {
-    if (!focusedArtifact) {
-      return
-    }
-    const cleared = focusedArtifact
-    setFocusedArtifact(null)
-    logInteraction('artifact_context_cleared', {
-      queryId: cleared.queryId ?? null,
-      title: cleared.title,
-      inventoryNumber: cleared.inventoryNumber,
-      artifactId: cleared.artifactId,
-      status: 'cleared',
-      source,
-      metadata: {
-        source,
-        selected_artifact_id: cleared.artifactId,
-      },
-    })
-  }
-
   const buildNavigationCommandContext = (
     target: ChatNavigationTarget,
     options: NavigationClickOptions,
@@ -905,6 +885,32 @@ function TourChatWidget({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openTourInventory, openTourArtifactOpenedAt])
+
+  // Contexto implícito, sem etiquetas: a última resposta dá os cartões visíveis
+  // («o segundo», «o 5622») e o primeiro resultado; um hotspot aberto na visita
+  // (ou «Perguntar» na ficha) passa à frente. O backend decide se a pergunta é
+  // sobre esta peça ou um pedido novo.
+  const latestAssistantMessage =
+    [...messages].reverse().find((message) => message.role === 'assistant' && !message.isCenteredNotice) ?? null
+  const latestResults = (latestAssistantMessage?.artifactResults ?? []).filter((artifact) => artifact.artifactId)
+  const firstResultContext: ChatSelectedArtifactContext | null = latestResults[0]
+    ? {
+        artifactId: latestResults[0].artifactId,
+        inventoryNumber: latestResults[0].inventoryNumber ?? null,
+        title: latestResults[0].title ?? null,
+        queryId: latestAssistantMessage?.queryId ?? null,
+        source: 'first_result',
+        museumId: latestAssistantMessage?.searchScope?.museumId ?? museumId ?? null,
+        museumSlug: latestAssistantMessage?.searchScope?.museumSlug ?? museumSlug,
+        museumName: latestAssistantMessage?.searchScope?.museumName ?? museumName ?? null,
+      }
+    : null
+  const suggestionTarget = focusedArtifact ?? firstResultContext
+  const visibleArtifactsForContext = latestResults.map((artifact) => ({
+    artifactId: artifact.artifactId,
+    inventoryNumber: artifact.inventoryNumber ?? null,
+    title: artifact.title ?? null,
+  }))
 
   const askSuggestedQuestion = (question: string) => {
     if (isSending) {
@@ -1368,6 +1374,8 @@ function TourChatWidget({
     const selectedModelPreviewUrlSnapshot = selectedModelPreviewUrl
     const selectedModelFormatSnapshot = selectedModelFormat
     const focusedArtifactSnapshot = focusedArtifact ? { ...focusedArtifact } : null
+    const contextArtifactSnapshot = suggestionTarget ? { ...suggestionTarget } : null
+    const visibleArtifactsSnapshot = visibleArtifactsForContext
 
     const userMessageId = createId()
     activeTurnTopMessageIdRef.current = userMessageId
@@ -1385,7 +1393,7 @@ function TourChatWidget({
           selectedUploadKindSnapshot === 'model' ? selectedModelPreviewUrlSnapshot ?? undefined : undefined,
         uploadedModelFormat:
           selectedUploadKindSnapshot === 'model' ? selectedModelFormatSnapshot ?? undefined : undefined,
-        selectedArtifactContext: focusedArtifactSnapshot,
+        selectedArtifactContext: null,
       },
     ])
     setDraft('')
@@ -1399,8 +1407,9 @@ function TourChatWidget({
         has_upload: hasUpload,
         upload_kind: selectedUploadKindSnapshot,
         message_length: submittedText.length,
-        selected_artifact_id: focusedArtifactSnapshot?.artifactId ?? null,
-        selected_context_mode: focusedArtifactSnapshot ? 'auto' : null,
+        context_artifact_id: contextArtifactSnapshot?.artifactId ?? null,
+        context_artifact_source: contextArtifactSnapshot?.source ?? null,
+        visible_artifact_count: visibleArtifactsSnapshot.length,
       },
     })
 
@@ -1415,7 +1424,9 @@ function TourChatWidget({
       sessionId: sessionIdRef.current,
       participantId,
       taskId,
-      selectedArtifact: focusedArtifactSnapshot,
+      selectedArtifact: null,
+      contextArtifact: contextArtifactSnapshot,
+      visibleArtifacts: visibleArtifactsSnapshot,
       tourLocation,
       text: submittedText,
       conversationId: conversationId ?? undefined,
@@ -1469,26 +1480,11 @@ function TourChatWidget({
     if (chatResponse?.conversationId) {
       setConversationId(chatResponse.conversationId)
     }
-    // O pedido não era sobre a peça selecionada (nova pesquisa, «onde estou?»): a
-    // etiqueta sai sozinha, sem o visitante ter de a desligar. A de um hotspot
-    // aberto na visita fica enquanto ele estiver aberto.
-    if (
-      focusedArtifactSnapshot &&
-      chatResponse?.selectedArtifactStatus === 'released' &&
-      focusedArtifactSnapshot.source !== 'tour_hotspot'
-    ) {
+    // «Perguntar» na ficha vale para uma pergunta; o hotspot aberto fica enquanto estiver aberto.
+    if (focusedArtifactSnapshot && focusedArtifactSnapshot.source !== 'tour_hotspot') {
       setFocusedArtifact((current) =>
         current?.artifactId === focusedArtifactSnapshot.artifactId ? null : current,
       )
-      logInteraction('artifact_context_cleared', {
-        queryId: chatResponse?.queryId ?? null,
-        title: focusedArtifactSnapshot.title,
-        inventoryNumber: focusedArtifactSnapshot.inventoryNumber,
-        artifactId: focusedArtifactSnapshot.artifactId,
-        status: 'cleared',
-        source: 'auto_release',
-        metadata: { source: 'auto_release', selected_artifact_id: focusedArtifactSnapshot.artifactId },
-      })
     }
     const responseConversationId = chatResponse?.conversationId ?? conversationId
     const responseQueryId = chatResponse?.queryId ?? null
@@ -1616,7 +1612,9 @@ function TourChatWidget({
       sessionId: sessionIdRef.current,
       participantId,
       taskId,
-      selectedArtifact: focusedArtifact,
+      selectedArtifact: null,
+      contextArtifact: suggestionTarget,
+      visibleArtifacts: visibleArtifactsForContext,
       tourLocation,
       conversationId,
       onToken: (delta, seq) => {
@@ -2163,9 +2161,6 @@ function TourChatWidget({
             resolveNavigationTargetForArtifact(linkedArtifact, navigationTargets) ||
             resolveNavigationTargetForImageMatch(match, navigationTargets)
           const focusArtifactId = String(linkedArtifact?.artifactId || match.artifactId || '').trim()
-          const focusInventoryNumber = linkedArtifact?.inventoryNumber || match.inventory || null
-          const focusTitle = linkedArtifact?.title || match.title || null
-          const canFocusArtifact = Boolean(focusArtifactId)
           const isFocusedArtifact = Boolean(
             focusArtifactId && focusedArtifact?.artifactId === focusArtifactId,
           )
@@ -2222,44 +2217,8 @@ function TourChatWidget({
                 </p>
                 {match.title ? <p className="truncate text-sm text-[#341d22]">{match.title}</p> : null}
                 {/* <p className="truncate text-[11px] text-[#6e5a5f]">{match.originalImageName}</p> */}
-                {canFocusArtifact || linkedTarget ? (
+                {linkedTarget ? (
                   <div className="mt-1.5 flex gap-1.5">
-                    {canFocusArtifact ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          selectFocusedArtifact({
-                            artifact: linkedArtifact,
-                            queryId: queryId ?? null,
-                            source: 'image_match_card',
-                            title: focusTitle,
-                            inventoryNumber: focusInventoryNumber,
-                            artifactId: focusArtifactId,
-                            searchScope,
-                          })
-                        }
-                        title={tt('askAboutThisTitle')}
-                        aria-label={tt('askAboutThisTitle')}
-                        className={`inline-flex cursor-pointer active:scale-95 transition-transform duration-100 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md border px-2 py-1 text-sm font-semibold transition-[background-color,border-color,color,box-shadow] ${
-                          isFocusedArtifact
-                            ? 'border-[#6d0b1b] bg-[#6d0b1b] text-white shadow-[0_12px_24px_-20px_rgba(109,11,27,0.95)]'
-                            : 'border-[#c8ada7] bg-white/90 text-[#5a2730] hover:border-[#6d0b1b]/45 hover:bg-white'
-                        }`}
-                      >
-                        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 shrink-0" fill="none" aria-hidden="true">
-                          <path
-                            d="M8 12h8M12 8v8M5.5 5.5h13v10h-5L10 19v-3.5H5.5z"
-                            stroke="currentColor"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                        <span className="truncate">
-                          {isFocusedArtifact ? tt('artifactContextSelectedAction') : tt('askAboutThis')}
-                        </span>
-                      </button>
-                    ) : null}
                     {linkedTarget ? (
                       <button
                         type="button"
@@ -3326,42 +3285,16 @@ function TourChatWidget({
             {uploadUiError}
           </p>
         ) : null}
-        {focusedArtifact ? (
-          <div className="mb-2 flex items-center gap-2 rounded-xl border border-[#6d0b1b]/20 bg-[#fff8f5] px-2.5 py-2 shadow-[0_12px_28px_-26px_rgba(109,11,27,0.85)]">
-            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#6d0b1b]/10 text-[#6d0b1b]">
-              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" aria-hidden="true">
-                <path
-                  d="M8 12h8M12 8v8M5.5 5.5h13v10h-5L10 19v-3.5H5.5z"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6d0b1b]">
-                {focusedArtifact.source === 'tour_hotspot' ? tt('artifactContextTourLabel') : tt('artifactContextLabel')}
-              </p>
-              <p className="truncate text-xs font-semibold text-[#2d1b1f]">
-                {[focusedArtifact.inventoryNumber, focusedArtifact.title || focusedArtifact.artifactId]
-                  .filter(Boolean)
-                  .join(' - ')}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => clearFocusedArtifact('composer')}
-              aria-label={tt('clearArtifactContext')}
-              title={tt('clearArtifactContext')}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#c8ada7] bg-white/90 text-[#5a2730] transition-colors hover:border-[#6d0b1b]/45 hover:bg-white"
-            >
-              <CloseIcon className="h-4 w-4" />
-            </button>
-          </div>
-        ) : null}
-        {focusedArtifact && !isSending && !draft.trim() ? (
-          <div className="mb-2 flex flex-wrap gap-1.5">
+        {suggestionTarget && !isSending && !draft.trim() ? (
+          <div className="mb-2">
+            <p className="mb-1 truncate text-[10px] font-bold uppercase tracking-[0.12em] text-[#6d0b1b]/75">
+              {suggestionTarget.source === 'tour_hotspot' ? tt('suggestionsAboutTour') : tt('suggestionsAbout')}
+              {' · '}
+              <span className="font-semibold normal-case tracking-normal text-[#4a2f34]">
+                {suggestionTarget.title || suggestionTarget.inventoryNumber}
+              </span>
+            </p>
+            <div className="flex flex-wrap gap-1.5">
             {(['suggestedWhatIsIt', 'suggestedMaterial', 'suggestedDate', 'suggestedStory', 'suggestedSimilar'] as const).map((key) => (
               <button
                 key={key}
@@ -3372,9 +3305,10 @@ function TourChatWidget({
                 {tt(key)}
               </button>
             ))}
+            </div>
           </div>
         ) : null}
-        {!selectedUploadFile && !focusedArtifact ? (
+        {!selectedUploadFile && !suggestionTarget ? (
           <div className="mb-2 rounded-xl border border-dashed border-[#ccb2ad] bg-white/50 px-3 py-2 text-[11px] text-[#6f5a5d]">
             {tt('attachDropHint')}
           </div>
