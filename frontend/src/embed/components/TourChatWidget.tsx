@@ -2814,13 +2814,15 @@ function TourChatWidget({
                         <span className="mt-0.5 block text-xs leading-snug text-[#6b5b5f]">{tourRoom.description}</span>
                       ) : null}
                       {tourRoom.pieceCount > 0 ? (
-                        <span className="mt-1 flex items-center gap-1 text-[11px] uppercase tracking-[0.08em] text-[#8b7074]">
+                        <span className={`mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-[0.08em] ${hasPieces ? 'rounded-full border border-[#6d0b1b]/25 bg-white px-2 py-0.5 text-[#6d0b1b]' : 'text-[#8b7074]'}`}>
                           {hasPieces ? (
                             <svg viewBox="0 0 24 24" className={`h-3 w-3 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} fill="none" aria-hidden="true">
                               <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
                             </svg>
                           ) : null}
-                          {tt('tourRoomPieces', { count: tourRoom.pieceCount })}
+                          {hasPieces
+                          ? tt(isOpen ? 'tourRoomHidePieces' : 'tourRoomShowPiecesCount', { count: tourRoom.pieceCount })
+                          : tt('tourRoomPieces', { count: tourRoom.pieceCount })}
                         </span>
                       ) : null}
                     </span>
