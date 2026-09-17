@@ -35,6 +35,7 @@ import type {
   ChatUploadKind,
   RelatedArtifact,
   TourArtifactModalRequest,
+  TourOpenArtifactContext,
   TourNavigationCommandContext,
 } from '../types'
 import MessageMarkdown from './MessageMarkdown'
@@ -57,6 +58,8 @@ interface TourChatWidgetProps {
   externalArtifactModalRequest?: TourArtifactModalRequest | null
   // Última posição reportada pela visita; segue em cada pedido de chat.
   tourLocation?: ChatTourLocationContext | null
+  // Hotspot aberto na visita: passa a ser o assunto das perguntas enquanto estiver aberto.
+  openTourArtifact?: TourOpenArtifactContext | null
 }
 
 const DEFAULT_PANEL_SIZE = { width: 900, height: 1050 }
@@ -344,6 +347,7 @@ function TourChatWidget({
   onOpenChange,
   externalArtifactModalRequest,
   tourLocation = null,
+  openTourArtifact = null,
 }: TourChatWidgetProps) {
   const [language, setLanguage] = useState<ChatLanguage>(resolveEmbedLanguage(initialLanguage))
   const [isOpen, setIsOpen] = useState(false)
@@ -384,6 +388,10 @@ function TourChatWidget({
   const [selectedArtifactQueryId, setSelectedArtifactQueryId] = useState<string | null>(null)
   const [selectedArtifactSearchScope, setSelectedArtifactSearchScope] = useState<ChatSearchScope | null>(null)
   const [focusedArtifact, setFocusedArtifact] = useState<ChatSelectedArtifactContext | null>(null)
+  const composerFormRef = useRef<HTMLFormElement | null>(null)
+  const composerInputRef = useRef<HTMLInputElement | null>(null)
+  // Pergunta sugerida: envia-se sem passar pelo rascunho.
+  const submitOverrideRef = useRef<string | null>(null)
   const [selectedArtifactImageIndex, setSelectedArtifactImageIndex] = useState(0)
   const [isArtifactModalClosing, setIsArtifactModalClosing] = useState(false)
   // Contexto relacional do artefacto aberto no modal (autores/conjuntos/exposicoes).
@@ -524,6 +532,7 @@ function TourChatWidget({
       return
     }
     setFocusedArtifact(context)
+    window.setTimeout(() => composerInputRef.current?.focus(), 0)
     logInteraction('artifact_context_selected', {
       queryId: context.queryId ?? null,
       artifact: options.artifact ?? null,
@@ -844,6 +853,65 @@ function TourChatWidget({
     })
     onNavigateToTarget(selectedArtifactNavigationTarget, navigationContext)
     closeArtifactModal()
+  }
+
+  // O hotspot aberto na visita é o assunto das perguntas, sem cliques: a etiqueta
+  // aparece quando a ficha abre e sai quando fecha. Uma escolha explícita do
+  // visitante («Perguntar» num cartão) só é substituída por outro hotspot aberto.
+  const openTourInventory = String(
+    openTourArtifact?.inventoryNumber || openTourArtifact?.navigationTarget?.inventoryId || '',
+  ).trim()
+  const openTourArtifactOpenedAt = openTourArtifact?.openedAt ?? 0
+  useEffect(() => {
+    if (!openTourInventory) {
+      setFocusedArtifact((current) => (current?.source === 'tour_hotspot' ? null : current))
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      const result = await fetchArtifactFullByInventory({
+        backendBaseUrl,
+        museumSlug,
+        museumId,
+        language,
+        inventoryNumber: openTourInventory,
+      })
+      const artifact = result.artifact
+      if (cancelled || !artifact?.artifactId) {
+        return
+      }
+      setFocusedArtifact({
+        artifactId: artifact.artifactId,
+        inventoryNumber: artifact.inventoryNumber ?? openTourInventory,
+        title: artifact.title ?? openTourArtifact?.title ?? null,
+        queryId: null,
+        source: 'tour_hotspot',
+        museumId: museumId ?? null,
+        museumSlug,
+        museumName,
+      })
+      logInteraction('artifact_context_selected', {
+        artifact,
+        title: artifact.title,
+        inventoryNumber: artifact.inventoryNumber ?? openTourInventory,
+        artifactId: artifact.artifactId,
+        status: 'selected',
+        source: 'tour_hotspot',
+        metadata: { source: 'tour_hotspot', selected_artifact_id: artifact.artifactId, automatic: true },
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTourInventory, openTourArtifactOpenedAt])
+
+  const askSuggestedQuestion = (question: string) => {
+    if (isSending) {
+      return
+    }
+    submitOverrideRef.current = question
+    composerFormRef.current?.requestSubmit()
   }
 
   const handleAskAboutSelectedArtifact = () => {
@@ -1285,7 +1353,8 @@ function TourChatWidget({
   const handleSubmit = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    const text = draft.trim()
+    const text = (submitOverrideRef.current ?? draft).trim()
+    submitOverrideRef.current = null
     const hasUpload = Boolean(selectedUploadFile && selectedUploadKind)
     if ((!text && !hasUpload) || isSending) {
       return
@@ -1399,6 +1468,27 @@ function TourChatWidget({
 
     if (chatResponse?.conversationId) {
       setConversationId(chatResponse.conversationId)
+    }
+    // O pedido não era sobre a peça selecionada (nova pesquisa, «onde estou?»): a
+    // etiqueta sai sozinha, sem o visitante ter de a desligar. A de um hotspot
+    // aberto na visita fica enquanto ele estiver aberto.
+    if (
+      focusedArtifactSnapshot &&
+      chatResponse?.selectedArtifactStatus === 'released' &&
+      focusedArtifactSnapshot.source !== 'tour_hotspot'
+    ) {
+      setFocusedArtifact((current) =>
+        current?.artifactId === focusedArtifactSnapshot.artifactId ? null : current,
+      )
+      logInteraction('artifact_context_cleared', {
+        queryId: chatResponse?.queryId ?? null,
+        title: focusedArtifactSnapshot.title,
+        inventoryNumber: focusedArtifactSnapshot.inventoryNumber,
+        artifactId: focusedArtifactSnapshot.artifactId,
+        status: 'cleared',
+        source: 'auto_release',
+        metadata: { source: 'auto_release', selected_artifact_id: focusedArtifactSnapshot.artifactId },
+      })
     }
     const responseConversationId = chatResponse?.conversationId ?? conversationId
     const responseQueryId = chatResponse?.queryId ?? null
@@ -3223,7 +3313,7 @@ function TourChatWidget({
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="p360-chat-text-scale border-t border-[#f1dfdb99] p-2.5">
+      <form ref={composerFormRef} onSubmit={handleSubmit} className="p360-chat-text-scale border-t border-[#f1dfdb99] p-2.5">
         <input
           ref={fileInputRef}
           type="file"
@@ -3251,7 +3341,7 @@ function TourChatWidget({
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6d0b1b]">
-                {tt('artifactContextLabel')}
+                {focusedArtifact.source === 'tour_hotspot' ? tt('artifactContextTourLabel') : tt('artifactContextLabel')}
               </p>
               <p className="truncate text-xs font-semibold text-[#2d1b1f]">
                 {[focusedArtifact.inventoryNumber, focusedArtifact.title || focusedArtifact.artifactId]
@@ -3270,7 +3360,21 @@ function TourChatWidget({
             </button>
           </div>
         ) : null}
-        {!selectedUploadFile ? (
+        {focusedArtifact && !isSending && !draft.trim() ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {(['suggestedWhatIsIt', 'suggestedMaterial', 'suggestedDate', 'suggestedStory', 'suggestedSimilar'] as const).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => askSuggestedQuestion(tt(key))}
+                className="rounded-full border border-[#6d0b1b]/25 bg-white px-2.5 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors hover:bg-[#6d0b1b] hover:text-white"
+              >
+                {tt(key)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {!selectedUploadFile && !focusedArtifact ? (
           <div className="mb-2 rounded-xl border border-dashed border-[#ccb2ad] bg-white/50 px-3 py-2 text-[11px] text-[#6f5a5d]">
             {tt('attachDropHint')}
           </div>
@@ -3353,6 +3457,7 @@ function TourChatWidget({
           </IconButton>
 
           <input
+            ref={composerInputRef}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             placeholder={tt('inputPlaceholder')}

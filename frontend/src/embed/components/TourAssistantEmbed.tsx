@@ -1237,6 +1237,7 @@ function TourAssistantEmbed({
         onOpenChange={setIsChatWidgetOpen}
         externalArtifactModalRequest={tourArtifactModalRequest}
         tourLocation={tourLocation}
+        openTourArtifact={openTourArtifact}
       />
     </div>
   )

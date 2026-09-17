@@ -71,6 +71,8 @@ export interface SendChatMessageResult {
   navigationTargets?: ChatNavigationTarget[]
   tourRoom?: ChatTourRoomTarget | null
   tourRooms?: ChatTourRoomTarget[]
+  // Peça selecionada enviada com o pedido: usada na resposta ou libertada (pedido independente).
+  selectedArtifactStatus?: 'used' | 'released' | null
   resultsPage: number
   resultsPageSize: number
   resultsTotal: number
@@ -116,6 +118,7 @@ interface RawChatPayload {
   navigation_targets?: RawNavigationTarget[]
   tour_room?: RawTourRoom | null
   tour_rooms?: RawTourRoom[]
+  selected_artifact_status?: string | null
   results_page?: number
   results_page_size?: number
   results_total?: number
@@ -638,6 +641,10 @@ function buildResultFromPayload(
     navigationTargets,
     tourRoom: normalizeTourRoom(payload.tour_room),
     tourRooms: normalizeTourRooms(payload.tour_rooms),
+    selectedArtifactStatus:
+      payload.selected_artifact_status === 'used' || payload.selected_artifact_status === 'released'
+        ? payload.selected_artifact_status
+        : null,
     searchScope,
     ...meta,
   }
