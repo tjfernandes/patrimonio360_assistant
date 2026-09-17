@@ -352,6 +352,8 @@ function TourChatWidget({
   const [isSending, setIsSending] = useState(false)
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
+  // Zonas abertas na lista «que salas há?» (chave: pedido + índice da zona).
+  const [expandedTourRooms, setExpandedTourRooms] = useState<Record<string, boolean>>({})
   const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null)
   const [selectedUploadKind, setSelectedUploadKind] = useState<ChatUploadKind | null>(null)
   const [selectedImagePreviewUrl, setSelectedImagePreviewUrl] = useState<string | null>(null)
@@ -2119,6 +2121,12 @@ function TourChatWidget({
                 </button>
               ) : null}
               <div className="space-y-1 px-2 py-1.5">
+                {linkedTarget && tourLocation?.panoramaKey && linkedTarget.panoramaKey === tourLocation.panoramaKey ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[#16a34a]/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-[#15803d]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#16a34a]" aria-hidden="true" />
+                    {tt('inThisSpot')}
+                  </span>
+                ) : null}
                 <p className="truncate text-sm font-semibold uppercase tracking-[0.08em] text-[#5a2730]">
                   {match.inventory || match.title || tt('visualResult')}
                 </p>
@@ -2763,7 +2771,8 @@ function TourChatWidget({
     )
 
   // Lista das zonas da visita («que salas há?»): nome, descrição curada (quando
-  // existe), n.º de peças e um botão por zona.
+  // existe), n.º de peças e um botão por zona. Cada zona com peças abre, ao
+  // clicar, a lista das suas peças (fechada por omissão), cada uma com «Ver na tour».
   const renderTourRoomsList = (
     tourRooms: ChatTourRoomTarget[] | undefined,
     queryId?: string | null,
@@ -2778,39 +2787,97 @@ function TourChatWidget({
           {tt('tourRoomsHeader')} · {tourRooms.length}
         </p>
         <ol className="divide-y divide-[#eadbd8]">
-          {tourRooms.map((tourRoom, index) => (
-            <li key={`${tourRoom.panoramaKey}-${index}`}>
-              <button
-                type="button"
-                onClick={() => navigateToTourRoom(tourRoom, queryId, searchScope)}
-                disabled={!onNavigateToTarget}
-                title={tt('goToRoomHint')}
-                className="group flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-[#fff8f5] disabled:cursor-not-allowed disabled:opacity-60"
-                style={{ animationDelay: `${Math.min(index * 35, 240)}ms` }}
-              >
-                <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#6d0b1b]/10 text-[11px] font-bold text-[#6d0b1b]">
-                  {index + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold text-[#341d22]">{tourRoom.room}</span>
-                  {tourRoom.description ? (
-                    <span className="mt-0.5 block text-xs leading-snug text-[#6b5b5f]">{tourRoom.description}</span>
-                  ) : null}
-                  {tourRoom.pieceCount > 0 ? (
-                    <span className="mt-1 block text-[11px] uppercase tracking-[0.08em] text-[#8b7074]">
-                      {tt('tourRoomPieces', { count: tourRoom.pieceCount })}
+          {tourRooms.map((tourRoom, index) => {
+            const roomKey = `${queryId ?? 'q'}:${index}`
+            const hasPieces = tourRoom.pieces.length > 0
+            const isOpen = hasPieces && Boolean(expandedTourRooms[roomKey])
+            return (
+              <li key={`${tourRoom.panoramaKey}-${index}`}>
+                <div className="flex items-start gap-2 px-3 py-2.5 transition-colors hover:bg-[#fff8f5]">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      hasPieces
+                        ? setExpandedTourRooms((previous) => ({ ...previous, [roomKey]: !previous[roomKey] }))
+                        : navigateToTourRoom(tourRoom, queryId, searchScope)
+                    }
+                    aria-expanded={hasPieces ? isOpen : undefined}
+                    title={hasPieces ? tt(isOpen ? 'tourRoomHidePieces' : 'tourRoomShowPieces') : tt('goToRoomHint')}
+                    className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                  >
+                    <span className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#6d0b1b]/10 text-[11px] font-bold text-[#6d0b1b]">
+                      {index + 1}
                     </span>
-                  ) : null}
-                </span>
-                <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full border border-[#6d0b1b]/25 px-2.5 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors group-hover:bg-[#6d0b1b] group-hover:text-white">
-                  {tt('goToRoomShort')}
-                  <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
-                    <path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </span>
-              </button>
-            </li>
-          ))}
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-[#341d22]">{tourRoom.room}</span>
+                      {tourRoom.description ? (
+                        <span className="mt-0.5 block text-xs leading-snug text-[#6b5b5f]">{tourRoom.description}</span>
+                      ) : null}
+                      {tourRoom.pieceCount > 0 ? (
+                        <span className="mt-1 flex items-center gap-1 text-[11px] uppercase tracking-[0.08em] text-[#8b7074]">
+                          {hasPieces ? (
+                            <svg viewBox="0 0 24 24" className={`h-3 w-3 shrink-0 transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} fill="none" aria-hidden="true">
+                              <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          ) : null}
+                          {tt('tourRoomPieces', { count: tourRoom.pieceCount })}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigateToTourRoom(tourRoom, queryId, searchScope)}
+                    disabled={!onNavigateToTarget}
+                    title={tt('goToRoomHint')}
+                    className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-full border border-[#6d0b1b]/25 px-2.5 py-1 text-[11px] font-semibold text-[#6d0b1b] transition-colors hover:bg-[#6d0b1b] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {tt('goToRoomShort')}
+                    <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" aria-hidden="true">
+                      <path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </div>
+                {isOpen ? (
+                  <ul className="space-y-1 border-t border-dashed border-[#eadbd8] bg-[#fffaf8] py-2 pl-12 pr-3">
+                    {tourRoom.pieces.map((piece) => (
+                      <li key={`${piece.overlayId}-${piece.inventoryId}`} className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs text-[#341d22]">
+                          {piece.title || piece.inventoryId}
+                          <span className="ml-1.5 text-[11px] text-[#8b7074]">{piece.inventoryId}</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleNavigateToTargetClick(
+                              {
+                                overlayId: piece.overlayId,
+                                panoramaKey: piece.panoramaKey,
+                                inventoryId: piece.inventoryId,
+                                location: tourRoom.room,
+                                title: piece.title ?? piece.inventoryId,
+                              },
+                              {
+                                queryId: queryId ?? null,
+                                source: 'tour_room_piece',
+                                title: piece.title ?? undefined,
+                                inventoryNumber: piece.inventoryId,
+                                searchScope,
+                              },
+                            )
+                          }
+                          disabled={!onNavigateToTarget}
+                          className="shrink-0 rounded-md border border-[#18304a] bg-[#13283f] px-2 py-0.5 text-[11px] font-semibold text-[#e7f4ff] transition-colors hover:bg-[#183657] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {tt('viewInTour')}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+            )
+          })}
         </ol>
       </div>
     )

@@ -139,12 +139,21 @@ export interface ChatNavigationTarget {
 
 // Zona da visita referida na resposta («e a sala cantonal?»): o widget mostra
 // um botão «Ir para …» que salta para o panorama dessa zona.
+export interface ChatTourRoomPiece {
+  inventoryId: string
+  title?: string | null
+  overlayId: string
+  panoramaKey: string
+}
+
 export interface ChatTourRoomTarget {
   room: string
   panoramaKey: string
   overlayId?: string | null
   pieceCount: number
   description?: string | null
+  // Só na lista de zonas: as peças de cada uma (abrem por baixo do item).
+  pieces: ChatTourRoomPiece[]
 }
 
 export interface ChatSearchScope {

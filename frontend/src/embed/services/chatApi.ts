@@ -559,6 +559,12 @@ interface RawTourRoom {
   overlay_id?: string | null
   piece_count?: number
   description?: string | null
+  pieces?: Array<{
+    inventory_id?: string
+    title?: string | null
+    overlay_id?: string
+    panorama_key?: string
+  }>
 }
 
 function normalizeTourRoom(raw: RawTourRoom | null | undefined): ChatTourRoomTarget | null {
@@ -573,6 +579,14 @@ function normalizeTourRoom(raw: RawTourRoom | null | undefined): ChatTourRoomTar
     overlayId: typeof raw?.overlay_id === 'string' && raw.overlay_id.trim() ? raw.overlay_id.trim() : null,
     pieceCount: typeof raw?.piece_count === 'number' ? raw.piece_count : 0,
     description: typeof raw?.description === 'string' && raw.description.trim() ? raw.description.trim() : null,
+    pieces: (raw?.pieces ?? [])
+      .map((piece) => ({
+        inventoryId: String(piece?.inventory_id || '').trim(),
+        title: typeof piece?.title === 'string' && piece.title.trim() ? piece.title.trim() : null,
+        overlayId: String(piece?.overlay_id || '').trim(),
+        panoramaKey: String(piece?.panorama_key || '').trim(),
+      }))
+      .filter((piece) => piece.inventoryId && piece.overlayId && piece.panoramaKey),
   }
 }
 
